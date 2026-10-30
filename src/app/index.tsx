@@ -40,7 +40,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
-        <Image style={styles.appBranding} source={require('@/assets/images/app-logo.png')} />
+        <Image style={styles.appBranding} source={require('@/assets/images/NOMI-Save-Storage.png')} />
         <Text style={styles.title}>Nimo Save Storage</Text>
         <Text style={styles.subtitle}>Auto-upload files to Telegram</Text>
 

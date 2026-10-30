@@ -1,98 +1,144 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+import { useState, useEffect } from 'react';
+import { router } from 'expo-router';
+import { isLoggedIn } from '@/lib/telegram/client';
+import { getConfig } from '@/lib/storage/queue';
 
 export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [config, setConfig] = useState<any>(null);
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+  const checkStatus = async () => {
+    try {
+      const [loginStatus, appConfig] = await Promise.all([
+        isLoggedIn(),
+        getConfig(),
+      ]);
+      setLoggedIn(loginStatus);
+      setConfig(appConfig);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+  useEffect(() => {
+    checkStatus();
+  }, []);
 
-        {Platform.OS === 'web' && <WebBadge />}
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Text style={styles.text}>Loading...</Text>
       </SafeAreaView>
-    </ThemedView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.content}>
+        <Text style={styles.title}>Nimo Save Storage</Text>
+        <Text style={styles.subtitle}>Auto-upload files to Telegram</Text>
+        
+        <View style={styles.statusCard}>
+          <Text style={styles.statusText}>
+            Telegram: {loggedIn ? '✅ Connected' : '❌ Not connected'}
+          </Text>
+          <Text style={styles.statusText}>
+            Auto-upload: {config?.autoUploadEnabled ? '✅ Enabled' : '❌ Disabled'}
+          </Text>
+          <Text style={styles.statusText}>
+            Time window: {config?.timeWindowStart} - {config?.timeWindowEnd}
+          </Text>
+          <Text style={styles.statusText}>
+            WiFi only: {config?.wifiOnly ? 'Yes' : 'No'}
+          </Text>
+        </View>
+        
+        {!loggedIn && (
+          <TouchableOpacity
+            style={styles.button}
+            onPress={() => router.push('/telegram-login')}
+          >
+            <Text style={styles.buttonText}>Connect Telegram</Text>
+          </TouchableOpacity>
+        )}
+        
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => router.push('/settings')}
+        >
+          <Text style={styles.buttonText}>Settings</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => router.push('/upload')}
+        >
+          <Text style={styles.buttonText}>Upload Queue</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
+    backgroundColor: '#f5f5f5',
   },
-  safeArea: {
+  content: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
+    padding: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
   },
   title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 32,
+  },
+  statusCard: {
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 12,
+    width: '100%',
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statusText: {
+    fontSize: 14,
+    marginBottom: 8,
+    color: '#333',
+  },
+  button: {
+    backgroundColor: '#208AEF',
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+    width: '100%',
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
     textAlign: 'center',
   },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  text: {
+    textAlign: 'center',
+    marginTop: 50,
   },
 });

@@ -1,7 +1,18 @@
+const statMock = {
+  isFile: () => true,
+  isDirectory: () => false,
+  isBlockDevice: () => false,
+  isCharacterDevice: () => false,
+  isSymbolicLink: () => false,
+  isFIFO: () => false,
+  isSocket: () => false,
+  size: 0,
+};
+
 module.exports = {
   existsSync: () => false,
-  lstatSync: () => ({ isDirectory: () => false }),
-  statSync: () => ({ size: 0 }),
+  lstatSync: () => statMock,
+  statSync: () => statMock,
   readFileSync: () => '',
   writeFileSync: () => {},
   readFile: (_p, cb) => cb && cb(null, ''),
@@ -11,8 +22,14 @@ module.exports = {
   WriteStream: class {},
   ReadStream: class {},
   promises: {
-    readFile: async () => '',
+    lstat: async () => statMock,
+    stat: async () => statMock,
+    readFile: async () => Buffer.alloc(0),
     writeFile: async () => {},
+    open: async () => ({
+      read: async () => {},
+      close: async () => {},
+    }),
   },
 };
 

@@ -62,7 +62,17 @@ export class UploadManager {
         throw new Error('File does not exist');
       }
       
-      const result = await sendFile(item.uri, item.fileName);
+      const config = await getConfig();
+      const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
+      
+      const result = await sendFile(
+        item.uri,
+        item.fileName,
+        targetChat,
+        (progress: number) => {
+          this.updateItemStatus(item.id, 'uploading', Math.round(progress * 100));
+        }
+      );
       
       await markUploaded({
         uri: item.uri,

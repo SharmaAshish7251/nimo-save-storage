@@ -1,9 +1,12 @@
 import '@/shims/polyfills';
+import { Buffer } from 'buffer';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/StringSession';
 import { PromisedWebSockets } from 'telegram/extensions';
 import { ConnectionTCPObfuscated } from 'telegram/network';
 import { computeCheck } from 'telegram/Password';
+import { CustomFile } from 'telegram/client/uploads';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStoreLib from '../storage/secure';
 
 // Official Telegram public desktop client credentials as default fallback
@@ -130,16 +133,45 @@ export async function getMe() {
   return await c.getMe();
 }
 
-export async function sendFile(file: any, caption?: string, chatId?: any): Promise<any> {
+export async function sendFile(
+  fileOrUri: any,
+  captionOrFileName?: string,
+  chatId?: any,
+  onProgress?: (progress: number) => void
+): Promise<any> {
   const c = await initializeClient();
   if (!c) throw new Error('Not initialized');
   await c.connect();
   
+  let fileToUpload: any = fileOrUri;
+  let caption = '';
+
+  if (typeof fileOrUri === 'string') {
+    const uri = fileOrUri;
+    const name = captionOrFileName || uri.split('/').pop() || 'file.bin';
+    
+    // Read file via expo-file-system
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const buffer = Buffer.from(base64, 'base64');
+    fileToUpload = new CustomFile(name, buffer.length, '', buffer);
+  } else if (Buffer.isBuffer(fileOrUri)) {
+    const name = captionOrFileName || 'file.bin';
+    fileToUpload = new CustomFile(name, fileOrUri.length, '', fileOrUri);
+  } else if (typeof captionOrFileName === 'string') {
+    caption = captionOrFileName;
+  }
+  
   const target: any = chatId || 'me';
   const result = await c.sendFile(target, {
-    file: file,
-    caption: caption || '',
+    file: fileToUpload,
+    caption: caption,
     forceDocument: false,
+    workers: 1,
+    progressCallback: (progress: number) => {
+      if (onProgress) onProgress(progress);
+    },
   });
   
   return result;

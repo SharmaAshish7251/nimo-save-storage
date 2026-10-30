@@ -56,3 +56,17 @@ if (fs.existsSync(pwsTarget)) {
     console.log('Successfully patched telegram PromisedWebSockets.js');
   }
 }
+
+// 4. Patch telegram uploads.js to avoid reading file.path if buffer is present
+const uploadsTarget = path.resolve(__dirname, '../node_modules/telegram/client/uploads.js');
+if (fs.existsSync(uploadsTarget)) {
+  let content = fs.readFileSync(uploadsTarget, 'utf8');
+  if (content.includes('if (fileSize > maxBufferSize && file instanceof CustomFile)')) {
+    content = content.replace(
+      'if (fileSize > maxBufferSize && file instanceof CustomFile)',
+      'if (fileSize > maxBufferSize && file instanceof CustomFile && file.path && !file.buffer)'
+    );
+    fs.writeFileSync(uploadsTarget, content, 'utf8');
+    console.log('Successfully patched telegram uploads.js');
+  }
+}

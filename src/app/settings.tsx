@@ -1,9 +1,10 @@
-import { View, StyleSheet, Text, TouchableOpacity, Switch, TextInput, Alert, ScrollView } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Switch, TextInput, Alert, ScrollView, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { getConfig, saveConfig } from '@/lib/storage/queue';
 import { requestMediaPermissions } from '@/lib/scanner/files';
 import { registerBackgroundUploadTask, unregisterBackgroundUploadTask } from '@/tasks/backgroundUpload';
+import { DestinationSelector } from '@/components/DestinationSelector';
 
 export default function SettingsScreen() {
   const [config, setConfig] = useState<any>(null);
@@ -61,8 +62,19 @@ export default function SettingsScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.scrollView}>
         <View style={styles.content}>
-          <Text style={styles.title}>Settings</Text>
+          <View style={styles.header}>
+            <Image
+              source={require('@/assets/images/app-logo.png')}
+              style={styles.headerLogo}
+            />
+            <View>
+              <Text style={styles.title}>Settings</Text>
+              <Text style={styles.subtitle}>Nimo Save Storage</Text>
+            </View>
+          </View>
           
+          <DestinationSelector />
+
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Permissions</Text>
             <TouchableOpacity style={styles.button} onPress={requestPermissions}>
@@ -149,11 +161,25 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
   },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  headerLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    marginRight: 12,
+  },
   title: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 'bold',
-    marginBottom: 24,
-    textAlign: 'center',
+    color: '#1a1a1a',
+  },
+  subtitle: {
+    fontSize: 12,
+    color: '#666',
   },
   section: {
     backgroundColor: 'white',

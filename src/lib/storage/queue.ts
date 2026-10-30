@@ -9,12 +9,15 @@ export interface AppConfig {
   autoUploadEnabled: boolean;
   uploadToSavedMessages: boolean;
   targetChatId?: string;
+  targetChatTitle?: string;
+  targetChatType?: 'saved' | 'channel' | 'group' | 'chat';
 }
 
 const CONFIG_KEY = '@nimo/config';
 const QUEUE_KEY = '@nimo/queue';
 const UPLOADED_KEY = '@nimo/uploaded';
 const LAST_SCAN_KEY = '@nimo/last_scan';
+const ACTION_HISTORY_KEY = '@nimo/action_history';
 
 const DEFAULT_CONFIG: AppConfig = {
   watchFolders: [],
@@ -24,6 +27,9 @@ const DEFAULT_CONFIG: AppConfig = {
   concurrency: 3,
   autoUploadEnabled: false,
   uploadToSavedMessages: true,
+  targetChatId: 'me',
+  targetChatTitle: 'Saved Messages',
+  targetChatType: 'saved',
 };
 
 export async function getConfig(): Promise<AppConfig> {
@@ -129,4 +135,86 @@ export async function getLastScanTime(): Promise<number> {
 
 export async function setLastScanTime(time: number = Date.now()): Promise<void> {
   await AsyncStorage.setItem(LAST_SCAN_KEY, time.toString());
+}
+
+export interface ActionHistoryItem {
+  id: string;
+  fileName: string;
+  uri: string;
+  size: number;
+  status: 'uploaded' | 'failed' | 'dismissed';
+  timestamp: number;
+  destination?: string;
+  error?: string;
+}
+
+export async function getActionHistory(): Promise<ActionHistoryItem[]> {
+  try {
+    const raw = await AsyncStorage.getItem(ACTION_HISTORY_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export async function recordActionHistory(
+  item: Omit<ActionHistoryItem, 'id' | 'timestamp'>
+): Promise<ActionHistoryItem> {
+  const history = await getActionHistory();
+  const newItem: ActionHistoryItem = {
+    ...item,
+    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: Date.now(),
+  };
+  // Prepend to show most recent first, keep up to 500 items
+  const updated = [newItem, ...history].slice(0, 500);
+  await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
+  return newItem;
+}
+
+export async function clearActionHistory(): Promise<void> {
+  await AsyncStorage.removeItem(ACTION_HISTORY_KEY);
+}
+
+export async function removeFromQueue(
+  itemId: string,
+  recordAsDismissed: boolean = true,
+  destination?: string
+): Promise<void> {
+  const queue = await getQueue();
+  const target = queue.find((i) => i.id === itemId);
+  const updated = queue.filter((i) => i.id !== itemId);
+  await saveQueue(updated);
+
+  if (target && recordAsDismissed) {
+    await recordActionHistory({
+      fileName: target.fileName,
+      uri: target.uri,
+      size: target.size,
+      status: 'dismissed',
+      destination,
+    });
+  }
+}
+
+export async function clearAllQueue(
+  recordAsDismissed: boolean = false,
+  destination?: string
+): Promise<void> {
+  const queue = await getQueue();
+  if (recordAsDismissed) {
+    for (const item of queue) {
+      if (item.status === 'pending') {
+        await recordActionHistory({
+          fileName: item.fileName,
+          uri: item.uri,
+          size: item.size,
+          status: 'dismissed',
+          destination,
+        });
+      }
+    }
+  }
+  await saveQueue([]);
 }

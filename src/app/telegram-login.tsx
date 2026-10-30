@@ -1,4 +1,4 @@
-import { View, StyleSheet, Text, TextInput, TouchableOpacity, Alert, ScrollView } from 'react-native';
+import { View, StyleSheet, Text, TextInput, TouchableOpacity, Alert, ScrollView, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { router } from 'expo-router';
@@ -115,6 +115,10 @@ export default function TelegramLoginScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.content}>
+          <Image
+            source={require('@/assets/images/app-logo.png')}
+            style={styles.logo}
+          />
           <Text style={styles.title}>Telegram Login</Text>
 
           {/* STEP 1: DIRECT PHONE NUMBER LOGIN */}
@@ -290,8 +294,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 12,
     textAlign: 'center',
-    marginTop: 20,
     color: '#111',
+  },
+  logo: {
+    width: 100,
+    height: 100,
+    borderRadius: 22,
+    alignSelf: 'center',
+    marginTop: 10,
+    marginBottom: 4,
   },
   instruction: {
     fontSize: 15,

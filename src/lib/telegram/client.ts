@@ -1,5 +1,6 @@
 import '@/shims/polyfills';
 import { Buffer } from 'buffer';
+import bigInt from 'big-integer';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/StringSession';
 import { PromisedWebSockets } from 'telegram/extensions';
@@ -133,6 +134,60 @@ export async function getMe() {
   return await c.getMe();
 }
 
+export interface TelegramDestination {
+  id: string;
+  title: string;
+  type: 'saved' | 'channel' | 'group' | 'chat';
+  username?: string;
+}
+
+export async function getTelegramDialogs(): Promise<TelegramDestination[]> {
+  const c = await initializeClient();
+  if (!c) throw new Error('Not initialized');
+  await c.connect();
+
+  const destinations: TelegramDestination[] = [
+    {
+      id: 'me',
+      title: 'Saved Messages (Private Cloud)',
+      type: 'saved',
+    },
+  ];
+
+  try {
+    const dialogs = await c.getDialogs({ limit: 50 });
+    for (const d of dialogs) {
+      if (!d.id) continue;
+      const idStr = d.id.toString();
+
+      let type: TelegramDestination['type'] = 'chat';
+      if (d.isChannel) {
+        type = 'channel';
+      } else if (d.isGroup) {
+        type = 'group';
+      } else if (d.isUser) {
+        const entity: any = d.entity;
+        if (entity?.isSelf) continue;
+        type = 'chat';
+      }
+
+      const title = d.title || d.name || `Chat ${idStr}`;
+      const username = (d.entity as any)?.username;
+
+      destinations.push({
+        id: idStr,
+        title,
+        type,
+        username,
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching Telegram dialogs:', error);
+  }
+
+  return destinations;
+}
+
 export async function sendFile(
   fileOrUri: any,
   captionOrFileName?: string,
@@ -163,7 +218,15 @@ export async function sendFile(
     caption = captionOrFileName;
   }
   
-  const target: any = chatId || 'me';
+  let target: any = chatId || 'me';
+  if (typeof target === 'string' && target !== 'me' && /^-?\d+$/.test(target)) {
+    try {
+      target = bigInt(target);
+    } catch {
+      // keep as string
+    }
+  }
+
   const result = await c.sendFile(target, {
     file: fileToUpload,
     caption: caption,

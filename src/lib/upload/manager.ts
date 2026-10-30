@@ -1,6 +1,15 @@
 import PQueue from 'p-queue';
 import * as FileSystem from 'expo-file-system/legacy';
-import { getQueue, saveQueue, QueueItem, markUploaded, getConfig } from '../storage/queue';
+import {
+  getQueue,
+  saveQueue,
+  QueueItem,
+  markUploaded,
+  getConfig,
+  recordActionHistory,
+  removeFromQueue,
+  clearAllQueue,
+} from '../storage/queue';
 import { sendFile } from '../telegram/client';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -81,6 +90,18 @@ export class UploadManager {
         uploadedAt: Date.now(),
         telegramMessageId: result?.id,
       });
+
+      const destName =
+        config.targetChatTitle ||
+        (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+
+      await recordActionHistory({
+        fileName: item.fileName,
+        uri: item.uri,
+        size: item.size,
+        status: 'uploaded',
+        destination: destName,
+      });
       
       await this.updateItemStatus(item.id, 'completed', 100);
       
@@ -88,6 +109,26 @@ export class UploadManager {
     } catch (error: any) {
       console.error(`Failed to upload ${item.fileName}:`, error);
       await this.updateItemStatus(item.id, 'failed', item.progress, error.message);
+
+      try {
+        const config = await getConfig();
+        const targetChat =
+          config.uploadToSavedMessages || !config.targetChatId
+            ? 'me'
+            : config.targetChatId;
+        const destName =
+          config.targetChatTitle ||
+          (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+
+        await recordActionHistory({
+          fileName: item.fileName,
+          uri: item.uri,
+          size: item.size,
+          status: 'failed',
+          destination: destName,
+          error: error.message || 'Upload failed',
+        });
+      } catch {}
     }
   }
   
@@ -115,6 +156,22 @@ export class UploadManager {
     const queue = await getQueue();
     const filtered = queue.filter((item: QueueItem) => item.status !== 'completed');
     await saveQueue(filtered);
+  }
+
+  async discardItem(id: string): Promise<void> {
+    const config = await getConfig();
+    const destName =
+      config.targetChatTitle ||
+      (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId));
+    await removeFromQueue(id, true, destName);
+  }
+
+  async discardAll(): Promise<void> {
+    const config = await getConfig();
+    const destName =
+      config.targetChatTitle ||
+      (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId));
+    await clearAllQueue(true, destName);
   }
 }
 

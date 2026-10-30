@@ -1,9 +1,9 @@
-import { View, StyleSheet, Text, TouchableOpacity, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect } from 'react';
-import { router } from 'expo-router';
-import { isLoggedIn } from '@/lib/telegram/client';
 import { getConfig } from '@/lib/storage/queue';
+import { isLoggedIn } from '@/lib/telegram/client';
+import { router } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function HomeScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -40,9 +40,10 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
+        <Image style={styles.appBranding} source={require('@/assets/images/app-logo.png')} />
         <Text style={styles.title}>Nimo Save Storage</Text>
         <Text style={styles.subtitle}>Auto-upload files to Telegram</Text>
-        
+
         <View style={styles.statusCard}>
           <Text style={styles.statusText}>
             Telegram: {loggedIn ? '✅ Connected' : '❌ Not connected'}
@@ -57,7 +58,7 @@ export default function HomeScreen() {
             WiFi only: {config?.wifiOnly ? 'Yes' : 'No'}
           </Text>
         </View>
-        
+
         {!loggedIn && (
           <TouchableOpacity
             style={styles.button}
@@ -66,14 +67,14 @@ export default function HomeScreen() {
             <Text style={styles.buttonText}>Connect Telegram</Text>
           </TouchableOpacity>
         )}
-        
+
         <TouchableOpacity
           style={styles.button}
           onPress={() => router.push('/settings')}
         >
           <Text style={styles.buttonText}>Settings</Text>
         </TouchableOpacity>
-        
+
         <TouchableOpacity
           style={styles.button}
           onPress={() => router.push('/upload')}
@@ -95,6 +96,10 @@ const styles = StyleSheet.create({
     padding: 20,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  appBranding: {
+    width: "100%",
+    height: 300,
   },
   title: {
     fontSize: 28,

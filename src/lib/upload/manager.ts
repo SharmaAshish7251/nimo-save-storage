@@ -1,5 +1,4 @@
 import PQueue from 'p-queue';
-import * as FileSystem from 'expo-file-system/legacy';
 import {
   getQueue,
   saveQueue,
@@ -11,6 +10,7 @@ import {
   clearAllQueue,
 } from '../storage/queue';
 import { sendFile } from '../telegram/client';
+import { getFileInfo } from '../storage/fileHelper';
 import NetInfo from '@react-native-community/netinfo';
 
 export class UploadManager {
@@ -63,11 +63,12 @@ export class UploadManager {
   }
   
   private async uploadItem(item: QueueItem): Promise<void> {
+    const startTime = Date.now();
     try {
-      await this.updateItemStatus(item.id, 'uploading');
+      await this.updateItemStatus(item.id, 'uploading', 0, undefined, startTime);
       
-      const fileInfo: any = await FileSystem.getInfoAsync(item.uri);
-      if (!fileInfo.exists) {
+      const fileInfo = await getFileInfo(item.uri);
+      if (!fileInfo.exists && !item.uri.startsWith('content://')) {
         throw new Error('File does not exist');
       }
       
@@ -83,6 +84,8 @@ export class UploadManager {
         }
       );
       
+      const durationMs = Date.now() - startTime;
+
       await markUploaded({
         uri: item.uri,
         fileName: item.fileName,
@@ -101,14 +104,16 @@ export class UploadManager {
         size: item.size,
         status: 'uploaded',
         destination: destName,
+        uploadDurationMs: durationMs,
       });
       
-      await this.updateItemStatus(item.id, 'completed', 100);
+      await this.updateItemStatus(item.id, 'completed', 100, undefined, undefined, Date.now(), durationMs);
       
-      console.log(`Uploaded ${item.fileName} successfully`);
+      console.log(`Uploaded ${item.fileName} successfully in ${(durationMs / 1000).toFixed(1)}s`);
     } catch (error: any) {
+      const durationMs = Date.now() - startTime;
       console.error(`Failed to upload ${item.fileName}:`, error);
-      await this.updateItemStatus(item.id, 'failed', item.progress, error.message);
+      await this.updateItemStatus(item.id, 'failed', item.progress, error.message, undefined, undefined, durationMs);
 
       try {
         const config = await getConfig();
@@ -126,6 +131,7 @@ export class UploadManager {
           size: item.size,
           status: 'failed',
           destination: destName,
+          uploadDurationMs: durationMs,
           error: error.message || 'Upload failed',
         });
       } catch {}
@@ -136,7 +142,10 @@ export class UploadManager {
     id: string,
     status: QueueItem['status'],
     progress?: number,
-    error?: string
+    error?: string,
+    uploadStartedAt?: number,
+    uploadedAt?: number,
+    uploadDurationMs?: number
   ): Promise<void> {
     const queue = await getQueue();
     const index = queue.findIndex((item: QueueItem) => item.id === id);
@@ -144,6 +153,9 @@ export class UploadManager {
       queue[index].status = status;
       if (progress !== undefined) queue[index].progress = progress;
       if (error) queue[index].error = error;
+      if (uploadStartedAt) queue[index].uploadStartedAt = uploadStartedAt;
+      if (uploadedAt) queue[index].uploadedAt = uploadedAt;
+      if (uploadDurationMs !== undefined) queue[index].uploadDurationMs = uploadDurationMs;
       queue[index].lastAttemptAt = Date.now();
       if (status === 'uploading' || status === 'failed') {
         queue[index].retries = (queue[index].retries || 0) + (status === 'failed' ? 1 : 0);

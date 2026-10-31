@@ -1,7 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+export interface WatchedFolder {
+  id: string;
+  title: string;
+  type: 'album' | 'saf';
+  assetCount?: number;
+}
+
 export interface AppConfig {
   watchFolders: string[]; // folder paths/URIs
+  watchedFolders?: WatchedFolder[];
   wifiOnly: boolean;
   timeWindowStart: string; // HH:mm
   timeWindowEnd: string; // HH:mm
@@ -49,6 +57,18 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<AppConfig>
   return updated;
 }
 
+export async function getWatchedFolders(): Promise<WatchedFolder[]> {
+  const config = await getConfig();
+  return config.watchedFolders || [];
+}
+
+export async function saveWatchedFolders(folders: WatchedFolder[]): Promise<void> {
+  await saveConfig({
+    watchedFolders: folders,
+    watchFolders: folders.map((f) => f.id),
+  });
+}
+
 export interface QueueItem {
   id: string;
   uri: string;
@@ -60,6 +80,9 @@ export interface QueueItem {
   retries: number;
   addedAt: number;
   lastAttemptAt?: number;
+  uploadStartedAt?: number;
+  uploadedAt?: number;
+  uploadDurationMs?: number;
   error?: string;
 }
 
@@ -144,8 +167,34 @@ export interface ActionHistoryItem {
   size: number;
   status: 'uploaded' | 'failed' | 'dismissed';
   timestamp: number;
+  uploadDurationMs?: number;
   destination?: string;
   error?: string;
+}
+
+export function formatFileSize(bytes: number): string {
+  if (!bytes || isNaN(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+export function formatDuration(ms?: number): string {
+  if (!ms || ms <= 0) return '';
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const mins = Math.floor(sec / 60);
+  const remainingSec = Math.round(sec % 60);
+  return `${mins}m ${remainingSec}s`;
+}
+
+export function formatSpeed(bytesPerSec?: number): string {
+  if (!bytesPerSec || isNaN(bytesPerSec) || bytesPerSec <= 0) return '0 B/s';
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
 }
 
 export async function getActionHistory(): Promise<ActionHistoryItem[]> {
@@ -158,6 +207,8 @@ export async function getActionHistory(): Promise<ActionHistoryItem[]> {
   }
 }
 
+const MAX_HISTORY_ITEMS = 10000;
+
 export async function recordActionHistory(
   item: Omit<ActionHistoryItem, 'id' | 'timestamp'>
 ): Promise<ActionHistoryItem> {
@@ -167,8 +218,8 @@ export async function recordActionHistory(
     id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     timestamp: Date.now(),
   };
-  // Prepend to show most recent first, keep up to 500 items
-  const updated = [newItem, ...history].slice(0, 500);
+  // Prepend to show most recent first, keep up to 10,000 items
+  const updated = [newItem, ...history].slice(0, MAX_HISTORY_ITEMS);
   await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
   return newItem;
 }

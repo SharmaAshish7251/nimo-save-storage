@@ -1,3 +1,5 @@
+const { Buffer } = require('buffer');
+
 const statMock = {
   isFile: () => true,
   isDirectory: () => false,
@@ -32,4 +34,3 @@ module.exports = {
     }),
   },
 };
-

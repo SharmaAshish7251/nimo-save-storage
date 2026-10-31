@@ -1,7 +1,10 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import { getUploadedIndex } from '../storage/queue';
+import { getUploadedIndex, getWatchedFolders, WatchedFolder } from '../storage/queue';
+import { getFileInfo } from '../storage/fileHelper';
+
+export { getFileInfo };
 
 export interface ScannedFile {
   uri: string;
@@ -10,41 +13,34 @@ export interface ScannedFile {
   mimeType?: string;
   modificationTime?: number;
   source: 'media' | 'document';
+  folderName?: string;
+}
+
+export interface ScanOptions {
+  folders?: WatchedFolder[];
+  abortSignal?: AbortSignal;
+  onProgress?: (scannedCount: number, currentFolder: string) => void;
 }
 
 export async function requestMediaPermissions(): Promise<boolean> {
-  const { status } = await MediaLibrary.requestPermissionsAsync();
-  return status === 'granted';
-}
-
-export async function scanMediaLibrary(since?: number): Promise<ScannedFile[]> {
-  const hasPermission = await requestMediaPermissions();
-  if (!hasPermission) return [];
-  
   try {
-    const assets = await MediaLibrary.getAssetsAsync({
-      mediaType: ['photo', 'video', 'audio'],
-      first: 1000,
-      sortBy: ['creationTime'],
-    });
-    
-    const files: ScannedFile[] = [];
-    for (const asset of assets.assets) {
-      if (since && asset.creationTime && asset.creationTime < since) continue;
-      const info = await MediaLibrary.getAssetInfoAsync(asset);
-      files.push({
-        uri: info.localUri || asset.uri,
-        fileName: asset.filename,
-        size: asset.duration ? 0 : 0, // Size not directly available, will need to get
-        mimeType: asset.mediaType,
-        modificationTime: asset.creationTime,
-        source: 'media',
-      });
+    const current = await MediaLibrary.getPermissionsAsync();
+    if (
+      current.granted ||
+      current.status === MediaLibrary.PermissionStatus.GRANTED ||
+      (current.status as any) === 'limited'
+    ) {
+      return true;
     }
-    return files;
+    const requested = await MediaLibrary.requestPermissionsAsync();
+    return (
+      requested.granted ||
+      requested.status === MediaLibrary.PermissionStatus.GRANTED ||
+      (requested.status as any) === 'limited'
+    );
   } catch (error) {
-    console.error('Error scanning media library:', error);
-    return [];
+    console.error('Error requesting media permissions:', error);
+    return false;
   }
 }
 
@@ -103,7 +99,7 @@ export async function pickSingleFile(): Promise<ScannedFile | null> {
   try {
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*',
-      copyToCacheDirectory: false,
+      copyToCacheDirectory: true,
     });
 
     if (result.canceled || !result.assets || result.assets.length === 0) {
@@ -157,9 +153,13 @@ export async function getMediaAlbums(): Promise<MediaAlbum[]> {
   }
 }
 
-export async function getFilesFromAlbum(albumId: string): Promise<ScannedFile[]> {
+export async function getFilesFromAlbum(
+  albumId: string,
+  folderTitle?: string,
+  abortSignal?: AbortSignal
+): Promise<ScannedFile[]> {
   const hasPermission = await requestMediaPermissions();
-  if (!hasPermission) return [];
+  if (!hasPermission || abortSignal?.aborted) return [];
 
   try {
     const assets = await MediaLibrary.getAssetsAsync({
@@ -169,35 +169,61 @@ export async function getFilesFromAlbum(albumId: string): Promise<ScannedFile[]>
       sortBy: ['creationTime'],
     });
 
+    if (abortSignal?.aborted) return [];
+
     const files: ScannedFile[] = [];
     for (const asset of assets.assets) {
-      const info = await MediaLibrary.getAssetInfoAsync(asset);
+      if (abortSignal?.aborted) break;
       files.push({
-        uri: info.localUri || asset.uri,
+        uri: asset.uri,
         fileName: asset.filename,
         size: 0,
         mimeType: asset.mediaType,
-        modificationTime: asset.creationTime,
+        modificationTime: asset.modificationTime || asset.creationTime,
         source: 'media',
+        folderName: folderTitle,
       });
     }
 
-    // Populate sizes
-    const withSizes: ScannedFile[] = [];
-    for (const file of files) {
-      const info = await getFileInfo(file.uri);
-      withSizes.push({ ...file, size: info.size });
-    }
-
-    return withSizes;
+    return files;
   } catch (error) {
     console.error(`Error loading album ${albumId}:`, error);
     return [];
   }
 }
 
+export async function scanSAFDirectory(
+  directoryUri: string,
+  folderTitle?: string,
+  abortSignal?: AbortSignal
+): Promise<ScannedFile[]> {
+  if (abortSignal?.aborted) return [];
+  try {
+    const fileUris =
+      await FileSystem.StorageAccessFramework.readDirectoryAsync(directoryUri);
+
+    const files: ScannedFile[] = [];
+    for (const fileUri of fileUris) {
+      if (abortSignal?.aborted) break;
+      const name = decodeURIComponent(fileUri.split('%2F').pop() || 'file');
+      files.push({
+        uri: fileUri,
+        fileName: name,
+        size: 0,
+        source: 'document',
+        folderName: folderTitle,
+      });
+    }
+    return files;
+  } catch (error) {
+    console.error(`Error reading SAF directory ${directoryUri}:`, error);
+    return [];
+  }
+}
+
 export async function requestAndScanSAFDirectory(): Promise<{
   directoryUri: string;
+  folderTitle: string;
   files: ScannedFile[];
 } | null> {
   try {
@@ -209,78 +235,72 @@ export async function requestAndScanSAFDirectory(): Promise<{
     }
 
     const directoryUri = permissions.directoryUri;
-    const fileUris =
-      await FileSystem.StorageAccessFramework.readDirectoryAsync(directoryUri);
+    const cleanName = decodeURIComponent(
+      directoryUri.split('%3A').pop() || directoryUri.split('%2F').pop() || 'Selected Folder'
+    );
+    const files = await scanSAFDirectory(directoryUri, cleanName);
 
-    const files: ScannedFile[] = [];
-    for (const fileUri of fileUris) {
-      const name = decodeURIComponent(fileUri.split('%2F').pop() || 'file');
-      const info = await getFileInfo(fileUri);
-      if (info.exists) {
-        files.push({
-          uri: fileUri,
-          fileName: name,
-          size: info.size,
-          source: 'document',
-        });
+    return { directoryUri, folderTitle: cleanName, files };
+  } catch (error) {
+    console.error('Error requesting SAF directory:', error);
+    return null;
+  }
+}
+
+export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFile[]> {
+  const abortSignal = options?.abortSignal;
+  if (abortSignal?.aborted) return [];
+
+  const uploaded = await getUploadedIndex();
+  const uploadedUris = new Set(uploaded.map((u) => u.uri));
+
+  const targetFolders: WatchedFolder[] =
+    options?.folders && options.folders.length > 0
+      ? options.folders
+      : await getWatchedFolders();
+
+  const allFiles: ScannedFile[] = [];
+
+  // Scoped scan: scan ONLY selected folders
+  if (targetFolders.length > 0) {
+    for (const folder of targetFolders) {
+      if (abortSignal?.aborted) break;
+
+      if (options?.onProgress) {
+        options.onProgress(allFiles.length, folder.title);
+      }
+
+      if (folder.type === 'album') {
+        const albumFiles = await getFilesFromAlbum(folder.id, folder.title, abortSignal);
+        allFiles.push(...albumFiles);
+      } else if (folder.type === 'saf') {
+        const safFiles = await scanSAFDirectory(folder.id, folder.title, abortSignal);
+        allFiles.push(...safFiles);
       }
     }
-
-    return { directoryUri, files };
-  } catch (error) {
-    console.error('Error reading SAF directory:', error);
-    return null;
   }
-}
 
-export async function pickFolder(): Promise<string | null> {
-  try {
-    const result = await DocumentPicker.getDocumentAsync({
-      type: '*/*',
-      copyToCacheDirectory: false,
-    });
-    
-    if (result.canceled) return null;
-    return result.assets[0].uri;
-  } catch (error) {
-    console.error('Error picking folder:', error);
-    return null;
-  }
-}
+  if (abortSignal?.aborted) return [];
 
-export async function getFileInfo(uri: string): Promise<{ size: number; exists: boolean }> {
-  try {
-    const info = await FileSystem.getInfoAsync(uri);
-    return {
-      size: info.exists && !info.isDirectory ? (info.size || 0) : 0,
-      exists: info.exists,
-    };
-  } catch {
-    return { size: 0, exists: false };
-  }
-}
+  // Filter out already uploaded files
+  const newFiles = allFiles.filter((f) => !uploadedUris.has(f.uri));
 
-export async function scanForNewFiles(): Promise<ScannedFile[]> {
-  const uploaded = await getUploadedIndex();
-  const uploadedUris = new Set(uploaded.map(u => u.uri));
-  
-  const allFiles: ScannedFile[] = [];
-  
-  // Scan media library
-  const mediaFiles = await scanMediaLibrary();
-  allFiles.push(...mediaFiles);
-  
-  // Filter out already uploaded
-  const newFiles = allFiles.filter(f => !uploadedUris.has(f.uri));
-  
-  // Get file sizes
+  if (abortSignal?.aborted) return [];
+
+  // Populate file sizes efficiently
   const filesWithSize: ScannedFile[] = [];
   for (const file of newFiles) {
-    const info = await getFileInfo(file.uri);
-    if (info.exists) {
-      filesWithSize.push({ ...file, size: info.size });
+    if (abortSignal?.aborted) break;
+    try {
+      const info = await getFileInfo(file.uri);
+      filesWithSize.push({
+        ...file,
+        size: info.size > 0 ? info.size : file.size || 0,
+      });
+    } catch {
+      filesWithSize.push(file);
     }
   }
-  
+
   return filesWithSize;
 }

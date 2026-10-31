@@ -17,7 +17,19 @@
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_MEDIA_AUDIO",
+        "RECEIVE_BOOT_COMPLETED",
+        "WAKE_LOCK"
+      ]
     },
     "web": {
       "output": "static",
@@ -31,6 +43,18 @@
           "backgroundColor": "#000000",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 180
+        }
+      ],
+      "expo-media-library",
+      "expo-task-manager",
+      "expo-background-task",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": false,
+            "extraProguardRules": "-keep class androidx.work.** { *; }\n-dontwarn androidx.work.**\n-keep class androidx.room.** { *; }\n-dontwarn androidx.room.**\n-keep class * extends androidx.room.RoomDatabase { *; }\n-keep class * extends androidx.work.ListenableWorker { <init>(android.content.Context, androidx.work.WorkerParameters); }\n-keep class * extends androidx.work.InputMerger { <init>(); }\n-keep class androidx.sqlite.** { *; }\n-keep class androidx.startup.** { *; }"
+          }
         }
       ]
     ],

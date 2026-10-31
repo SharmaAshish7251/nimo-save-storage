@@ -37,7 +37,7 @@ export default function SettingsScreen() {
           await unregisterBackgroundUploadTask();
         }
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to save settings');
     }
   };

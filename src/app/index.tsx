@@ -1,4 +1,4 @@
-import { getConfig } from '@/lib/storage/queue';
+import { getConfig, getQueue, formatFileSize, QueueItem } from '@/lib/storage/queue';
 import { isLoggedIn } from '@/lib/telegram/client';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -9,15 +9,19 @@ export default function HomeScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<any>(null);
+  const [queueInfo, setQueueInfo] = useState<{ count: number; totalBytes: number }>({ count: 0, totalBytes: 0 });
 
   const checkStatus = async () => {
     try {
-      const [loginStatus, appConfig] = await Promise.all([
+      const [loginStatus, appConfig, queueItems] = await Promise.all([
         isLoggedIn(),
         getConfig(),
+        getQueue(),
       ]);
       setLoggedIn(loginStatus);
       setConfig(appConfig);
+      const totalBytes = queueItems.reduce((acc: number, item: QueueItem) => acc + (item.size || 0), 0);
+      setQueueInfo({ count: queueItems.length, totalBytes });
     } catch (error) {
       console.error(error);
     } finally {
@@ -40,7 +44,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
-        <Image style={styles.appBranding} source={require('@/assets/images/NOMI-Save-Storage.png')} />
+        <Image style={styles.appBranding} source={require('@/assets/images/app-logo.png')} />
         <Text style={styles.title}>Nimo Save Storage</Text>
         <Text style={styles.subtitle}>Auto-upload files to Telegram</Text>
 
@@ -56,6 +60,9 @@ export default function HomeScreen() {
           </Text>
           <Text style={styles.statusText}>
             WiFi only: {config?.wifiOnly ? 'Yes' : 'No'}
+          </Text>
+          <Text style={styles.statusText}>
+            Queue: {queueInfo.count} {queueInfo.count === 1 ? 'file' : 'files'} ({formatFileSize(queueInfo.totalBytes)})
           </Text>
         </View>
 

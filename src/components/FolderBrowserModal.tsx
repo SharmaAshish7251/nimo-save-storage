@@ -17,6 +17,13 @@ import {
   requestAndScanSAFDirectory,
   getFileCategory,
 } from '@/lib/scanner/files';
+import {
+  formatFileSize,
+  WatchedFolder,
+  getWatchedFolders,
+  saveWatchedFolders,
+} from '@/lib/storage/queue';
+import { FileDetailsModal, FileDetailData } from './FileDetailsModal';
 
 type FileCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
 
@@ -24,24 +31,44 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onFilesSelected: (files: ScannedFile[], uploadNow: boolean) => void;
+  onWatchedFoldersUpdated?: (folders: WatchedFolder[]) => void;
+  onScanFoldersRequested?: (folders: WatchedFolder[]) => void;
 }
 
-export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props) {
+export function FolderBrowserModal({
+  visible,
+  onClose,
+  onFilesSelected,
+  onWatchedFoldersUpdated,
+  onScanFoldersRequested,
+}: Props) {
   const [step, setStep] = useState<'pick_folder' | 'select_files'>('pick_folder');
   const [loading, setLoading] = useState(false);
   const [folderName, setFolderName] = useState('');
   const [albums, setAlbums] = useState<MediaAlbum[]>([]);
+  const [safFolders, setSafFolders] = useState<WatchedFolder[]>([]);
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [allFiles, setAllFiles] = useState<ScannedFile[]>([]);
   const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
   const [activeFilter, setActiveFilter] = useState<FileCategoryFilter>('all');
+  const [selectedFileForDetails, setSelectedFileForDetails] = useState<FileDetailData | null>(null);
 
-  const loadAlbums = async () => {
+  const loadData = async () => {
     setLoading(true);
     try {
-      const list = await getMediaAlbums();
-      setAlbums(list);
+      const [albumList, watched] = await Promise.all([
+        getMediaAlbums(),
+        getWatchedFolders(),
+      ]);
+      setAlbums(albumList);
+
+      const safs = watched.filter((w) => w.type === 'saf');
+      setSafFolders(safs);
+
+      const activeIds = new Set(watched.map((w) => w.id));
+      setSelectedFolderIds(activeIds);
     } catch (error) {
-      console.error(error);
+      console.error('Error loading albums and watched folders:', error);
     } finally {
       setLoading(false);
     }
@@ -53,18 +80,19 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
       setAllFiles([]);
       setSelectedUris(new Set());
       setActiveFilter('all');
-      loadAlbums();
+      loadData();
     }
   }, [visible]);
 
-  const handleSelectAlbum = async (album: MediaAlbum) => {
+  // Handle opening an album to pick individual files
+  const handleOpenAlbum = async (album: MediaAlbum) => {
     setLoading(true);
     try {
       setFolderName(`Gallery: ${album.title}`);
-      const files = await getFilesFromAlbum(album.id);
+      const files = await getFilesFromAlbum(album.id, album.title);
       setAllFiles(files);
-      // By default select all
-      setSelectedUris(new Set(files.map((f) => f.uri)));
+      // By default start unselected (user chooses what they want)
+      setSelectedUris(new Set());
       setStep('select_files');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load album files');
@@ -73,21 +101,79 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
     }
   };
 
+  // Handle picking a custom SAF directory
   const handleSelectSAFDirectory = async () => {
     setLoading(true);
     try {
       const result = await requestAndScanSAFDirectory();
       if (!result) return;
-      const cleanName = decodeURIComponent(result.directoryUri.split('%3A').pop() || 'Selected Folder');
-      setFolderName(`Folder: ${cleanName}`);
+
+      const newSafFolder: WatchedFolder = {
+        id: result.directoryUri,
+        title: result.folderTitle,
+        type: 'saf',
+        assetCount: result.files.length,
+      };
+
+      setSafFolders((prev) => {
+        const existing = prev.filter((f) => f.id !== newSafFolder.id);
+        return [newSafFolder, ...existing];
+      });
+
+      setSelectedFolderIds((prev) => new Set(prev).add(newSafFolder.id));
+
+      setFolderName(`Folder: ${result.folderTitle}`);
       setAllFiles(result.files);
-      // By default select all
-      setSelectedUris(new Set(result.files.map((f) => f.uri)));
+      // By default start unselected
+      setSelectedUris(new Set());
       setStep('select_files');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to open directory');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleFolderSelection = (folder: WatchedFolder) => {
+    const next = new Set(selectedFolderIds);
+    if (next.has(folder.id)) {
+      next.delete(folder.id);
+    } else {
+      next.add(folder.id);
+    }
+    setSelectedFolderIds(next);
+  };
+
+  const getCombinedWatchedFolders = (): WatchedFolder[] => {
+    const albumFolders: WatchedFolder[] = albums
+      .filter((a) => selectedFolderIds.has(a.id))
+      .map((a) => ({
+        id: a.id,
+        title: a.title,
+        type: 'album',
+        assetCount: a.assetCount,
+      }));
+
+    const activeSafs = safFolders.filter((s) => selectedFolderIds.has(s.id));
+    return [...albumFolders, ...activeSafs];
+  };
+
+  const handleSaveWatchedFolders = async (scanNow: boolean) => {
+    const chosen = getCombinedWatchedFolders();
+    await saveWatchedFolders(chosen);
+    if (onWatchedFoldersUpdated) {
+      onWatchedFoldersUpdated(chosen);
+    }
+
+    if (scanNow && onScanFoldersRequested) {
+      onClose();
+      onScanFoldersRequested(chosen);
+    } else {
+      Alert.alert(
+        'Folders Saved',
+        `Saved ${chosen.length} folder(s) for scanning and auto-upload.`
+      );
+      onClose();
     }
   };
 
@@ -120,9 +206,7 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
 
   const selectedFiles = allFiles.filter((f) => selectedUris.has(f.uri));
   const totalSelectedBytes = selectedFiles.reduce((acc, f) => acc + (f.size || 0), 0);
-  const totalSelectedMB = (totalSelectedBytes / 1024 / 1024).toFixed(1);
 
-  // Counts for filter chips
   const categoryCounts = allFiles.reduce(
     (acc, f) => {
       const cat = getFileCategory(f.fileName, f.mimeType);
@@ -151,15 +235,24 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
     }
   };
 
+  const selectedFoldersCount = selectedFolderIds.size;
+
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalContainer}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>
-              {step === 'pick_folder' ? 'Choose Folder / Album' : folderName}
-            </Text>
+            <View>
+              <Text style={styles.headerTitle}>
+                {step === 'pick_folder' ? 'Choose Folders to Scan' : folderName}
+              </Text>
+              {step === 'pick_folder' && (
+                <Text style={styles.headerSubtitle}>
+                  Check folders to watch, or tap to open and select files
+                </Text>
+              )}
+            </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
               <Text style={styles.closeBtnText}>✕</Text>
             </TouchableOpacity>
@@ -168,10 +261,10 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
           {loading ? (
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color="#208AEF" />
-              <Text style={styles.loadingText}>Reading files...</Text>
+              <Text style={styles.loadingText}>Loading folders & files...</Text>
             </View>
           ) : step === 'pick_folder' ? (
-            /* STEP 1: PICK FOLDER */
+            /* STEP 1: MULTI-FOLDER SELECTION & ALBUM BROWSING */
             <View style={styles.folderStepContainer}>
               <TouchableOpacity
                 style={styles.safButton}
@@ -179,47 +272,119 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
               >
                 <Text style={styles.safButtonIcon}>📂</Text>
                 <View style={styles.safButtonTexts}>
-                  <Text style={styles.safButtonTitle}>Choose Device Storage Folder</Text>
+                  <Text style={styles.safButtonTitle}>+ Add Device Storage Folder</Text>
                   <Text style={styles.safButtonSubtitle}>
-                    Browse any folder on internal storage or SD card
+                    Select any folder on internal storage or SD card
                   </Text>
                 </View>
               </TouchableOpacity>
 
-              <Text style={styles.sectionSubtitle}>Or Pick a Gallery Album:</Text>
+              <View style={styles.foldersHeaderRow}>
+                <Text style={styles.sectionSubtitle}>
+                  Folders / Albums ({selectedFoldersCount} selected):
+                </Text>
+              </View>
+
               <FlatList
-                data={albums}
-                keyExtractor={(item) => item.id}
+                data={[
+                  ...safFolders.map((s) => ({ ...s, isSaf: true })),
+                  ...albums.map((a) => ({
+                    id: a.id,
+                    title: a.title,
+                    type: 'album' as const,
+                    assetCount: a.assetCount,
+                    isSaf: false,
+                  })),
+                ]}
+                keyExtractor={(item) => `${item.type}_${item.id}`}
                 style={styles.albumsList}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.albumItem}
-                    onPress={() => handleSelectAlbum(item)}
-                  >
-                    <Text style={styles.albumIcon}>📁</Text>
-                    <View style={styles.albumInfo}>
-                      <Text style={styles.albumTitle} numberOfLines={1}>
-                        {item.title}
-                      </Text>
-                      <Text style={styles.albumCount}>{item.assetCount} items</Text>
+                renderItem={({ item }) => {
+                  const isChecked = selectedFolderIds.has(item.id);
+                  return (
+                    <View style={[styles.albumItem, isChecked && styles.albumItemActive]}>
+                      <TouchableOpacity
+                        style={styles.checkboxTouch}
+                        onPress={() =>
+                          toggleFolderSelection({
+                            id: item.id,
+                            title: item.title,
+                            type: item.type,
+                            assetCount: item.assetCount,
+                          })
+                        }
+                      >
+                        <View style={[styles.checkbox, isChecked && styles.checkboxActive]}>
+                          {isChecked && <Text style={styles.checkmark}>✓</Text>}
+                        </View>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.albumInfoTouch}
+                        onPress={() => {
+                          if (item.type === 'album') {
+                            handleOpenAlbum({
+                              id: item.id,
+                              title: item.title,
+                              assetCount: item.assetCount || 0,
+                            });
+                          }
+                        }}
+                      >
+                        <Text style={styles.albumIcon}>{item.isSaf ? '📂' : '📁'}</Text>
+                        <View style={styles.albumInfo}>
+                          <Text style={styles.albumTitle} numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          <Text style={styles.albumCount}>
+                            {item.assetCount ? `${item.assetCount} items` : 'Custom folder'}
+                          </Text>
+                        </View>
+                        {item.type === 'album' && (
+                          <Text style={styles.openAlbumHint}>Browse files ›</Text>
+                        )}
+                      </TouchableOpacity>
                     </View>
-                    <Text style={styles.chevron}>›</Text>
-                  </TouchableOpacity>
-                )}
+                  );
+                }}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No albums found</Text>
+                  <Text style={styles.emptyText}>No albums or folders found</Text>
                 }
               />
+
+              {/* Bottom Actions for Multi-Folder Selection */}
+              <View style={styles.folderBottomActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.primaryFolderBtn,
+                    selectedFoldersCount === 0 && styles.disabledBtn,
+                  ]}
+                  disabled={selectedFoldersCount === 0}
+                  onPress={() => handleSaveWatchedFolders(true)}
+                >
+                  <Text style={styles.primaryFolderBtnText}>
+                    ⚡ Scan Selected Folders ({selectedFoldersCount})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.secondaryFolderBtn}
+                  onPress={() => handleSaveWatchedFolders(false)}
+                >
+                  <Text style={styles.secondaryFolderBtnText}>
+                    💾 Save Folders Only ({selectedFoldersCount})
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
           ) : (
-            /* STEP 2: MULTI-SELECT & FILTER FILES */
+            /* STEP 2: MULTI-SELECT & FILTER FILES IN OPENED FOLDER */
             <View style={styles.selectStepContainer}>
-              {/* Change Folder Banner */}
+              {/* Back to Folders */}
               <TouchableOpacity
                 style={styles.changeFolderRow}
                 onPress={() => setStep('pick_folder')}
               >
-                <Text style={styles.changeFolderText}>← Change Folder</Text>
+                <Text style={styles.changeFolderText}>← Back to Folders List</Text>
               </TouchableOpacity>
 
               {/* Filter Chips Bar */}
@@ -278,73 +443,102 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
                 )}
               </View>
 
-              {/* Selection Controls */}
-              <View style={styles.selectionControlsRow}>
-                <Text style={styles.selectionCountText}>
-                  {selectedFiles.length} selected ({totalSelectedMB} MB)
+              {/* Batch Select Controls */}
+              <View style={styles.batchControls}>
+                <TouchableOpacity onPress={selectAllFiltered} style={styles.batchBtn}>
+                  <Text style={styles.batchBtnText}>☑️ Select All</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={deselectAllFiltered} style={styles.batchBtn}>
+                  <Text style={styles.batchBtnText}>◻️ Clear All</Text>
+                </TouchableOpacity>
+                <Text style={styles.selectedCountText}>
+                  {selectedFiles.length} of {filteredFiles.length} selected
                 </Text>
-                <View style={styles.selectionBtnGroup}>
-                  <TouchableOpacity style={styles.smallActionBtn} onPress={selectAllFiltered}>
-                    <Text style={styles.smallActionBtnText}>Select All</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.smallActionBtn} onPress={deselectAllFiltered}>
-                    <Text style={styles.smallActionBtnText}>Deselect</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
 
-              {/* Files List with Checkboxes */}
+              {/* Files List */}
               <FlatList
                 data={filteredFiles}
                 keyExtractor={(item) => item.uri}
                 style={styles.filesList}
                 renderItem={({ item }) => {
-                  const isChecked = selectedUris.has(item.uri);
-                  const cat = getFileCategory(item.fileName, item.mimeType);
+                  const isSelected = selectedUris.has(item.uri);
+                  const category = getFileCategory(item.fileName, item.mimeType);
                   return (
                     <TouchableOpacity
-                      style={[styles.fileRow, isChecked && styles.fileRowChecked]}
+                      style={[styles.fileItem, isSelected && styles.fileItemActive]}
                       onPress={() => toggleSelect(item.uri)}
                       activeOpacity={0.7}
                     >
-                      <View style={[styles.checkbox, isChecked && styles.checkboxChecked]}>
-                        {isChecked && <Text style={styles.checkMark}>✓</Text>}
+                      <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
+                        {isSelected && <Text style={styles.checkmark}>✓</Text>}
                       </View>
-                      <Text style={styles.fileCatIcon}>{getCategoryIcon(cat)}</Text>
-                      <View style={styles.fileDetails}>
-                        <Text style={styles.fileNameText} numberOfLines={1}>
+                      <Text style={styles.fileIcon}>{getCategoryIcon(category)}</Text>
+                      <View style={styles.fileInfo}>
+                        <Text style={styles.fileName} numberOfLines={1}>
                           {item.fileName}
                         </Text>
-                        <Text style={styles.fileSubText}>
-                          {item.size ? (item.size / 1024 / 1024).toFixed(2) + ' MB' : '0 MB'}
+                        <Text style={styles.fileMeta}>
+                          {item.size ? formatFileSize(item.size) : 'File'}
                         </Text>
                       </View>
+                      <TouchableOpacity
+                        style={styles.detailsBtn}
+                        onPress={() => {
+                          setSelectedFileForDetails({
+                            fileName: item.fileName,
+                            size: item.size || 0,
+                            mimeType: item.mimeType,
+                            uri: item.uri,
+                          });
+                        }}
+                      >
+                        <Text style={styles.detailsBtnText}>ℹ️</Text>
+                      </TouchableOpacity>
                     </TouchableOpacity>
                   );
                 }}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No files match this filter</Text>
+                  <Text style={styles.emptyText}>No files match the selected filter</Text>
                 }
               />
 
-              {/* Bottom Action Footer */}
-              <View style={styles.footerRow}>
-                <TouchableOpacity
-                  style={[styles.queueButton, selectedFiles.length === 0 && styles.buttonDisabled]}
-                  disabled={selectedFiles.length === 0}
-                  onPress={() => confirmSelection(false)}
-                >
-                  <Text style={styles.queueButtonText}>Add to Queue ({selectedFiles.length})</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.uploadNowButton, selectedFiles.length === 0 && styles.buttonDisabled]}
-                  disabled={selectedFiles.length === 0}
-                  onPress={() => confirmSelection(true)}
-                >
-                  <Text style={styles.uploadNowButtonText}>Upload Now</Text>
-                </TouchableOpacity>
+              {/* Bottom Actions */}
+              <View style={styles.bottomBar}>
+                <View style={styles.selectionSummary}>
+                  <Text style={styles.summaryCount}>
+                    {selectedFiles.length} files selected
+                  </Text>
+                  <Text style={styles.summarySize}>
+                    {formatFileSize(totalSelectedBytes)}
+                  </Text>
+                </View>
+                <View style={styles.actionButtons}>
+                  <TouchableOpacity
+                    style={[styles.queueBtn, selectedFiles.length === 0 && styles.disabledBtn]}
+                    disabled={selectedFiles.length === 0}
+                    onPress={() => confirmSelection(false)}
+                  >
+                    <Text style={styles.queueBtnText}>+ Add to Queue</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.uploadNowBtn, selectedFiles.length === 0 && styles.disabledBtn]}
+                    disabled={selectedFiles.length === 0}
+                    onPress={() => confirmSelection(true)}
+                  >
+                    <Text style={styles.uploadNowBtnText}>⚡ Upload Now</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
+          )}
+
+          {selectedFileForDetails && (
+            <FileDetailsModal
+              visible={!!selectedFileForDetails}
+              file={selectedFileForDetails}
+              onClose={() => setSelectedFileForDetails(null)}
+            />
           )}
         </View>
       </View>
@@ -355,43 +549,49 @@ export function FolderBrowserModal({ visible, onClose, onFilesSelected }: Props)
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingTop: 16,
-    paddingBottom: 24,
-    maxHeight: '92%',
-    minHeight: '60%',
+    height: '90%',
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
   },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: 'bold',
-    color: '#222',
-    flex: 1,
+    color: '#1a1a1a',
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
   },
   closeBtn: {
     padding: 6,
   },
   closeBtnText: {
-    fontSize: 18,
+    fontSize: 20,
     color: '#888',
+    fontWeight: 'bold',
   },
   centerContainer: {
-    padding: 40,
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
+    padding: 20,
   },
   loadingText: {
     marginTop: 12,
@@ -399,21 +599,22 @@ const styles = StyleSheet.create({
     color: '#666',
   },
   folderStepContainer: {
-    padding: 16,
     flex: 1,
+    padding: 16,
   },
   safButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EBF4FE',
-    padding: 14,
+    backgroundColor: '#F0F7FF',
+    borderColor: '#208AEF',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
     borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#D0E3FC',
+    padding: 14,
+    marginBottom: 14,
   },
   safButtonIcon: {
-    fontSize: 28,
+    fontSize: 24,
     marginRight: 12,
   },
   safButtonTexts: {
@@ -422,30 +623,49 @@ const styles = StyleSheet.create({
   safButtonTitle: {
     fontSize: 15,
     fontWeight: 'bold',
-    color: '#1D72B8',
+    color: '#208AEF',
   },
   safButtonSubtitle: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#555',
     marginTop: 2,
   },
-  sectionSubtitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
+  foldersHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 8,
-    textTransform: 'uppercase',
+  },
+  sectionSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#444',
   },
   albumsList: {
-    maxHeight: 360,
+    flex: 1,
   },
   albumItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#f9f9f9',
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  albumItemActive: {
+    backgroundColor: '#EBF4FF',
+    borderColor: '#208AEF',
+    borderWidth: 1,
+  },
+  checkboxTouch: {
+    padding: 4,
+    marginRight: 8,
+  },
+  albumInfoTouch: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   albumIcon: {
     fontSize: 22,
@@ -457,42 +677,74 @@ const styles = StyleSheet.create({
   albumTitle: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#222',
+    color: '#1a1a1a',
   },
   albumCount: {
     fontSize: 12,
-    color: '#888',
+    color: '#777',
     marginTop: 2,
   },
-  chevron: {
-    fontSize: 20,
-    color: '#ccc',
+  openAlbumHint: {
+    fontSize: 12,
+    color: '#208AEF',
+    fontWeight: '600',
+    paddingHorizontal: 8,
+  },
+  folderBottomActions: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    gap: 8,
+  },
+  primaryFolderBtn: {
+    backgroundColor: '#208AEF',
+    paddingVertical: 13,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  primaryFolderBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
+  secondaryFolderBtn: {
+    backgroundColor: '#f0f0f0',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  secondaryFolderBtnText: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: '600',
   },
   selectStepContainer: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 8,
   },
   changeFolderRow: {
-    paddingVertical: 4,
-    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#f5f5f5',
   },
   changeFolderText: {
     color: '#208AEF',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
   },
   filterBar: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     gap: 6,
-    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
   },
   filterChip: {
-    backgroundColor: '#f1f3f5',
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderRadius: 16,
+    backgroundColor: '#f0f0f0',
   },
   filterChipActive: {
     backgroundColor: '#208AEF',
@@ -506,121 +758,142 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
   },
-  selectionControlsRow: {
+  batchControls: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 16,
     paddingVertical: 8,
+    backgroundColor: '#fafafa',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
-    marginBottom: 6,
   },
-  selectionCountText: {
+  batchBtn: {
+    marginRight: 14,
+  },
+  batchBtnText: {
+    color: '#208AEF',
     fontSize: 13,
     fontWeight: '600',
-    color: '#333',
   },
-  selectionBtnGroup: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  smallActionBtn: {
-    backgroundColor: '#EBF4FE',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  smallActionBtnText: {
-    fontSize: 11,
-    color: '#208AEF',
-    fontWeight: '600',
+  selectedCountText: {
+    marginLeft: 'auto',
+    fontSize: 12,
+    color: '#666',
   },
   filesList: {
-    maxHeight: 320,
+    flex: 1,
+    paddingHorizontal: 12,
   },
-  fileRow: {
+  fileItem: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
     borderRadius: 8,
-    marginBottom: 4,
   },
-  fileRowChecked: {
+  fileItemActive: {
     backgroundColor: '#F0F7FF',
   },
   checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 5,
     borderWidth: 2,
     borderColor: '#aaa',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
   },
-  checkboxChecked: {
+  checkboxActive: {
     backgroundColor: '#208AEF',
     borderColor: '#208AEF',
   },
-  checkMark: {
+  checkmark: {
     color: '#fff',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: 'bold',
   },
-  fileCatIcon: {
-    fontSize: 18,
+  fileIcon: {
+    fontSize: 20,
     marginRight: 10,
   },
-  fileDetails: {
+  fileInfo: {
     flex: 1,
   },
-  fileNameText: {
-    fontSize: 13,
+  fileName: {
+    fontSize: 14,
     fontWeight: '500',
     color: '#222',
   },
-  fileSubText: {
+  fileMeta: {
     fontSize: 11,
     color: '#888',
     marginTop: 2,
   },
-  footerRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
+  detailsBtn: {
+    padding: 6,
   },
-  queueButton: {
-    flex: 1,
-    backgroundColor: '#E5E7EB',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  queueButtonText: {
-    color: '#374151',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  uploadNowButton: {
-    flex: 1,
-    backgroundColor: '#208AEF',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  uploadNowButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  buttonDisabled: {
-    opacity: 0.4,
+  detailsBtnText: {
+    fontSize: 16,
   },
   emptyText: {
     textAlign: 'center',
-    color: '#999',
-    marginVertical: 24,
-    fontSize: 13,
+    color: '#888',
+    marginTop: 40,
+    fontSize: 14,
+  },
+  bottomBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    backgroundColor: '#fff',
+  },
+  selectionSummary: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  summaryCount: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#222',
+  },
+  summarySize: {
+    fontSize: 14,
+    color: '#666',
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  queueBtn: {
+    flex: 1,
+    backgroundColor: '#f0f0f0',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  queueBtnText: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  uploadNowBtn: {
+    flex: 1,
+    backgroundColor: '#208AEF',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  uploadNowBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  disabledBtn: {
+    opacity: 0.5,
   },
 });

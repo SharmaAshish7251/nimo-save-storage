@@ -7,8 +7,8 @@ import { PromisedWebSockets } from 'telegram/extensions';
 import { ConnectionTCPObfuscated } from 'telegram/network';
 import { computeCheck } from 'telegram/Password';
 import { CustomFile } from 'telegram/client/uploads';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStoreLib from '../storage/secure';
+import { readFileToBuffer } from '../storage/fileHelper';
 
 // Official Telegram public desktop client credentials as default fallback
 export const DEFAULT_API_ID = 2040;
@@ -205,11 +205,8 @@ export async function sendFile(
     const uri = fileOrUri;
     const name = captionOrFileName || uri.split('/').pop() || 'file.bin';
     
-    // Read file via expo-file-system
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    const buffer = Buffer.from(base64, 'base64');
+    // Read file via universal reader supporting file:// and content://
+    const buffer = await readFileToBuffer(uri);
     fileToUpload = new CustomFile(name, buffer.length, '', buffer);
   } else if (Buffer.isBuffer(fileOrUri)) {
     const name = captionOrFileName || 'file.bin';

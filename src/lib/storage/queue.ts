@@ -29,7 +29,7 @@ const ACTION_HISTORY_KEY = '@nimo/action_history';
 
 const DEFAULT_CONFIG: AppConfig = {
   watchFolders: [],
-  wifiOnly: true,
+  wifiOnly: false,
   timeWindowStart: '00:00',
   timeWindowEnd: '06:00',
   concurrency: 3,
@@ -113,6 +113,20 @@ export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progre
   queue.push(newItem);
   await saveQueue(queue);
   return newItem;
+}
+
+export async function resetItemToPending(id: string): Promise<QueueItem | null> {
+  const queue = await getQueue();
+  const index = queue.findIndex((item) => item.id === id);
+  if (index >= 0) {
+    queue[index].status = 'pending';
+    queue[index].progress = 0;
+    delete queue[index].error;
+    queue[index].lastAttemptAt = undefined;
+    await saveQueue(queue);
+    return queue[index];
+  }
+  return null;
 }
 
 export interface UploadedRecord {

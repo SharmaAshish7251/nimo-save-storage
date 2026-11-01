@@ -239,7 +239,7 @@ export function FileDetailsModal({
 
           {/* Action Buttons */}
           <View style={styles.actions}>
-            {file.status === 'pending' && onUploadNow && (
+            {!file.isHistory && file.status === 'pending' && onUploadNow && (
               <TouchableOpacity
                 style={styles.primaryBtn}
                 onPress={() => {
@@ -247,11 +247,23 @@ export function FileDetailsModal({
                   onUploadNow(file);
                 }}
               >
-                <Text style={styles.primaryBtnText}>🚀 Upload Now</Text>
+                <Text style={styles.primaryBtnText}>🚀 Upload File</Text>
               </TouchableOpacity>
             )}
 
-            {(file.status === 'failed' || file.status === 'dismissed' || file.isHistory) && onRetry && (
+            {!file.isHistory && file.status === 'failed' && onRetry && (
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: '#DC2626' }]}
+                onPress={() => {
+                  onClose();
+                  onRetry(file);
+                }}
+              >
+                <Text style={styles.primaryBtnText}>↻ Retry Upload</Text>
+              </TouchableOpacity>
+            )}
+
+            {(file.isHistory || file.status === 'dismissed') && onRetry && (
               <TouchableOpacity
                 style={styles.primaryBtn}
                 onPress={() => {

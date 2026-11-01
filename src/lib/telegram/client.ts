@@ -4,7 +4,7 @@ import bigInt from 'big-integer';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/StringSession';
 import { PromisedWebSockets } from 'telegram/extensions';
-import { ConnectionTCPObfuscated } from 'telegram/network';
+import { ConnectionTCPAbridged } from 'telegram/network';
 import { computeCheck } from 'telegram/Password';
 import { CustomFile } from 'telegram/client/uploads';
 import * as SecureStoreLib from '../storage/secure';
@@ -14,12 +14,99 @@ import { readFileToBuffer } from '../storage/fileHelper';
 export const DEFAULT_API_ID = 2040;
 export const DEFAULT_API_HASH = 'b18441a1ff607e10a989891a5462e627';
 
+export interface TelegramDCEndpoint {
+  id: number;
+  ipAddress: string;
+  port: number;
+}
+
+export const TELEGRAM_DC_ENDPOINTS: Record<number, TelegramDCEndpoint> = {
+  1: { id: 1, ipAddress: 'pluto.web.telegram.org', port: 443 },
+  2: { id: 2, ipAddress: 'venus.web.telegram.org', port: 443 },
+  3: { id: 3, ipAddress: 'aurora.web.telegram.org', port: 443 },
+  4: { id: 4, ipAddress: 'vesta.web.telegram.org', port: 443 },
+  5: { id: 5, ipAddress: 'flora.web.telegram.org', port: 443 },
+};
+
+/**
+ * Predicts the user's primary Telegram Data Center based on phone country code.
+ * Connecting directly to the home DC eliminates the PHONE_MIGRATE round-trip and
+ * prevents running the expensive 2048-bit Diffie-Hellman handshake twice.
+ */
+export function getOptimalDCForPhone(phoneNumber?: string): TelegramDCEndpoint {
+  if (!phoneNumber) return TELEGRAM_DC_ENDPOINTS[4];
+  const clean = phoneNumber.replace(/[^\d+]/g, '');
+
+  // DC 5: India, Singapore, Southeast Asia, East Asia, South Asia
+  if (
+    clean.startsWith('+91') || // India
+    clean.startsWith('+65') || // Singapore
+    clean.startsWith('+60') || // Malaysia
+    clean.startsWith('+62') || // Indonesia
+    clean.startsWith('+84') || // Vietnam
+    clean.startsWith('+66') || // Thailand
+    clean.startsWith('+63') || // Philippines
+    clean.startsWith('+81') || // Japan
+    clean.startsWith('+82') || // South Korea
+    clean.startsWith('+86') || // China
+    clean.startsWith('+880') || // Bangladesh
+    clean.startsWith('+92') || // Pakistan
+    clean.startsWith('+94') || // Sri Lanka
+    clean.startsWith('+977')   // Nepal
+  ) {
+    return TELEGRAM_DC_ENDPOINTS[5];
+  }
+
+  // DC 1: North America & South America
+  if (
+    clean.startsWith('+1') ||  // USA, Canada
+    clean.startsWith('+52') || // Mexico
+    clean.startsWith('+55') || // Brazil
+    clean.startsWith('+54') || // Argentina
+    clean.startsWith('+56') || // Chile
+    clean.startsWith('+57') || // Colombia
+    clean.startsWith('+58') || // Venezuela
+    clean.startsWith('+51')    // Peru
+  ) {
+    return TELEGRAM_DC_ENDPOINTS[1];
+  }
+
+  // DC 2: Russia, CIS, Eastern Europe
+  if (
+    clean.startsWith('+7') ||   // Russia, Kazakhstan
+    clean.startsWith('+380') || // Ukraine
+    clean.startsWith('+375')    // Belarus
+  ) {
+    return TELEGRAM_DC_ENDPOINTS[2];
+  }
+
+  // DC 4: Western/Central Europe, UK, Middle East, Africa & fallback default
+  return TELEGRAM_DC_ENDPOINTS[4];
+}
+
 let client: any = null;
 let apiId: number = DEFAULT_API_ID;
 let apiHash: string = DEFAULT_API_HASH;
+let cachedLoginStatus: { value: boolean; timestamp: number } | null = null;
+const LOGIN_CACHE_TTL = 30000;
 
-export async function initializeClient(): Promise<any> {
-  if (client) return client;
+export async function initializeClient(targetPhone?: string): Promise<any> {
+  // If client already exists, verify if targetPhone requires a different DC (for initial auth)
+  if (client) {
+    if (targetPhone && !client.session?.authKey?.key) {
+      const optimalDC = getOptimalDCForPhone(targetPhone);
+      if (client.session && client.session.dcId !== optimalDC.id) {
+        try {
+          await client.disconnect();
+        } catch {}
+        client = null;
+      } else {
+        return client;
+      }
+    } else {
+      return client;
+    }
+  }
   
   const creds = await SecureStoreLib.getApiCredentials();
   if (creds.apiId && creds.apiHash) {
@@ -33,26 +120,39 @@ export async function initializeClient(): Promise<any> {
   const sessionStr = await SecureStoreLib.getSession();
   const session = new StringSession(sessionStr || '');
   if (!session.serverAddress) {
-    session.setDC(4, 'vesta.web.telegram.org', 443);
+    let chosenDC = TELEGRAM_DC_ENDPOINTS[4];
+    if (targetPhone) {
+      chosenDC = getOptimalDCForPhone(targetPhone);
+    } else {
+      const savedPhone = await SecureStoreLib.getPhone();
+      if (savedPhone) {
+        chosenDC = getOptimalDCForPhone(savedPhone);
+      }
+    }
+    session.setDC(chosenDC.id, chosenDC.ipAddress, chosenDC.port);
   }
   
   client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 5,
-    useWSS: true,
+    connectionRetries: 2,
+    useWSS: false,
     networkSocket: PromisedWebSockets,
-    connection: ConnectionTCPObfuscated,
+    connection: ConnectionTCPAbridged,
     deviceModel: 'Android Mobile',
     systemVersion: 'Android 14',
     appVersion: '1.0.0',
     langCode: 'en',
     systemLangCode: 'en',
+    timeout: 15,
+    retryDelay: 500,
+    maxConcurrentDownloads: 4,
   });
   
   return client;
 }
 
 export async function startAuth(phoneNumber: string): Promise<{ phoneCodeHash: string }> {
-  const c = await initializeClient();
+  // Directly connect to the DC matching the phone number to avoid PHONE_MIGRATE
+  const c = await initializeClient(phoneNumber);
   if (!c) throw new Error('Failed to initialize client');
   
   await c.connect();
@@ -64,12 +164,23 @@ export async function startAuth(phoneNumber: string): Promise<{ phoneCodeHash: s
       settings: new Api.CodeSettings({}),
     })
   );
+
+  // Immediately persist session so signIn reuses this exact DC & key without re-handshake
+  try {
+    const sessionStr = c.session.save();
+    if (sessionStr) {
+      await SecureStoreLib.saveSession(sessionStr);
+    }
+    await SecureStoreLib.savePhone(phoneNumber);
+  } catch (err) {
+    console.warn('Could not save preliminary session:', err);
+  }
   
   return { phoneCodeHash: result.phoneCodeHash };
 }
 
 export async function signIn(phoneNumber: string, code: string, phoneCodeHash: string): Promise<boolean> {
-  const c = await initializeClient();
+  const c = await initializeClient(phoneNumber);
   if (!c) throw new Error('Failed to initialize client');
   
   try {
@@ -84,6 +195,7 @@ export async function signIn(phoneNumber: string, code: string, phoneCodeHash: s
     const sessionStr = c.session.save();
     await SecureStoreLib.saveSession(sessionStr);
     await SecureStoreLib.savePhone(phoneNumber);
+    cachedLoginStatus = { value: true, timestamp: Date.now() };
     
     return true;
   } catch (error: any) {
@@ -115,14 +227,26 @@ export async function signInWithPassword(password: string): Promise<boolean> {
 
 export async function isLoggedIn(): Promise<boolean> {
   try {
+    if (cachedLoginStatus && Date.now() - cachedLoginStatus.timestamp < LOGIN_CACHE_TTL) {
+      return cachedLoginStatus.value;
+    }
     const session = await SecureStoreLib.getSession();
-    if (!session) return false;
+    if (!session) {
+      cachedLoginStatus = { value: false, timestamp: Date.now() };
+      return false;
+    }
     const c = await initializeClient();
-    if (!c) return false;
+    if (!c) {
+      cachedLoginStatus = { value: false, timestamp: Date.now() };
+      return false;
+    }
     await c.connect();
     const me = await c.getMe();
-    return !!me;
+    const result = !!me;
+    cachedLoginStatus = { value: result, timestamp: Date.now() };
+    return result;
   } catch {
+    cachedLoginStatus = { value: false, timestamp: Date.now() };
     return false;
   }
 }
@@ -197,6 +321,11 @@ export async function sendFile(
   const c = await initializeClient();
   if (!c) throw new Error('Not initialized');
   await c.connect();
+
+  const authorized = await c.isUserAuthorized().catch(() => false);
+  if (!authorized) {
+    throw new Error('Not logged into Telegram. Please connect your account first.');
+  }
   
   let fileToUpload: any = fileOrUri;
   let caption = '';
@@ -216,11 +345,21 @@ export async function sendFile(
   }
   
   let target: any = chatId || 'me';
-  if (typeof target === 'string' && target !== 'me' && /^-?\d+$/.test(target)) {
+  if (target !== 'me') {
+    if (typeof target === 'string' && /^-?\d+$/.test(target)) {
+      try {
+        target = bigInt(target);
+      } catch {
+        // keep as string
+      }
+    }
     try {
-      target = bigInt(target);
+      const entity = await c.getEntity(target);
+      if (entity) {
+        target = entity;
+      }
     } catch {
-      // keep as string
+      // keep target as is if getEntity fails
     }
   }
 
@@ -228,7 +367,7 @@ export async function sendFile(
     file: fileToUpload,
     caption: caption,
     forceDocument: false,
-    workers: 1,
+    workers: 8,
     progressCallback: (progress: number) => {
       if (onProgress) onProgress(progress);
     },

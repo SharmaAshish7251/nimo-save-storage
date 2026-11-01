@@ -1,4 +1,4 @@
-import { getConfig, getQueue, formatFileSize, QueueItem } from '@/lib/storage/queue';
+import { formatFileSize, getConfig, getQueue, QueueItem } from '@/lib/storage/queue';
 import { isLoggedIn } from '@/lib/telegram/client';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -44,7 +44,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
-        <Image style={styles.appBranding} source={require('@/assets/images/app-logo.png')} />
+        <Image style={styles.appBranding} source={require('@/assets/images/NOMI-Save-Storage.png')} />
         <Text style={styles.title}>Nimo Save Storage</Text>
         <Text style={styles.subtitle}>Auto-upload files to Telegram</Text>
 

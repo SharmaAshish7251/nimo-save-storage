@@ -8,10 +8,18 @@ import {
   recordActionHistory,
   removeFromQueue,
   clearAllQueue,
+  resetItemToPending,
 } from '../storage/queue';
-import { sendFile } from '../telegram/client';
+import { sendFile, isLoggedIn } from '../telegram/client';
 import { getFileInfo } from '../storage/fileHelper';
 import NetInfo from '@react-native-community/netinfo';
+
+export interface ProcessQueueResult {
+  total: number;
+  uploaded: number;
+  failed: number;
+  errors: string[];
+}
 
 export class UploadManager {
   private queue: any;
@@ -25,41 +33,108 @@ export class UploadManager {
     this.queue.concurrency = concurrency;
   }
   
-  async checkNetworkConditions(): Promise<boolean> {
-    const config = await getConfig();
+  async checkNetworkConditions(forceManual = false): Promise<{ canUpload: boolean; reason?: string }> {
     const netInfo = await NetInfo.fetch();
+    if (!(netInfo as any).isConnected) {
+      return { canUpload: false, reason: 'NO_INTERNET: No internet connection detected. Please check WiFi or mobile data.' };
+    }
     
-    if (!(netInfo as any).isConnected) return false;
-    if (config.wifiOnly && (netInfo as any).type !== 'wifi') return false;
+    if (!forceManual) {
+      const config = await getConfig();
+      if (config.wifiOnly && (netInfo as any).type !== 'wifi') {
+        return { canUpload: false, reason: 'WIFI_ONLY: Upload paused because WiFi-only is enabled in Settings.' };
+      }
+    }
     
-    return true;
+    return { canUpload: true };
   }
   
-  async processQueue(): Promise<void> {
-    if (this.isRunning) return;
+  async processQueue(options: { forceManual?: boolean } = {}): Promise<ProcessQueueResult> {
+    if (this.isRunning) {
+      throw new Error('Upload is already in progress.');
+    }
     this.isRunning = true;
     
     try {
-      const canUpload = await this.checkNetworkConditions();
-      if (!canUpload) {
-        console.log('Network conditions not met for upload');
-        return;
+      // 1. Verify Telegram authentication first
+      const loggedIn = await isLoggedIn();
+      if (!loggedIn) {
+        throw new Error('NOT_LOGGED_IN: You are not connected to Telegram. Please connect your Telegram account first.');
+      }
+
+      // 2. Check network conditions
+      const netCheck = await this.checkNetworkConditions(options.forceManual ?? false);
+      if (!netCheck.canUpload) {
+        throw new Error(netCheck.reason || 'Network conditions not met for upload.');
       }
       
+      // 3. Check queue for pending items
       const queueItems = await getQueue();
       const pendingItems = queueItems.filter((item: QueueItem) => item.status === 'pending');
       
+      if (pendingItems.length === 0) {
+        const failedItems = queueItems.filter((item: QueueItem) => item.status === 'failed');
+        if (failedItems.length > 0) {
+          throw new Error(`ALL_FAILED: All ${failedItems.length} file(s) in queue previously failed. Tap "Retry" on a file to try again.`);
+        }
+        throw new Error('EMPTY_QUEUE: Queue is empty. Please select or scan files first.');
+      }
+
       const config = await getConfig();
-      this.setConcurrency(config.concurrency);
+      this.setConcurrency(config.concurrency || 3);
       
+      let uploadedCount = 0;
+      let failedCount = 0;
+      const errorMessages: string[] = [];
+
       for (const item of pendingItems) {
-        this.queue.add(() => this.uploadItem(item));
+        this.queue.add(async () => {
+          try {
+            await this.uploadItem(item);
+            uploadedCount++;
+          } catch (err: any) {
+            failedCount++;
+            const msg = err.message || 'Upload failed';
+            if (!errorMessages.includes(msg)) {
+              errorMessages.push(msg);
+            }
+          }
+        });
       }
       
       await this.queue.onIdle();
+
+      return {
+        total: pendingItems.length,
+        uploaded: uploadedCount,
+        failed: failedCount,
+        errors: errorMessages,
+      };
     } finally {
       this.isRunning = false;
     }
+  }
+
+  async uploadSingleItem(item: QueueItem): Promise<void> {
+    const loggedIn = await isLoggedIn();
+    if (!loggedIn) {
+      throw new Error('NOT_LOGGED_IN: You are not connected to Telegram. Please connect your Telegram account first.');
+    }
+
+    const netCheck = await this.checkNetworkConditions(true);
+    if (!netCheck.canUpload) {
+      throw new Error(netCheck.reason || 'No internet connection.');
+    }
+
+    await this.uploadItem(item);
+  }
+
+  async retryItem(id: string): Promise<void> {
+    const item = await resetItemToPending(id);
+    if (!item) {
+      throw new Error('Item not found in queue');
+    }
+    await this.uploadSingleItem(item);
   }
   
   private async uploadItem(item: QueueItem): Promise<void> {
@@ -69,7 +144,7 @@ export class UploadManager {
       
       const fileInfo = await getFileInfo(item.uri);
       if (!fileInfo.exists && !item.uri.startsWith('content://')) {
-        throw new Error('File does not exist');
+        throw new Error('File does not exist or cannot be accessed');
       }
       
       const config = await getConfig();
@@ -135,6 +210,8 @@ export class UploadManager {
           error: error.message || 'Upload failed',
         });
       } catch {}
+
+      throw error;
     }
   }
   
@@ -188,4 +265,3 @@ export class UploadManager {
 }
 
 export const uploadManager = new UploadManager();
-

@@ -1,9 +1,9 @@
-import { View, StyleSheet, Text, TextInput, TouchableOpacity, Alert, ScrollView, Image } from 'react-native';
+import { View, StyleSheet, Text, TextInput, TouchableOpacity, ScrollView, Image, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { router } from 'expo-router';
 import { saveApiCredentials, getApiCredentials } from '@/lib/storage/secure';
-import { startAuth, signIn, signInWithPassword } from '@/lib/telegram/client';
+import { startAuth, signIn, signInWithPassword, initializeClient } from '@/lib/telegram/client';
 
 export default function TelegramLoginScreen() {
   const [step, setStep] = useState<'phone' | 'code' | '2fa'>('phone');
@@ -18,38 +18,70 @@ export default function TelegramLoginScreen() {
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
 
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const rotateAnim = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
-    (async () => {
-      try {
-        const creds = await getApiCredentials();
-        if (creds.apiId) setApiId(creds.apiId);
-        if (creds.apiHash) setApiHash(creds.apiHash);
-      } catch (e) {
-        console.error(e);
-      }
-    })();
-  }, []);
+    if (loading) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.05,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+      Animated.loop(
+        Animated.timing(rotateAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        })
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+      rotateAnim.setValue(0);
+    }
+  }, [loading]);
+
+  const spin = rotateAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   const sendCode = async () => {
     const trimmedPhone = phone.trim();
     if (!trimmedPhone) {
-      Alert.alert('Phone Required', 'Please enter your mobile phone number with country code (e.g. +1234567890).');
       return;
     }
 
     if (!trimmedPhone.startsWith('+')) {
-      Alert.alert('Invalid Format', 'Please include your country code with a leading + (e.g. +1234567890).');
       return;
     }
 
     setLoading(true);
     try {
+      console.log('[AUTH] Sending code to', trimmedPhone);
+      // Clear any cached login
+      (globalThis as any).__nimo_cached_login = null;
       const result = await startAuth(trimmedPhone);
+      console.log('[AUTH] Code sent successfully');
       setPhoneCodeHash(result.phoneCodeHash);
       setStep('code');
-      Alert.alert('Code Sent', 'Telegram has sent a verification code to your Telegram app or via SMS.');
     } catch (error: any) {
-      Alert.alert('Login Error', error?.message || 'Failed to send login code. Please check your phone number.');
+      console.log('[AUTH] Error:', error?.errorMessage || error?.message);
+      console.error(error);
+      if (String(error?.errorMessage || error?.message).includes('AUTH_RESTART')) {
+        // Try once more with fresh client
+        setTimeout(() => sendCode(), 500);
+        return;
+      }
     } finally {
       setLoading(false);
     }
@@ -58,41 +90,62 @@ export default function TelegramLoginScreen() {
   const verifyCode = async () => {
     const trimmedCode = code.trim();
     if (!trimmedCode) {
-      Alert.alert('Code Required', 'Please enter the verification code you received.');
       return;
     }
 
     setLoading(true);
     try {
+      console.log('[AUTH] Verifying code...');
       await signIn(phone.trim(), trimmedCode, phoneCodeHash);
-      Alert.alert('Success', 'Logged in successfully to Telegram!', [
-        { text: 'OK', onPress: () => router.replace('/') }
-      ]);
-    } catch (error: any) {
-      if (error.message === '2FA_PASSWORD_REQUIRED') {
-        setStep('2fa');
-      } else {
-        Alert.alert('Verification Failed', error?.message || 'Incorrect verification code.');
-      }
-    } finally {
+      console.log('[AUTH] Sign in successful');
       setLoading(false);
+      router.replace('/');
+    } catch (error: any) {
+      console.log('[AUTH] Verify error:', error?.errorMessage || error?.message);
+      console.error(error);
+      if (error.errorMessage === 'SESSION_PASSWORD_NEEDED' || error.message === '2FA_PASSWORD_REQUIRED' || String(error.message).includes('SESSION_PASSWORD_NEEDED')) {
+        console.log('[AUTH] Switching to 2FA step');
+        setLoading(false);
+        setStep('2fa');
+        return;
+      } else {
+      }
     }
+    setLoading(false);
   };
 
   const verify2FA = async () => {
     if (!password) {
-      Alert.alert('Password Required', 'Please enter your 2FA password.');
       return;
     }
 
     setLoading(true);
     try {
-      await signInWithPassword(password);
-      Alert.alert('Success', 'Logged in successfully!', [
-        { text: 'OK', onPress: () => router.replace('/') }
+      await Promise.race([
+        (async () => {
+          const c = await initializeClient();
+          if (!c) throw new Error('Failed to initialize client');
+          try {
+            if (!(c as any).isConnected?.()) {
+              await c.connect();
+            }
+          } catch {}
+          const passwordSrp: any = await (c as any).invoke(new (await import('telegram')).Api.account.GetPassword());
+          const { computeCheck } = await import('telegram/Password');
+          const passwordSrpCheck = await computeCheck(passwordSrp, password);
+          await (c as any).invoke(new (await import('telegram')).Api.auth.CheckPassword({ password: passwordSrpCheck }));
+          const sessionStr = (c as any).session.save();
+          const { saveSession } = await import('@/lib/storage/secure');
+          await saveSession(sessionStr);
+          const cached = { value: true, timestamp: Date.now() };
+          (globalThis as any).__nimo_cached_login = cached;
+          return true;
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout. Please try again.')), 45000))
       ]);
+      setLoading(false);
+      router.replace('/');
     } catch (error: any) {
-      Alert.alert('2FA Failed', error?.message || 'Incorrect 2FA password.');
     } finally {
       setLoading(false);
     }
@@ -100,14 +153,11 @@ export default function TelegramLoginScreen() {
 
   const saveCustomCredentials = async () => {
     if (!apiId.trim() || !apiHash.trim()) {
-      Alert.alert('Required', 'Please enter both API ID and API Hash.');
       return;
     }
     try {
       await saveApiCredentials(apiId.trim(), apiHash.trim());
-      Alert.alert('Saved', 'Custom API credentials saved successfully.');
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to save credentials.');
     }
   };
 
@@ -147,9 +197,11 @@ export default function TelegramLoginScreen() {
                 onPress={sendCode}
                 disabled={loading}
               >
-                <Text style={styles.buttonText}>
-                  {loading ? 'Sending Code...' : 'Send Login Code'}
-                </Text>
+                <Animated.View style={{ transform: [{ scale: pulseAnim }, { rotate: loading ? spin : '0deg' }] }}>
+                  <Text style={styles.buttonText}>
+                    {loading ? 'Sending Code...' : 'Send Login Code'}
+                  </Text>
+                </Animated.View>
               </TouchableOpacity>
 
               {/* Advanced / Custom Credentials Collapsible */}
@@ -219,9 +271,11 @@ export default function TelegramLoginScreen() {
                 onPress={verifyCode}
                 disabled={loading}
               >
-                <Text style={styles.buttonText}>
-                  {loading ? 'Verifying...' : 'Verify & Sign In'}
-                </Text>
+                <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+                  <Text style={styles.buttonText}>
+                    {loading ? 'Verifying...' : 'Verify & Sign In'}
+                  </Text>
+                </Animated.View>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -230,6 +284,38 @@ export default function TelegramLoginScreen() {
                 disabled={loading}
               >
                 <Text style={styles.textButtonText}>Change Phone Number</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.textButton}
+                onPress={() => {
+                  if (loading) return;
+                  setCode('');
+                  setLoading(true);
+                  (async () => {
+                    try {
+                      console.log('[AUTH] Resending code...');
+                      (globalThis as any).__nimo_cached_login = null;
+                      const { initializeClient } = await import('@/lib/telegram/client');
+                      const c = await initializeClient();
+                      if (c) {
+                        try { await c.disconnect(); } catch {}
+                      }
+                      // reset client
+                      const mod = await import('@/lib/telegram/client');
+                      (mod as any).client = null;
+                      const result = await mod.startAuth(phone.trim());
+                      setPhoneCodeHash(result.phoneCodeHash);
+                    } catch (error: any) {
+                      console.log('[AUTH] Resend error:', error?.errorMessage || error?.message);
+                    } finally {
+                      setLoading(false);
+                    }
+                  })();
+                }}
+                disabled={loading}
+              >
+                <Text style={styles.textButtonText}>Resend Code</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -257,14 +343,22 @@ export default function TelegramLoginScreen() {
                 onPress={verify2FA}
                 disabled={loading}
               >
-                <Text style={styles.buttonText}>
-                  {loading ? 'Signing In...' : 'Confirm Password'}
-                </Text>
+                <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+                  <Text style={styles.buttonText}>
+                    {loading ? 'Signing In...' : 'Confirm Password'}
+                  </Text>
+                </Animated.View>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.textButton}
-                onPress={() => setStep('phone')}
+                onPress={() => {
+                  if (loading) return;
+                  setStep('phone');
+                  setLoading(false);
+                  setPassword('');
+                  setCode('');
+                }}
                 disabled={loading}
               >
                 <Text style={styles.textButtonText}>Cancel & Start Over</Text>

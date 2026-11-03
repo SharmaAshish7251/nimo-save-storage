@@ -56,7 +56,8 @@
             "extraProguardRules": "-keep class androidx.work.** { *; }\n-dontwarn androidx.work.**\n-keep class androidx.room.** { *; }\n-dontwarn androidx.room.**\n-keep class * extends androidx.room.RoomDatabase { *; }\n-keep class * extends androidx.work.ListenableWorker { <init>(android.content.Context, androidx.work.WorkerParameters); }\n-keep class * extends androidx.work.InputMerger { <init>(); }\n-keep class androidx.sqlite.** { *; }\n-keep class androidx.startup.** { *; }"
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,

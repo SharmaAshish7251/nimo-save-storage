@@ -8,7 +8,6 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { getTelegramDialogs, TelegramDestination } from '@/lib/telegram/client';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
@@ -47,7 +46,6 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
       const dialogs = await getTelegramDialogs();
       setDestinations(dialogs);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load Telegram chats');
     } finally {
       setLoading(false);
     }
@@ -68,14 +66,12 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
         onDestinationChanged(dest);
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to save destination');
     }
   };
 
   const setManualDestination = async () => {
     const trimmed = customInput.trim();
     if (!trimmed) {
-      Alert.alert('Error', 'Please enter a chat ID or @username');
       return;
     }
     const dest: TelegramDestination = {

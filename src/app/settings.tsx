@@ -1,10 +1,13 @@
-import { View, StyleSheet, Text, TouchableOpacity, Switch, TextInput, Alert, ScrollView, Image } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Switch, TextInput, ScrollView, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
+import { router } from 'expo-router';
 import { getConfig, saveConfig } from '@/lib/storage/queue';
 import { requestMediaPermissions } from '@/lib/scanner/files';
 import { registerBackgroundUploadTask, unregisterBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { DestinationSelector } from '@/components/DestinationSelector';
+import { disconnect } from '@/lib/telegram/client';
+import * as SecureStoreLib from '@/lib/storage/secure';
 
 export default function SettingsScreen() {
   const [config, setConfig] = useState<any>(null);
@@ -38,16 +41,11 @@ export default function SettingsScreen() {
         }
       }
     } catch {
-      Alert.alert('Error', 'Failed to save settings');
     }
   };
 
   const requestPermissions = async () => {
-    const granted = await requestMediaPermissions();
-    Alert.alert(
-      granted ? 'Success' : 'Failed',
-      granted ? 'Media permissions granted' : 'Media permissions denied'
-    );
+    await requestMediaPermissions();
   };
 
   if (loading || !config) {
@@ -145,6 +143,26 @@ export default function SettingsScreen() {
             <Text style={styles.helpText}>Number of parallel uploads (like IDM)</Text>
           </View>
         </View>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => router.push('/logs')}
+        >
+          <Text style={styles.buttonText}>View Debug Logs</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.dangerButton, { marginTop: 6 }]}
+          onPress={async () => {
+            try {
+              await disconnect();
+              await SecureStoreLib.clearSession();
+              router.replace('/telegram-login');
+            } catch {
+            }
+          }}
+        >
+          <Text style={styles.dangerButtonText}>Logout from Telegram</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -224,13 +242,26 @@ const styles = StyleSheet.create({
   },
   button: {
     backgroundColor: '#208AEF',
-    padding: 10,
+    padding: 8,
     borderRadius: 8,
     alignItems: 'center',
   },
   buttonText: {
     color: 'white',
-    fontSize: 14,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  dangerButton: {
+    backgroundColor: '#fee',
+    padding: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#f87171',
+  },
+  dangerButtonText: {
+    color: '#dc2626',
+    fontSize: 13,
     fontWeight: '600',
   },
   helpText: {

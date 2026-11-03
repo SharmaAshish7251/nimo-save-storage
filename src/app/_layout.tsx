@@ -1,5 +1,5 @@
-import '@/shims/polyfills';
 import 'react-native-get-random-values';
+import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme, Text, TouchableOpacity, StyleSheet } from 'react-native';
@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
 
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
+import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -49,6 +50,7 @@ export default function RootLayout() {
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
         <Stack.Screen name="upload" />
         <Stack.Screen name="explore" options={{ title: 'Explore' }} />
+        <Stack.Screen name="logs" options={{ title: 'Logs' }} />
       </Stack>
     </ThemeProvider>
   );

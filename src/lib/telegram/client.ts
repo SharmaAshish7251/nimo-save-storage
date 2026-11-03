@@ -1,10 +1,11 @@
+import 'react-native-get-random-values';
 import '@/shims/polyfills';
 import { Buffer } from 'buffer';
 import bigInt from 'big-integer';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/StringSession';
 import { PromisedWebSockets } from 'telegram/extensions';
-import { ConnectionTCPAbridged } from 'telegram/network';
+import { ConnectionTCPObfuscated } from 'telegram/network';
 import { computeCheck } from 'telegram/Password';
 import { CustomFile } from 'telegram/client/uploads';
 import * as SecureStoreLib from '../storage/secure';
@@ -90,6 +91,8 @@ let apiHash: string = DEFAULT_API_HASH;
 let cachedLoginStatus: { value: boolean; timestamp: number } | null = null;
 const LOGIN_CACHE_TTL = 30000;
 
+export { client };
+
 export async function initializeClient(targetPhone?: string): Promise<any> {
   // If client already exists, verify if targetPhone requires a different DC (for initial auth)
   if (client) {
@@ -133,29 +136,67 @@ export async function initializeClient(targetPhone?: string): Promise<any> {
   }
   
   client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 2,
-    useWSS: false,
+    connectionRetries: 1,
+    useWSS: true,
     networkSocket: PromisedWebSockets,
-    connection: ConnectionTCPAbridged,
-    deviceModel: 'Android Mobile',
-    systemVersion: 'Android 14',
-    appVersion: '1.0.0',
+    connection: ConnectionTCPObfuscated,
+    deviceModel: 'Android',
+    systemVersion: '14',
+    appVersion: '11.0.0',
     langCode: 'en',
     systemLangCode: 'en',
-    timeout: 15,
+    timeout: 10,
     retryDelay: 500,
-    maxConcurrentDownloads: 4,
+    maxConcurrentDownloads: 1,
   });
   
   return client;
 }
 
 export async function startAuth(phoneNumber: string): Promise<{ phoneCodeHash: string }> {
-  // Directly connect to the DC matching the phone number to avoid PHONE_MIGRATE
+  // Force reset any existing client before starting fresh auth
+  if (client) {
+    try {
+      await client.disconnect();
+    } catch {}
+    client = null;
+  }
+  cachedLoginStatus = null;
+  (globalThis as any).__nimo_cached_login = null;
+
   const c = await initializeClient(phoneNumber);
   if (!c) throw new Error('Failed to initialize client');
   
-  await c.connect();
+  try {
+    await c.connect();
+  } catch (e) {
+    console.log('[TG] Connect error, retrying...');
+    try { await (c as any).disconnect(); } catch {}
+    client = null;
+    const c2 = await initializeClient(phoneNumber);
+    await c2.connect();
+    const result: any = await c2.invoke(
+      new Api.auth.SendCode({
+        phoneNumber,
+        apiId,
+        apiHash,
+        settings: new Api.CodeSettings({}),
+      })
+    );
+    console.log('[TG] SendCode result:', result?.phoneCodeHash ? 'OK' : JSON.stringify(result));
+    try {
+      const sessionStr = c2.session.save();
+      if (sessionStr) {
+        await SecureStoreLib.saveSession(sessionStr);
+      }
+      await SecureStoreLib.savePhone(phoneNumber);
+    } catch (err) {
+      console.warn('Could not save preliminary session:', err);
+    }
+    return { phoneCodeHash: result.phoneCodeHash };
+  }
+  
+  console.log('[TG] Connected, sending code...');
   const result: any = await c.invoke(
     new Api.auth.SendCode({
       phoneNumber,
@@ -164,7 +205,8 @@ export async function startAuth(phoneNumber: string): Promise<{ phoneCodeHash: s
       settings: new Api.CodeSettings({}),
     })
   );
-
+  console.log('[TG] SendCode result:', result?.phoneCodeHash ? 'OK' : JSON.stringify(result));
+  
   // Immediately persist session so signIn reuses this exact DC & key without re-handshake
   try {
     const sessionStr = c.session.save();
@@ -180,10 +222,22 @@ export async function startAuth(phoneNumber: string): Promise<{ phoneCodeHash: s
 }
 
 export async function signIn(phoneNumber: string, code: string, phoneCodeHash: string): Promise<boolean> {
+  // Force reset and reinitialize to use saved session from startAuth
+  if (client) {
+    try {
+      await client.disconnect();
+    } catch {}
+    client = null;
+  }
+  cachedLoginStatus = null;
+  (globalThis as any).__nimo_cached_login = null;
+  
   const c = await initializeClient(phoneNumber);
   if (!c) throw new Error('Failed to initialize client');
   
   try {
+    await c.connect();
+    console.log('[TG] Calling SignIn...');
     await c.invoke(
       new Api.auth.SignIn({
         phoneNumber,
@@ -191,14 +245,17 @@ export async function signIn(phoneNumber: string, code: string, phoneCodeHash: s
         phoneCode: code,
       })
     );
+    console.log('[TG] SignIn OK');
     
     const sessionStr = c.session.save();
     await SecureStoreLib.saveSession(sessionStr);
     await SecureStoreLib.savePhone(phoneNumber);
     cachedLoginStatus = { value: true, timestamp: Date.now() };
+    (globalThis as any).__nimo_cached_login = { value: true, timestamp: Date.now() };
     
     return true;
   } catch (error: any) {
+    console.log('[TG] SignIn error:', error?.errorMessage || error?.message);
     if (error.errorMessage === 'SESSION_PASSWORD_NEEDED') {
       throw new Error('2FA_PASSWORD_REQUIRED');
     }
@@ -210,23 +267,41 @@ export async function signInWithPassword(password: string): Promise<boolean> {
   const c = await initializeClient();
   if (!c) throw new Error('Failed to initialize client');
   
-  await c.connect();
-  const passwordSrp: any = await c.invoke(new Api.account.GetPassword());
-  const passwordSrpCheck = await computeCheck(passwordSrp, password);
+  try {
+    if (!(c as any).isConnected || !(c as any).isConnected()) {
+      await c.connect().catch(() => {});
+    }
+  } catch (e) {
+    // ignore
+  }
   
+  console.log('[TG2FA] Getting password info...');
+  const passwordSrp: any = await c.invoke(new Api.account.GetPassword());
+  console.log('[TG2FA] Computing check...');
+  const passwordSrpCheck = await computeCheck(passwordSrp, password);
+  console.log('[TG2FA] Checking password...');
   await c.invoke(
     new Api.auth.CheckPassword({
       password: passwordSrpCheck,
     })
   );
+  console.log('[TG2FA] Success');
   
   const sessionStr = c.session.save();
   await SecureStoreLib.saveSession(sessionStr);
+  cachedLoginStatus = { value: true, timestamp: Date.now() };
+  (globalThis as any).__nimo_cached_login = { value: true, timestamp: Date.now() };
   return true;
 }
 
 export async function isLoggedIn(): Promise<boolean> {
   try {
+    if ((globalThis as any).__nimo_cached_login) {
+      const c = (globalThis as any).__nimo_cached_login;
+      if (Date.now() - c.timestamp < LOGIN_CACHE_TTL) {
+        return c.value;
+      }
+    }
     if (cachedLoginStatus && Date.now() - cachedLoginStatus.timestamp < LOGIN_CACHE_TTL) {
       return cachedLoginStatus.value;
     }
@@ -240,7 +315,9 @@ export async function isLoggedIn(): Promise<boolean> {
       cachedLoginStatus = { value: false, timestamp: Date.now() };
       return false;
     }
-    await c.connect();
+    try {
+      await c.connect();
+    } catch {}
     const me = await c.getMe();
     const result = !!me;
     cachedLoginStatus = { value: result, timestamp: Date.now() };

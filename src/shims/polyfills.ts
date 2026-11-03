@@ -1,4 +1,5 @@
 import 'react-native-get-random-values';
+import 'react-native-get-random-values';
 import { Buffer } from 'buffer';
 
 const g: any = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : {});

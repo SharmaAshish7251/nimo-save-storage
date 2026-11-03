@@ -7,7 +7,6 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import {
   ScannedFile,
@@ -95,7 +94,6 @@ export function FolderBrowserModal({
       setSelectedUris(new Set());
       setStep('select_files');
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load album files');
     } finally {
       setLoading(false);
     }
@@ -128,7 +126,6 @@ export function FolderBrowserModal({
       setSelectedUris(new Set());
       setStep('select_files');
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to open directory');
     } finally {
       setLoading(false);
     }
@@ -169,10 +166,6 @@ export function FolderBrowserModal({
       onClose();
       onScanFoldersRequested(chosen);
     } else {
-      Alert.alert(
-        'Folders Saved',
-        `Saved ${chosen.length} folder(s) for scanning and auto-upload.`
-      );
       onClose();
     }
   };
@@ -218,7 +211,6 @@ export function FolderBrowserModal({
 
   const confirmSelection = (uploadNow: boolean) => {
     if (selectedFiles.length === 0) {
-      Alert.alert('Notice', 'Please select at least one file');
       return;
     }
     onFilesSelected(selectedFiles, uploadNow);

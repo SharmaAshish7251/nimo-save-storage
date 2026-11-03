@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import { formatFileSize, getConfig, getQueue, QueueItem } from '@/lib/storage/queue';
 import { isLoggedIn } from '@/lib/telegram/client';
 import { router } from 'expo-router';
@@ -14,14 +15,14 @@ export default function HomeScreen() {
   const checkStatus = async () => {
     try {
       const [loginStatus, appConfig, queueItems] = await Promise.all([
-        isLoggedIn(),
+        isLoggedIn().catch(() => false),
         getConfig(),
-        getQueue(),
+        getQueue().catch(() => []),
       ]);
       setLoggedIn(loginStatus);
       setConfig(appConfig);
-      const totalBytes = queueItems.reduce((acc: number, item: QueueItem) => acc + (item.size || 0), 0);
-      setQueueInfo({ count: queueItems.length, totalBytes });
+      const totalBytes = (queueItems || []).reduce((acc: number, item: QueueItem) => acc + (item.size || 0), 0);
+      setQueueInfo({ count: (queueItems || []).length, totalBytes });
     } catch (error) {
       console.error(error);
     } finally {

@@ -21,9 +21,12 @@ export interface ProcessQueueResult {
   errors: string[];
 }
 
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Telegram limit
+
 export class UploadManager {
   private queue: any;
   private isRunning = false;
+  private progressTrack: Record<string, { bytes: number; time: number }> = {};
   
   constructor(concurrency: number = 3) {
     this.queue = new PQueue({ concurrency });
@@ -147,6 +150,10 @@ export class UploadManager {
         throw new Error('File does not exist or cannot be accessed');
       }
       
+      if (fileInfo.size && fileInfo.size > MAX_UPLOAD_SIZE_BYTES) {
+        throw new Error(`File too large (${Math.round(fileInfo.size / 1024 / 1024)}MB). Max ${Math.round(MAX_UPLOAD_SIZE_BYTES / 1024 / 1024)}MB (Telegram limit).`);
+      }
+      
       const config = await getConfig();
       const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
       
@@ -155,7 +162,20 @@ export class UploadManager {
         item.fileName,
         targetChat,
         (progress: number) => {
-          this.updateItemStatus(item.id, 'uploading', Math.round(progress * 100));
+          const now = Date.now();
+          if (!this.progressTrack[item.id]) {
+            this.progressTrack[item.id] = { bytes: 0, time: now };
+          }
+          const uploadedBytes = Math.round(progress * (item.size || 0));
+          const last = this.progressTrack[item.id];
+          const deltaBytes = uploadedBytes - last.bytes;
+          const deltaTime = (now - last.time) / 1000;
+          let speedKbps = 0;
+          if (deltaTime > 0 && deltaBytes > 0) {
+            speedKbps = (deltaBytes / 1024) / deltaTime;
+          }
+          this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
+          this.updateItemStatus(item.id, 'uploading', Math.round(progress * 100), undefined, undefined, undefined, undefined, speedKbps);
         }
       );
       
@@ -222,7 +242,8 @@ export class UploadManager {
     error?: string,
     uploadStartedAt?: number,
     uploadedAt?: number,
-    uploadDurationMs?: number
+    uploadDurationMs?: number,
+    speedKbps?: number
   ): Promise<void> {
     const queue = await getQueue();
     const index = queue.findIndex((item: QueueItem) => item.id === id);
@@ -233,6 +254,7 @@ export class UploadManager {
       if (uploadStartedAt) queue[index].uploadStartedAt = uploadStartedAt;
       if (uploadedAt) queue[index].uploadedAt = uploadedAt;
       if (uploadDurationMs !== undefined) queue[index].uploadDurationMs = uploadDurationMs;
+      if (speedKbps !== undefined) (queue[index] as any).speedKbps = Math.round(speedKbps);
       queue[index].lastAttemptAt = Date.now();
       if (status === 'uploading' || status === 'failed') {
         queue[index].retries = (queue[index].retries || 0) + (status === 'failed' ? 1 : 0);
@@ -260,7 +282,28 @@ export class UploadManager {
     const destName =
       config.targetChatTitle ||
       (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId));
+    try {
+      if (this.queue && typeof this.queue.clear === 'function') {
+        this.queue.clear();
+      }
+    } catch {}
+    this.isRunning = false;
     await clearAllQueue(true, destName);
+  }
+
+  async clearAllQueueFromManager(recordAsDismissed: boolean = false): Promise<void> {
+    try {
+      // Clear pending jobs in p-queue
+      if (this.queue && typeof this.queue.clear === 'function') {
+        this.queue.clear();
+      }
+    } catch {}
+    const config = await getConfig();
+    const destName =
+      config.targetChatTitle ||
+      (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId));
+    await clearAllQueue(recordAsDismissed, destName);
+    this.isRunning = false;
   }
 }
 

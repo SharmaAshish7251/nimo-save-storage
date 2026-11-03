@@ -629,7 +629,7 @@ export default function UploadScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.actionCard, styles.actionCardGreen]}
+          style={[styles.actionCard, styles.actionCardGreen, watchedFolders.length === 0 ? { borderWidth: 2, borderColor: '#3B82F6' } : null]}
           onPress={() => setFolderModalVisible(true)}
         >
           <Text style={styles.actionCardIcon}>📁</Text>
@@ -654,9 +654,11 @@ export default function UploadScreen() {
           </TouchableOpacity>
         </View>
         {watchedFolders.length === 0 ? (
-          <Text style={styles.noWatchedText}>
-            No folders chosen yet. Only selected folders will be scanned.
-          </Text>
+          <TouchableOpacity onPress={() => setFolderModalVisible(true)} style={{ alignSelf: 'flex-start' }}>
+            <Text style={[styles.noWatchedText, { color: '#3B82F6', fontWeight: '600' }]}>
+              No folders chosen yet. Tap to choose folders.
+            </Text>
+          </TouchableOpacity>
         ) : (
           <ScrollView
             horizontal
@@ -683,8 +685,11 @@ export default function UploadScreen() {
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => scanAndQueueAll()}
+            style={[styles.secondaryButton, watchedFolders.length === 0 ? { backgroundColor: '#3B82F6' } : null]}
+            onPress={() => {
+              if (watchedFolders.length === 0) { setFolderModalVisible(true); return; }
+              scanAndQueueAll();
+            }}
           >
             <Text style={styles.secondaryButtonText}>
               ⚡ Scan Folders ({watchedFolders.length})

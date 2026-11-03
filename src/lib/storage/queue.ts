@@ -84,6 +84,7 @@ export interface QueueItem {
   uploadedAt?: number;
   uploadDurationMs?: number;
   error?: string;
+  speedKbps?: number;
 }
 
 export async function getQueue(): Promise<QueueItem[]> {
@@ -270,15 +271,13 @@ export async function clearAllQueue(
   const queue = await getQueue();
   if (recordAsDismissed) {
     for (const item of queue) {
-      if (item.status === 'pending') {
-        await recordActionHistory({
-          fileName: item.fileName,
-          uri: item.uri,
-          size: item.size,
-          status: 'dismissed',
-          destination,
-        });
-      }
+      await recordActionHistory({
+        fileName: item.fileName,
+        uri: item.uri,
+        size: item.size,
+        status: 'dismissed',
+        destination,
+      });
     }
   }
   await saveQueue([]);

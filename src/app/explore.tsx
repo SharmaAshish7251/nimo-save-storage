@@ -552,15 +552,15 @@ export default function CloudExplorerScreen() {
         await Sharing.shareAsync(localUri);
       }
 
-      // Mark locally exists in state
+      // Mark locally exists in state and link the resolved local disk path
       setItems((prev) =>
-        prev.map((it) => (it.uri === item.uri ? { ...it, existsLocally: true } : it))
+        prev.map((it) => (it.uri === item.uri ? { ...it, uri: localUri, existsLocally: true } : it))
       );
       if (selectedItem?.uri === item.uri) {
-        setSelectedItem((prev) => (prev ? { ...prev, existsLocally: true } : null));
+        setSelectedItem((prev) => (prev ? { ...prev, uri: localUri, existsLocally: true } : null));
       }
       if (mediaPlayerItem?.uri === item.uri) {
-        setMediaPlayerItem((prev) => (prev ? { ...prev, existsLocally: true } : null));
+        setMediaPlayerItem((prev) => (prev ? { ...prev, uri: localUri, existsLocally: true } : null));
       }
     } catch (err: any) {
       Alert.alert('Download Failed', err?.message || 'Could not download file from Telegram.');

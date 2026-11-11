@@ -10,6 +10,7 @@ import {
   useColorScheme,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import { formatFileSize } from '@/lib/storage/queue';
@@ -48,6 +49,7 @@ export function MediaPlayerModal({
   downloadProgress = 0,
   downloadStatusText = '',
 }: MediaPlayerModalProps) {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -66,7 +68,7 @@ export function MediaPlayerModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={[styles.overlay, { backgroundColor: bg }]}>
         {/* Top App Bar */}
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, { paddingTop: Math.max(insets.top, 16) + 8 }]}>
           <TouchableOpacity
             style={styles.navBtn}
             onPress={() => {
@@ -103,7 +105,7 @@ export function MediaPlayerModal({
 
         {/* Center Media Canvas */}
         <View style={styles.mediaContainer}>
-          {isImage && item.existsLocally ? (
+          {isImage && item.existsLocally && !item.uri.startsWith('tg://') ? (
             <Image
               source={{ uri: item.uri }}
               style={styles.fullImage}

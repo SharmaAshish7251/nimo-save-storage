@@ -41,6 +41,7 @@ import * as SecureStoreLib from '@/lib/storage/secure';
 import {
   schedulerEngine,
   calculateNextEstimatedRun,
+  isWithinTimeWindow,
 } from '@/lib/scheduler/schedulerEngine';
 
 const INTERVAL_PRESETS = [
@@ -52,24 +53,96 @@ const INTERVAL_PRESETS = [
   { label: '6h', sublabel: 'Extended', value: 360 },
 ];
 
-const WINDOW_PRESETS = [
-  { label: 'Night Owl', range: '00:00 – 06:00', start: '00:00', end: '06:00' },
-  { label: 'Evening', range: '22:00 – 04:00', start: '22:00', end: '04:00' },
-  { label: 'All Day', range: '00:00 – 23:59', start: '00:00', end: '23:59' },
+interface WindowPreset {
+  id: string;
+  label: string;
+  sublabel: string;
+  icon: React.ComponentProps<typeof FontAwesome>['name'];
+  start: string;
+  end: string;
+  durationText: string;
+}
+
+const WINDOW_PRESETS: WindowPreset[] = [
+  {
+    id: 'sleep',
+    label: 'Sleep Window',
+    sublabel: 'Standard overnight',
+    icon: 'bed',
+    start: '22:00',
+    end: '06:00',
+    durationText: '8 hrs',
+  },
+  {
+    id: 'night_owl',
+    label: 'Night Owl',
+    sublabel: 'Midnight to dawn',
+    icon: 'moon-o',
+    start: '00:00',
+    end: '06:00',
+    durationText: '6 hrs',
+  },
+  {
+    id: 'evening_sync',
+    label: 'Evening Sync',
+    sublabel: 'Dinner to midnight',
+    icon: 'coffee',
+    start: '20:00',
+    end: '00:00',
+    durationText: '4 hrs',
+  },
+  {
+    id: 'all_day',
+    label: 'All Day (24h)',
+    sublabel: 'No time limits',
+    icon: 'sun-o',
+    start: '00:00',
+    end: '23:59',
+    durationText: '24 hrs',
+  },
 ];
 
 const CONCURRENCY_PRESETS = [1, 2, 3, 5, 8];
 
-function formatTimeDisplay(timeStr: string): string {
+function getWindowDurationInfo(start: string, end: string) {
+  try {
+    const [sh, sm] = (start || '00:00').split(':').map((v) => parseInt(v, 10) || 0);
+    const [eh, em] = (end || '00:00').split(':').map((v) => parseInt(v, 10) || 0);
+    const startMins = sh * 60 + sm;
+    const endMins = eh * 60 + em;
+    let diffMins = endMins - startMins;
+    const crossesMidnight = endMins < startMins;
+    if (diffMins < 0) {
+      diffMins += 24 * 60;
+    }
+    const hours = Math.floor(diffMins / 60);
+    const minutes = diffMins % 60;
+    const durationLabel = minutes > 0 ? `${hours}h ${minutes}m` : `${hours} hrs`;
+    return { hours, minutes, durationLabel, crossesMidnight };
+  } catch {
+    return { hours: 0, minutes: 0, durationLabel: '0 hrs', crossesMidnight: false };
+  }
+}
+
+function formatTime12(timeStr: string): { time: string; period: string; military: string; timeTag: string } {
   try {
     const [hStr, mStr] = (timeStr || '00:00').split(':');
     const h = parseInt(hStr, 10) || 0;
     const m = parseInt(mStr, 10) || 0;
     const period = h >= 12 ? 'PM' : 'AM';
     const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period} (${timeStr || '00:00'})`;
+    const time = `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+    let timeTag = 'Daytime';
+    if (h >= 21 || h < 4) timeTag = 'Night';
+    else if (h >= 4 && h < 7) timeTag = 'Dawn';
+    else if (h >= 7 && h < 12) timeTag = 'Morning';
+    else if (h >= 12 && h < 17) timeTag = 'Afternoon';
+    else if (h >= 17 && h < 21) timeTag = 'Evening';
+
+    return { time, period, military: timeStr || '00:00', timeTag };
   } catch {
-    return timeStr || '00:00';
+    return { time: timeStr || '00:00', period: 'AM', military: timeStr || '00:00', timeTag: 'Time' };
   }
 }
 
@@ -245,6 +318,12 @@ export default function SettingsScreen() {
   const scheduleMode: ScheduleMode = config.scheduleMode || 'interval';
   const currentInterval = config.intervalMinutes ?? 1;
   const nextRunInfo = calculateNextEstimatedRun(config, schedulerState?.lastRunAt);
+  const durationInfo = getWindowDurationInfo(timeStart, timeEnd);
+  const start12 = formatTime12(timeStart);
+  const end12 = formatTime12(timeEnd);
+  const now = new Date();
+  const currentHM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const isWindowActive = isWithinTimeWindow(currentHM, timeStart, timeEnd);
 
   // Status Badge calculation
   let statusBadgeColor = '#10B981';
@@ -446,15 +525,21 @@ export default function SettingsScreen() {
 
             {/* Schedule Mode Selector Tabs */}
             <Text style={[styles.sectionSubheading, isDark && styles.textDarkSecondary]}>Schedule Mode</Text>
-            <View style={styles.segmentedTabContainer}>
+            <View style={[styles.segmentedTabContainer, isDark && styles.segmentedTabContainerDark]}>
               <TouchableOpacity
-                style={[styles.segmentTab, scheduleMode === 'interval' && styles.segmentTabActive]}
-                onPress={() => updateConfig({ scheduleMode: 'interval' })}
+                style={[
+                  styles.segmentTab,
+                  scheduleMode === 'interval' && [styles.segmentTabActive, isDark && styles.segmentTabActiveDark],
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ scheduleMode: 'interval' });
+                }}
               >
                 <FontAwesome
                   name="repeat"
                   size={12}
-                  color={scheduleMode === 'interval' ? '#208AEF' : '#64748B'}
+                  color={scheduleMode === 'interval' ? '#208AEF' : isDark ? '#94A3B8' : '#64748B'}
                   style={{ marginRight: 5 }}
                 />
                 <Text style={[styles.segmentTabText, scheduleMode === 'interval' && styles.segmentTabTextActive]}>
@@ -463,13 +548,19 @@ export default function SettingsScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.segmentTab, scheduleMode === 'window' && styles.segmentTabActive]}
-                onPress={() => updateConfig({ scheduleMode: 'window' })}
+                style={[
+                  styles.segmentTab,
+                  scheduleMode === 'window' && [styles.segmentTabActive, isDark && styles.segmentTabActiveDark],
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ scheduleMode: 'window' });
+                }}
               >
                 <FontAwesome
                   name="moon-o"
                   size={12}
-                  color={scheduleMode === 'window' ? '#208AEF' : '#64748B'}
+                  color={scheduleMode === 'window' ? '#208AEF' : isDark ? '#94A3B8' : '#64748B'}
                   style={{ marginRight: 5 }}
                 />
                 <Text style={[styles.segmentTabText, scheduleMode === 'window' && styles.segmentTabTextActive]}>
@@ -478,13 +569,19 @@ export default function SettingsScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.segmentTab, scheduleMode === 'continuous' && styles.segmentTabActive]}
-                onPress={() => updateConfig({ scheduleMode: 'continuous' })}
+                style={[
+                  styles.segmentTab,
+                  scheduleMode === 'continuous' && [styles.segmentTabActive, isDark && styles.segmentTabActiveDark],
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ scheduleMode: 'continuous' });
+                }}
               >
                 <FontAwesome
                   name="bolt"
                   size={12}
-                  color={scheduleMode === 'continuous' ? '#208AEF' : '#64748B'}
+                  color={scheduleMode === 'continuous' ? '#208AEF' : isDark ? '#94A3B8' : '#64748B'}
                   style={{ marginRight: 5 }}
                 />
                 <Text style={[styles.segmentTabText, scheduleMode === 'continuous' && styles.segmentTabTextActive]}>
@@ -495,9 +592,9 @@ export default function SettingsScreen() {
 
             {/* Mode-specific settings */}
             {scheduleMode === 'interval' && (
-              <View style={styles.modeConfigCard}>
-                <Text style={styles.modeConfigTitle}>Interval Frequency</Text>
-                <Text style={styles.modeConfigSub}>
+              <View style={[styles.modeConfigCard, isDark && styles.modeConfigCardDark]}>
+                <Text style={[styles.modeConfigTitle, isDark && styles.textDarkPrimary]}>Interval Frequency</Text>
+                <Text style={[styles.modeConfigSub, isDark && styles.textDarkSecondary]}>
                   Select how often to check folders for new files. Minimum 1 minute supported.
                 </Text>
 
@@ -507,14 +604,33 @@ export default function SettingsScreen() {
                     return (
                       <TouchableOpacity
                         key={preset.value}
-                        style={[styles.intervalChip, isSelected && styles.intervalChipActive]}
-                        onPress={() => updateConfig({ intervalMinutes: preset.value })}
+                        style={[
+                          styles.intervalChip,
+                          isDark && styles.intervalChipDark,
+                          isSelected && styles.intervalChipActive,
+                        ]}
+                        onPress={() => {
+                          Haptics.selectionAsync().catch(() => {});
+                          updateConfig({ intervalMinutes: preset.value });
+                        }}
                         activeOpacity={0.7}
                       >
-                        <Text style={[styles.intervalChipTitle, isSelected && styles.intervalChipTitleActive]}>
+                        <Text
+                          style={[
+                            styles.intervalChipTitle,
+                            isDark && styles.textDarkPrimary,
+                            isSelected && styles.intervalChipTitleActive,
+                          ]}
+                        >
                           {preset.label}
                         </Text>
-                        <Text style={[styles.intervalChipSub, isSelected && styles.intervalChipSubActive]}>
+                        <Text
+                          style={[
+                            styles.intervalChipSub,
+                            isDark && styles.textDarkSecondary,
+                            isSelected && styles.intervalChipSubActive,
+                          ]}
+                        >
                           {preset.sublabel}
                         </Text>
                       </TouchableOpacity>
@@ -525,81 +641,272 @@ export default function SettingsScreen() {
             )}
 
             {scheduleMode === 'window' && (
-              <View style={styles.modeConfigCard}>
-                <Text style={styles.modeConfigTitle}>Preset Windows</Text>
-                <View style={styles.chipsContainer}>
+              <View style={[styles.modeConfigCard, isDark && styles.modeConfigCardDark]}>
+                {/* 1. Live Window Status Banner */}
+                <View
+                  style={[
+                    styles.windowStatusBanner,
+                    isWindowActive
+                      ? styles.windowStatusBannerActive
+                      : isDark
+                      ? styles.windowStatusBannerDark
+                      : styles.windowStatusBannerInactive,
+                  ]}
+                >
+                  <View style={styles.windowStatusIconCol}>
+                    <View
+                      style={[
+                        styles.windowStatusIconHalo,
+                        {
+                          backgroundColor: isWindowActive
+                            ? 'rgba(16, 185, 129, 0.2)'
+                            : isDark
+                            ? 'rgba(124, 58, 237, 0.2)'
+                            : 'rgba(59, 130, 246, 0.15)',
+                        },
+                      ]}
+                    >
+                      <FontAwesome
+                        name={isWindowActive ? 'check-circle' : 'moon-o'}
+                        size={17}
+                        color={isWindowActive ? '#10B981' : isDark ? '#A78BFA' : '#6366F1'}
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.windowStatusTextCol}>
+                    <View style={styles.windowStatusPillRow}>
+                      <Text
+                        style={[
+                          styles.windowStatusTitle,
+                          {
+                            color: isWindowActive
+                              ? '#059669'
+                              : isDark
+                              ? '#E2E8F0'
+                              : '#1E293B',
+                          },
+                        ]}
+                      >
+                        {isWindowActive ? 'Window Active Right Now' : 'Night Window Sleeping'}
+                      </Text>
+                      {durationInfo.crossesMidnight && (
+                        <View style={styles.overnightBadge}>
+                          <FontAwesome name="star" size={8} color="#D97706" style={{ marginRight: 3 }} />
+                          <Text style={styles.overnightBadgeText}>Overnight</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text
+                      style={[
+                        styles.windowStatusSub,
+                        {
+                          color: isWindowActive
+                            ? '#047857'
+                            : isDark
+                            ? '#94A3B8'
+                            : '#64748B',
+                        },
+                      ]}
+                    >
+                      {isWindowActive
+                        ? `Allowed until ${end12.time} ${end12.period} (${end12.military}) • ${durationInfo.durationLabel} total`
+                        : `Next active at ${start12.time} ${start12.period} (${nextRunInfo.humanText})`}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* 2. Interactive Time Bridge: Start -> End */}
+                <Text style={[styles.modeSectionHeader, isDark && styles.textDarkPrimary]}>
+                  Active Backup Hours
+                </Text>
+                <View style={styles.timeBridgeContainer}>
+                  {/* Start Time Card */}
+                  <TouchableOpacity
+                    style={[styles.timeBridgeCard, isDark && styles.timeBridgeCardDark]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                      setDialerTarget('start');
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.timeBridgeCardHeader}>
+                      <View style={[styles.timeBridgeIconWrap, { backgroundColor: isDark ? '#1E3A8A44' : '#EFF6FF' }]}>
+                        <FontAwesome name="moon-o" size={12} color="#208AEF" />
+                      </View>
+                      <Text style={[styles.timeBridgeSubLabel, isDark && styles.textDarkSecondary]}>
+                        STARTS
+                      </Text>
+                    </View>
+                    <View style={styles.timeBridgeMainRow}>
+                      <Text style={[styles.timeBridgeBigNum, isDark && styles.textDarkPrimary]}>
+                        {start12.time}
+                      </Text>
+                      <Text style={styles.timeBridgePeriod}>{start12.period}</Text>
+                    </View>
+                    <View style={styles.timeBridgeFootRow}>
+                      <Text style={[styles.timeBridgeMilitary, isDark && styles.textDarkSecondary]}>
+                        {start12.military} ({start12.timeTag})
+                      </Text>
+                      <FontAwesome name="pencil" size={10} color="#208AEF" />
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Bridge Connector Arrow & Duration Pill */}
+                  <View style={styles.bridgeConnector}>
+                    <View style={[styles.bridgeConnectorLine, isDark && { backgroundColor: '#334155' }]} />
+                    <View style={[styles.durationBadgePill, isDark && styles.durationBadgePillDark]}>
+                      <FontAwesome name="hourglass-half" size={8} color="#208AEF" style={{ marginRight: 3 }} />
+                      <Text style={styles.durationBadgeText}>{durationInfo.durationLabel}</Text>
+                    </View>
+                    <FontAwesome
+                      name="arrow-right"
+                      size={10}
+                      color={isDark ? '#64748B' : '#94A3B8'}
+                      style={{ marginTop: 4 }}
+                    />
+                  </View>
+
+                  {/* End Time Card */}
+                  <TouchableOpacity
+                    style={[styles.timeBridgeCard, isDark && styles.timeBridgeCardDark]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                      setDialerTarget('end');
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.timeBridgeCardHeader}>
+                      <View style={[styles.timeBridgeIconWrap, { backgroundColor: isDark ? '#78350F33' : '#FEF3C7' }]}>
+                        <FontAwesome name="sun-o" size={12} color="#D97706" />
+                      </View>
+                      <Text style={[styles.timeBridgeSubLabel, isDark && styles.textDarkSecondary]}>
+                        ENDS
+                      </Text>
+                    </View>
+                    <View style={styles.timeBridgeMainRow}>
+                      <Text style={[styles.timeBridgeBigNum, isDark && styles.textDarkPrimary]}>
+                        {end12.time}
+                      </Text>
+                      <Text style={[styles.timeBridgePeriod, { color: '#D97706' }]}>{end12.period}</Text>
+                    </View>
+                    <View style={styles.timeBridgeFootRow}>
+                      <Text style={[styles.timeBridgeMilitary, isDark && styles.textDarkSecondary]}>
+                        {end12.military} ({end12.timeTag})
+                      </Text>
+                      <FontAwesome name="pencil" size={10} color="#D97706" />
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                {/* 3. Preset Window Cards (2x2 Grid) */}
+                <Text style={[styles.modeSectionHeader, { marginTop: 14 }, isDark && styles.textDarkPrimary]}>
+                  Quick Presets
+                </Text>
+                <View style={styles.presetGrid}>
                   {WINDOW_PRESETS.map((p) => {
                     const isSelected = timeStart === p.start && timeEnd === p.end;
                     return (
                       <TouchableOpacity
-                        key={p.label}
-                        style={[styles.presetChip, isSelected && styles.presetChipActive]}
+                        key={p.id}
+                        style={[
+                          styles.presetGridCard,
+                          isDark && styles.presetGridCardDark,
+                          isSelected && styles.presetGridCardActive,
+                        ]}
                         onPress={() => {
+                          Haptics.selectionAsync().catch(() => {});
                           setTimeStart(p.start);
                           setTimeEnd(p.end);
                           updateConfig({ timeWindowStart: p.start, timeWindowEnd: p.end });
                         }}
                         activeOpacity={0.7}
                       >
-                        <Text style={[styles.presetChipText, isSelected && styles.presetChipTextActive]}>
-                          {p.label} ({p.start}–{p.end})
+                        <View style={styles.presetGridCardTop}>
+                          <View
+                            style={[
+                              styles.presetGridIconBubble,
+                              {
+                                backgroundColor: isSelected
+                                  ? '#208AEF'
+                                  : isDark
+                                  ? '#334155'
+                                  : '#F1F5F9',
+                              },
+                            ]}
+                          >
+                            <FontAwesome
+                              name={p.icon}
+                              size={11}
+                              color={isSelected ? '#FFFFFF' : isDark ? '#94A3B8' : '#64748B'}
+                            />
+                          </View>
+                          <View
+                            style={[
+                              styles.presetDurationBadge,
+                              isDark && styles.presetDurationBadgeDark,
+                              isSelected && { backgroundColor: 'rgba(32, 138, 239, 0.15)' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.presetDurationText,
+                                isDark && styles.textDarkSecondary,
+                                isSelected && { color: '#208AEF', fontWeight: '700' },
+                              ]}
+                            >
+                              {p.durationText}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text
+                          style={[
+                            styles.presetGridTitle,
+                            isDark && styles.textDarkPrimary,
+                            isSelected && { color: '#208AEF' },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {p.label}
                         </Text>
+                        <Text style={[styles.presetGridSub, isDark && styles.textDarkSecondary]}>
+                          {p.start} – {p.end}
+                        </Text>
+                        {isSelected && (
+                          <View style={styles.presetCheckCircle}>
+                            <FontAwesome name="check" size={7} color="#FFFFFF" />
+                          </View>
+                        )}
                       </TouchableOpacity>
                     );
                   })}
                 </View>
 
-                {/* Clock Dialer Row: Start Time */}
-                <TouchableOpacity
-                  style={styles.dialerRowCard}
-                  onPress={() => setDialerTarget('start')}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.dialerRowInfo}>
-                    <View style={styles.dialerIconBubble}>
-                      <FontAwesome name="clock-o" size={14} color="#208AEF" />
-                    </View>
-                    <View>
-                      <Text style={styles.dialerTitle}>Custom Start Time</Text>
-                      <Text style={styles.dialerSub}>Tap to open Material clock dialer</Text>
-                    </View>
-                  </View>
-                  <View style={styles.dialerBadgePill}>
-                    <Text style={styles.dialerBadgeText}>{formatTimeDisplay(timeStart)}</Text>
-                    <FontAwesome name="chevron-right" size={10} color="#208AEF" style={{ marginLeft: 6 }} />
-                  </View>
-                </TouchableOpacity>
-
-                {/* Clock Dialer Row: End Time */}
-                <TouchableOpacity
-                  style={styles.dialerRowCard}
-                  onPress={() => setDialerTarget('end')}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.dialerRowInfo}>
-                    <View style={styles.dialerIconBubble}>
-                      <FontAwesome name="moon-o" size={14} color="#7C3AED" />
-                    </View>
-                    <View>
-                      <Text style={styles.dialerTitle}>Custom End Time</Text>
-                      <Text style={styles.dialerSub}>Supports midnight-spanning windows</Text>
-                    </View>
-                  </View>
-                  <View style={styles.dialerBadgePill}>
-                    <Text style={styles.dialerBadgeText}>{formatTimeDisplay(timeEnd)}</Text>
-                    <FontAwesome name="chevron-right" size={10} color="#208AEF" style={{ marginLeft: 6 }} />
-                  </View>
-                </TouchableOpacity>
+                {/* 4. Night Window Pro Tip */}
+                <View style={[styles.nightProTipCard, isDark && styles.nightProTipCardDark]}>
+                  <FontAwesome
+                    name="lightbulb-o"
+                    size={14}
+                    color="#F59E0B"
+                    style={{ marginTop: 1, marginRight: 8 }}
+                  />
+                  <Text style={[styles.nightProTipText, isDark && styles.textDarkSecondary]}>
+                    <Text style={{ fontWeight: '700', color: isDark ? '#F8FAFC' : '#1E293B' }}>Quiet Sync</Text>:
+                    Large 4K videos & photos upload while you sleep. Combine with{' '}
+                    <Text style={{ fontWeight: '600', color: '#208AEF' }}>Only When Charging</Text> to keep your battery protected.
+                  </Text>
+                </View>
               </View>
             )}
 
             {scheduleMode === 'continuous' && (
-              <View style={styles.modeConfigCard}>
+              <View style={[styles.modeConfigCard, isDark && styles.modeConfigCardDark]}>
                 <View style={styles.rowAligned}>
                   <FontAwesome name="bolt" size={15} color="#F59E0B" style={{ marginRight: 8 }} />
-                  <Text style={[styles.modeConfigTitle, { marginBottom: 0 }]}>Continuous Live Sync</Text>
+                  <Text style={[styles.modeConfigTitle, { marginBottom: 0 }, isDark && styles.textDarkPrimary]}>
+                    Continuous Live Sync
+                  </Text>
                 </View>
-                <Text style={[styles.modeConfigSub, { marginTop: 6 }]}>
+                <Text style={[styles.modeConfigSub, { marginTop: 6 }, isDark && styles.textDarkSecondary]}>
                   Monitors filesystem events and backs up newly captured photos and files immediately whenever the app is open.
                 </Text>
               </View>
@@ -1374,6 +1681,11 @@ const styles = StyleSheet.create({
     padding: 3,
     marginBottom: 12,
   },
+  segmentedTabContainerDark: {
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
   segmentTab: {
     flex: 1,
     flexDirection: 'row',
@@ -1389,6 +1701,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 2,
     elevation: 2,
+  },
+  segmentTabActiveDark: {
+    backgroundColor: '#1E293B',
+    shadowOpacity: 0.2,
   },
   segmentTabText: {
     fontSize: 12,
@@ -1408,6 +1724,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
+  modeConfigCardDark: {
+    backgroundColor: '#0F172A',
+    borderColor: '#334155',
+  },
   modeConfigTitle: {
     fontSize: 13,
     fontWeight: '700',
@@ -1419,6 +1739,269 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginBottom: 10,
     lineHeight: 15,
+  },
+  modeSectionHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+    letterSpacing: 0.2,
+  },
+
+  /* Night Window Rich UI */
+  windowStatusBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+  },
+  windowStatusBannerActive: {
+    backgroundColor: '#ECFDF5',
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+  },
+  windowStatusBannerInactive: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+  },
+  windowStatusBannerDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+  },
+  windowStatusIconCol: {
+    marginRight: 10,
+  },
+  windowStatusIconHalo: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  windowStatusTextCol: {
+    flex: 1,
+  },
+  windowStatusPillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  windowStatusTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  overnightBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  overnightBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#B45309',
+  },
+  windowStatusSub: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  timeBridgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  timeBridgeCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  timeBridgeCardDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+  },
+  timeBridgeCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  timeBridgeIconWrap: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  timeBridgeSubLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    color: '#64748B',
+  },
+  timeBridgeMainRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+    marginBottom: 4,
+  },
+  timeBridgeBigNum: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  timeBridgePeriod: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#208AEF',
+  },
+  timeBridgeFootRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  timeBridgeMilitary: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  bridgeConnector: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    minWidth: 50,
+  },
+  bridgeConnectorLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '35%',
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    zIndex: 1,
+  },
+  durationBadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    zIndex: 2,
+  },
+  durationBadgePillDark: {
+    backgroundColor: '#1E3A8A33',
+    borderColor: '#1E40AF',
+  },
+  durationBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#208AEF',
+  },
+  presetGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  presetGridCard: {
+    width: '48%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    position: 'relative',
+  },
+  presetGridCardDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+  },
+  presetGridCardActive: {
+    borderColor: '#208AEF',
+    backgroundColor: 'rgba(32, 138, 239, 0.05)',
+  },
+  presetGridCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  presetGridIconBubble: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presetDurationBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  presetDurationBadgeDark: {
+    backgroundColor: '#0F172A',
+  },
+  presetDurationText: {
+    fontSize: 9,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  presetGridTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 1,
+  },
+  presetGridSub: {
+    fontSize: 10,
+    color: '#64748B',
+  },
+  presetCheckCircle: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#208AEF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nightProTipCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FEF3C722',
+    borderWidth: 1,
+    borderColor: '#F59E0B33',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 2,
+  },
+  nightProTipCardDark: {
+    backgroundColor: '#78350F22',
+    borderColor: '#B4530944',
+  },
+  nightProTipText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    color: '#64748B',
   },
 
   /* Chips */
@@ -1436,6 +2019,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  intervalChipDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
   },
   intervalChipActive: {
     backgroundColor: '#EFF6FF',

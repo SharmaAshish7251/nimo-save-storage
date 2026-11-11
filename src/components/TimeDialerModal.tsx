@@ -5,7 +5,10 @@ import {
   Modal,
   StyleSheet,
   TouchableOpacity,
+  useColorScheme,
 } from 'react-native';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import * as Haptics from 'expo-haptics';
 
 interface TimeDialerModalProps {
   visible: boolean;
@@ -15,12 +18,21 @@ interface TimeDialerModalProps {
   onClose: () => void;
 }
 
-const DIAL_SIZE = 260;
-const DIAL_RADIUS = 96;
+const DIAL_SIZE = 250;
+const DIAL_RADIUS = 92;
 const CENTER = DIAL_SIZE / 2;
 
 const HOURS = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+
+const QUICK_PRESETS = [
+  { label: '10 PM', time: '22:00', icon: 'moon-o' as const },
+  { label: '11 PM', time: '23:00', icon: 'moon-o' as const },
+  { label: 'Midnight', time: '00:00', icon: 'star' as const },
+  { label: '4 AM', time: '04:00', icon: 'clock-o' as const },
+  { label: '6 AM', time: '06:00', icon: 'sun-o' as const },
+  { label: '8 AM', time: '08:00', icon: 'sun-o' as const },
+];
 
 export function TimeDialerModal({
   visible,
@@ -29,6 +41,9 @@ export function TimeDialerModal({
   onConfirm,
   onClose,
 }: TimeDialerModalProps) {
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
   const [mode, setMode] = useState<'hour' | 'minute'>('hour');
   const [selectedHour, setSelectedHour] = useState(12);
   const [selectedMinute, setSelectedMinute] = useState(0);
@@ -89,6 +104,7 @@ export function TimeDialerModal({
   };
 
   const handleHourSelect = (hour: number) => {
+    Haptics.selectionAsync().catch(() => {});
     setSelectedHour(hour);
     // Auto-advance to minute mode after picking an hour
     if (advanceTimerRef.current) {
@@ -100,10 +116,12 @@ export function TimeDialerModal({
   };
 
   const handleMinuteSelect = (min: number) => {
+    Haptics.selectionAsync().catch(() => {});
     setSelectedMinute(min);
   };
 
   const adjustMinute = (delta: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setSelectedMinute((prev) => {
       let next = prev + delta;
       if (next >= 60) next = 0;
@@ -112,7 +130,33 @@ export function TimeDialerModal({
     });
   };
 
+  const applyQuickTime = (timeStr: string) => {
+    Haptics.selectionAsync().catch(() => {});
+    try {
+      const [hStr, mStr] = timeStr.split(':');
+      const h24 = parseInt(hStr, 10) || 0;
+      const m = parseInt(mStr, 10) || 0;
+
+      if (h24 === 0) {
+        setSelectedHour(12);
+        setPeriod('AM');
+      } else if (h24 === 12) {
+        setSelectedHour(12);
+        setPeriod('PM');
+      } else if (h24 > 12) {
+        setSelectedHour(h24 - 12);
+        setPeriod('PM');
+      } else {
+        setSelectedHour(h24);
+        setPeriod('AM');
+      }
+
+      setSelectedMinute(m);
+    } catch {}
+  };
+
   const handleSave = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     onConfirm(getFormatted24h());
     onClose();
   };
@@ -131,61 +175,143 @@ export function TimeDialerModal({
   const needleX = CENTER + DIAL_RADIUS * Math.cos(needleRad);
   const needleY = CENTER + DIAL_RADIUS * Math.sin(needleRad);
 
+  const formatted24 = getFormatted24h();
+
+  // Dynamic Theme Palette
+  const cardBg = isDark ? '#1E293B' : '#FFFFFF';
+  const cardBorder = isDark ? '#334155' : '#E2E8F0';
+  const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
+  const textSecondary = isDark ? '#94A3B8' : '#64748B';
+  const surfaceSubtle = isDark ? '#0F172A' : '#F1F5F9';
+  const dialBg = isDark ? '#0B1120' : '#F8FAFC';
+  const dialBorder = isDark ? '#334155' : '#E2E8F0';
+  const dialText = isDark ? '#CBD5E1' : '#334155';
+  const accent = '#208AEF';
+
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
+        <View style={[styles.modalCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
           {/* Header */}
-          <Text style={styles.modalTitle}>{title}</Text>
+          <View style={styles.headerRow}>
+            <View style={styles.headerTitleWrap}>
+              <FontAwesome
+                name={period === 'PM' || selectedHour >= 9 ? 'moon-o' : 'sun-o'}
+                size={16}
+                color={accent}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={[styles.modalTitle, { color: textPrimary }]}>{title}</Text>
+            </View>
+            <TouchableOpacity
+              onPress={onClose}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={[styles.closeIconBtn, { backgroundColor: surfaceSubtle }]}
+            >
+              <FontAwesome name="times" size={13} color={textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Quick Presets Carousel */}
+          <View style={styles.presetsBar}>
+            {QUICK_PRESETS.map((qp) => {
+              const isMatch = qp.time === formatted24;
+              return (
+                <TouchableOpacity
+                  key={qp.label}
+                  style={[
+                    styles.quickPill,
+                    { backgroundColor: surfaceSubtle, borderColor: cardBorder },
+                    isMatch && [styles.quickPillActive, { borderColor: accent }],
+                  ]}
+                  onPress={() => applyQuickTime(qp.time)}
+                  activeOpacity={0.7}
+                >
+                  <FontAwesome
+                    name={qp.icon}
+                    size={9}
+                    color={isMatch ? accent : textSecondary}
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text
+                    style={[
+                      styles.quickPillText,
+                      { color: textSecondary },
+                      isMatch && [styles.quickPillTextActive, { color: accent }],
+                    ]}
+                  >
+                    {qp.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           {/* Digital Time Preview & Mode Selector */}
           <View style={styles.timeDisplayRow}>
             <View style={styles.timeNumbersContainer}>
               <TouchableOpacity
-                style={[styles.timeBox, mode === 'hour' && styles.timeBoxActive]}
-                onPress={() => setMode('hour')}
+                style={[
+                  styles.timeBox,
+                  { backgroundColor: surfaceSubtle },
+                  mode === 'hour' && [styles.timeBoxActive, { borderColor: accent, backgroundColor: isDark ? '#1E3A8A33' : '#EFF6FF' }],
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setMode('hour');
+                }}
               >
                 <Text
                   style={[
                     styles.timeBoxText,
-                    mode === 'hour' && styles.timeBoxTextActive,
+                    { color: textSecondary },
+                    mode === 'hour' && [styles.timeBoxTextActive, { color: accent }],
                   ]}
                 >
                   {String(selectedHour).padStart(2, '0')}
                 </Text>
+                <Text style={[styles.timeBoxLabel, { color: textSecondary }]}>HR</Text>
               </TouchableOpacity>
 
-              <Text style={styles.timeColon}>:</Text>
+              <Text style={[styles.timeColon, { color: textSecondary }]}>:</Text>
 
               <TouchableOpacity
-                style={[styles.timeBox, mode === 'minute' && styles.timeBoxActive]}
-                onPress={() => setMode('minute')}
+                style={[
+                  styles.timeBox,
+                  { backgroundColor: surfaceSubtle },
+                  mode === 'minute' && [styles.timeBoxActive, { borderColor: accent, backgroundColor: isDark ? '#1E3A8A33' : '#EFF6FF' }],
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setMode('minute');
+                }}
               >
                 <Text
                   style={[
                     styles.timeBoxText,
-                    mode === 'minute' && styles.timeBoxTextActive,
+                    { color: textSecondary },
+                    mode === 'minute' && [styles.timeBoxTextActive, { color: accent }],
                   ]}
                 >
                   {String(selectedMinute).padStart(2, '0')}
                 </Text>
+                <Text style={[styles.timeBoxLabel, { color: textSecondary }]}>MIN</Text>
               </TouchableOpacity>
             </View>
 
             {/* AM / PM Toggle */}
-            <View style={styles.periodToggle}>
+            <View style={[styles.periodToggle, { backgroundColor: surfaceSubtle }]}>
               <TouchableOpacity
-                style={[styles.periodBtn, period === 'AM' && styles.periodBtnActive]}
-                onPress={() => setPeriod('AM')}
+                style={[styles.periodBtn, period === 'AM' && [styles.periodBtnActive, { backgroundColor: accent }]]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setPeriod('AM');
+                }}
               >
                 <Text
                   style={[
                     styles.periodText,
+                    { color: textSecondary },
                     period === 'AM' && styles.periodTextActive,
                   ]}
                 >
@@ -193,12 +319,16 @@ export function TimeDialerModal({
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.periodBtn, period === 'PM' && styles.periodBtnActive]}
-                onPress={() => setPeriod('PM')}
+                style={[styles.periodBtn, period === 'PM' && [styles.periodBtnActive, { backgroundColor: accent }]]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setPeriod('PM');
+                }}
               >
                 <Text
                   style={[
                     styles.periodText,
+                    { color: textSecondary },
                     period === 'PM' && styles.periodTextActive,
                   ]}
                 >
@@ -208,15 +338,15 @@ export function TimeDialerModal({
             </View>
           </View>
 
-          <Text style={styles.preview24h}>
-            24-hour format: <Text style={{ fontWeight: '700' }}>{getFormatted24h()}</Text>
+          <Text style={[styles.preview24h, { color: textSecondary }]}>
+            24-hour equivalent: <Text style={{ fontWeight: '700', color: textPrimary }}>{formatted24}</Text>
           </Text>
 
           {/* Clock Face Dial */}
           <View style={styles.dialContainer}>
-            <View style={styles.dialFace}>
+            <View style={[styles.dialFace, { backgroundColor: dialBg, borderColor: dialBorder }]}>
               {/* Dial Center Pivot */}
-              <View style={styles.dialCenterDot} />
+              <View style={[styles.dialCenterDot, { backgroundColor: accent }]} />
 
               {/* Needle Pointer Line */}
               <View
@@ -226,9 +356,8 @@ export function TimeDialerModal({
                     left: CENTER,
                     top: CENTER - 1,
                     width: DIAL_RADIUS,
-                    transform: [
-                      { rotate: `${needleAngle - 90}deg` },
-                    ],
+                    backgroundColor: accent,
+                    transform: [{ rotate: `${needleAngle - 90}deg` }],
                   },
                 ]}
               />
@@ -238,8 +367,9 @@ export function TimeDialerModal({
                 style={[
                   styles.pointerHead,
                   {
-                    left: needleX - 18,
-                    top: needleY - 18,
+                    left: needleX - 17,
+                    top: needleY - 17,
+                    backgroundColor: accent,
                   },
                 ]}
               />
@@ -256,16 +386,14 @@ export function TimeDialerModal({
                     return (
                       <TouchableOpacity
                         key={`h-${h}`}
-                        style={[
-                          styles.dialNumberItem,
-                          { left: x - 18, top: y - 18 },
-                        ]}
+                        style={[styles.dialNumberItem, { left: x - 17, top: y - 17 }]}
                         onPress={() => handleHourSelect(h)}
                         activeOpacity={0.7}
                       >
                         <Text
                           style={[
                             styles.dialNumberText,
+                            { color: dialText },
                             isSelected && styles.dialNumberTextSelected,
                           ]}
                         >
@@ -279,22 +407,19 @@ export function TimeDialerModal({
                     const rad = (angleDeg * Math.PI) / 180;
                     const x = CENTER + DIAL_RADIUS * Math.cos(rad);
                     const y = CENTER + DIAL_RADIUS * Math.sin(rad);
-                    // Match nearest multiple of 5 for selection highlight
                     const isSelected = selectedMinute === m;
 
                     return (
                       <TouchableOpacity
                         key={`m-${m}`}
-                        style={[
-                          styles.dialNumberItem,
-                          { left: x - 18, top: y - 18 },
-                        ]}
+                        style={[styles.dialNumberItem, { left: x - 17, top: y - 17 }]}
                         onPress={() => handleMinuteSelect(m)}
                         activeOpacity={0.7}
                       >
                         <Text
                           style={[
                             styles.dialNumberText,
+                            { color: dialText },
                             isSelected && styles.dialNumberTextSelected,
                           ]}
                         >
@@ -308,27 +433,51 @@ export function TimeDialerModal({
 
           {/* Steppers for precise minutes */}
           <View style={styles.fineAdjustRow}>
-            <TouchableOpacity style={styles.stepperBtn} onPress={() => adjustMinute(-5)}>
-              <Text style={styles.stepperText}>-5m</Text>
+            <TouchableOpacity
+              style={[styles.stepperBtn, { backgroundColor: surfaceSubtle, borderColor: cardBorder }]}
+              onPress={() => adjustMinute(-5)}
+            >
+              <Text style={[styles.stepperText, { color: textPrimary }]}>-5m</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.stepperBtn} onPress={() => adjustMinute(-1)}>
-              <Text style={styles.stepperText}>-1m</Text>
+            <TouchableOpacity
+              style={[styles.stepperBtn, { backgroundColor: surfaceSubtle, borderColor: cardBorder }]}
+              onPress={() => adjustMinute(-1)}
+            >
+              <Text style={[styles.stepperText, { color: textPrimary }]}>-1m</Text>
             </TouchableOpacity>
-            <Text style={styles.fineAdjustLabel}>Fine Tune</Text>
-            <TouchableOpacity style={styles.stepperBtn} onPress={() => adjustMinute(1)}>
-              <Text style={styles.stepperText}>+1m</Text>
+            <View style={styles.fineAdjustCenter}>
+              <FontAwesome name="sliders" size={10} color={textSecondary} style={{ marginRight: 4 }} />
+              <Text style={[styles.fineAdjustLabel, { color: textSecondary }]}>Fine Tune</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.stepperBtn, { backgroundColor: surfaceSubtle, borderColor: cardBorder }]}
+              onPress={() => adjustMinute(1)}
+            >
+              <Text style={[styles.stepperText, { color: textPrimary }]}>+1m</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.stepperBtn} onPress={() => adjustMinute(5)}>
-              <Text style={styles.stepperText}>+5m</Text>
+            <TouchableOpacity
+              style={[styles.stepperBtn, { backgroundColor: surfaceSubtle, borderColor: cardBorder }]}
+              onPress={() => adjustMinute(5)}
+            >
+              <Text style={[styles.stepperText, { color: textPrimary }]}>+5m</Text>
             </TouchableOpacity>
           </View>
 
           {/* Action Buttons */}
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            <TouchableOpacity
+              style={[styles.cancelBtn, { backgroundColor: surfaceSubtle }]}
+              onPress={onClose}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.cancelBtnText, { color: textSecondary }]}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.confirmBtn} onPress={handleSave}>
+            <TouchableOpacity
+              style={[styles.confirmBtn, { backgroundColor: accent }]}
+              onPress={handleSave}
+              activeOpacity={0.85}
+            >
+              <FontAwesome name="check" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
               <Text style={styles.confirmBtnText}>Set Time</Text>
             </TouchableOpacity>
           </View>
@@ -341,29 +490,70 @@ export function TimeDialerModal({
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
   },
   modalCard: {
-    backgroundColor: '#ffffff',
     borderRadius: 24,
-    padding: 22,
+    padding: 20,
     width: '100%',
-    maxWidth: 340,
+    maxWidth: 350,
     alignItems: 'center',
+    borderWidth: 1,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
-    elevation: 10,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  headerRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  headerTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 16,
+  },
+  closeIconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presetsBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  quickPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  quickPillActive: {
+    backgroundColor: 'rgba(32, 138, 239, 0.12)',
+  },
+  quickPillText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  quickPillTextActive: {
+    fontWeight: '700',
   },
   timeDisplayRow: {
     flexDirection: 'row',
@@ -377,32 +567,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   timeBox: {
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingTop: 6,
+    paddingBottom: 4,
     borderRadius: 12,
-  },
-  timeBoxActive: {
-    backgroundColor: '#e0f2fe',
+    alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#208AEF',
+    borderColor: 'transparent',
   },
+  timeBoxActive: {},
   timeBoxText: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#475569',
+    fontSize: 28,
+    fontWeight: '800',
   },
-  timeBoxTextActive: {
-    color: '#208AEF',
+  timeBoxTextActive: {},
+  timeBoxLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   timeColon: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: '700',
-    color: '#94a3b8',
     marginHorizontal: 4,
   },
   periodToggle: {
-    backgroundColor: '#f1f5f9',
     borderRadius: 10,
     padding: 3,
   },
@@ -411,21 +600,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 7,
   },
-  periodBtnActive: {
-    backgroundColor: '#208AEF',
-  },
+  periodBtnActive: {},
   periodText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '700',
   },
   periodTextActive: {
     color: '#ffffff',
   },
   preview24h: {
-    fontSize: 12,
-    color: '#64748b',
-    marginBottom: 14,
+    fontSize: 11,
+    marginBottom: 10,
   },
   dialContainer: {
     width: DIAL_SIZE,
@@ -438,9 +623,7 @@ const styles = StyleSheet.create({
     width: DIAL_SIZE,
     height: DIAL_SIZE,
     borderRadius: DIAL_SIZE / 2,
-    backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: '#e2e8f0',
     position: 'relative',
   },
   dialCenterDot: {
@@ -450,93 +633,91 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#208AEF',
     zIndex: 10,
   },
   needleLine: {
     position: 'absolute',
     height: 2,
-    backgroundColor: '#208AEF',
     zIndex: 5,
     transformOrigin: 'left center' as any,
   },
   pointerHead: {
     position: 'absolute',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#208AEF',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     zIndex: 6,
   },
   dialNumberItem: {
     position: 'absolute',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 8,
   },
   dialNumberText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#334155',
   },
   dialNumberTextSelected: {
     color: '#ffffff',
-    fontWeight: '700',
+    fontWeight: '800',
   },
   fineAdjustRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 14,
+  },
+  fineAdjustCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
   },
   fineAdjustLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#94a3b8',
-    marginHorizontal: 2,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   stepperBtn: {
-    backgroundColor: '#f1f5f9',
     paddingHorizontal: 8,
     paddingVertical: 5,
-    borderRadius: 6,
+    borderRadius: 8,
+    borderWidth: 1,
   },
   stepperText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#475569',
+    fontWeight: '700',
   },
   modalActions: {
     flexDirection: 'row',
     width: '100%',
-    gap: 12,
+    gap: 10,
   },
   cancelBtn: {
     flex: 1,
-    paddingVertical: 11,
+    paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: '#f1f5f9',
     alignItems: 'center',
   },
   cancelBtnText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#64748b',
   },
   confirmBtn: {
-    flex: 1,
-    paddingVertical: 11,
+    flex: 1.2,
+    flexDirection: 'row',
+    paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: '#208AEF',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   confirmBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
     color: '#ffffff',
   },
 });

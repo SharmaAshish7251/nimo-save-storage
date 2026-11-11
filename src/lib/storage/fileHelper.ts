@@ -45,27 +45,14 @@ export async function getFileInfo(
 
   if (uri.startsWith('content://')) {
     try {
-      const res = await fetch(uri, { method: 'HEAD' });
-      const len = res.headers.get('content-length');
-      if (len) {
-        const size = parseInt(len, 10);
-        if (!isNaN(size) && size > 0) {
-          return { exists: true, size };
-        }
+      const info = await LegacyFileSystem.getInfoAsync(uri);
+      if (info.exists && typeof (info as any).size === 'number') {
+        return { exists: true, size: (info as any).size };
       }
     } catch {
-      // fall through
+      // continue
     }
-    try {
-      const res = await fetch(uri);
-      const blob = await res.blob();
-      if (blob && blob.size > 0) {
-        return { exists: true, size: blob.size };
-      }
-      return { exists: true, size: 0 };
-    } catch {
-      return { exists: true, size: 0 };
-    }
+    return { exists: true, size: 0 };
   }
 
   return { exists: false, size: 0 };
@@ -158,4 +145,26 @@ export async function readFileToBuffer(uri: string): Promise<Buffer> {
   }
 
   throw new Error(`Unable to read file content for URI: ${uri}`);
+}
+
+/**
+ * Copies a SAF content:// URI to the local app cache directory and returns
+ * the local absolute path (without file:// prefix) so TDLib can access it.
+ * For regular file:// or /path URIs, strips the scheme and returns as-is.
+ */
+export async function copyToLocalPath(uri: string, fileName: string): Promise<string> {
+  if (!uri.startsWith('content://')) {
+    // Already a local file — return the path without file:// scheme
+    return uri.startsWith('file://') ? uri.slice(7) : uri;
+  }
+
+  // SAF content:// URI — copy to app cache dir via expo-file-system
+  ensureCacheDir();
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const destUri = `${LegacyFileSystem.cacheDirectory}nimo_upload/${Date.now()}_${safeName}`;
+
+  await LegacyFileSystem.copyAsync({ from: uri, to: destUri });
+
+  // Return raw path without file:// scheme
+  return destUri.startsWith('file://') ? destUri.slice(7) : destUri;
 }

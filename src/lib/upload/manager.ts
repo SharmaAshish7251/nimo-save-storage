@@ -3,14 +3,14 @@ import {
   getQueue,
   saveQueue,
   QueueItem,
-  markUploaded,
   getConfig,
   recordActionHistory,
   removeFromQueue,
   clearAllQueue,
   resetItemToPending,
+  completeUploadAtomically,
 } from '../storage/queue';
-import { sendFile, isLoggedIn } from '../telegram/client';
+import { tdLibClient } from '../tdlib/client';
 import { getFileInfo } from '../storage/fileHelper';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -27,6 +27,25 @@ export class UploadManager {
   private queue: any;
   private isRunning = false;
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
+  // Fix 1.6: In-memory progress cache to avoid AsyncStorage thrashing
+  private inMemoryProgress: Map<string, { progress: number; speedKbps: number }> = new Map();
+
+  /**
+   * Returns live progress for all currently-uploading items.
+   * The UI merges this on top of the AsyncStorage-backed queue items,
+   * so progress bars update smoothly without any extra disk I/O.
+   */
+  public getLiveProgress(): Map<string, { progress: number; speedKbps: number }> {
+    return this.inMemoryProgress;
+  }
+
+  /**
+   * Returns whether an upload session is currently active.
+   * Lets the UI decide whether to show a live-upload spinner.
+   */
+  public get isActive(): boolean {
+    return this.isRunning;
+  }
   
   constructor(concurrency: number = 3) {
     this.queue = new PQueue({ concurrency });
@@ -60,7 +79,7 @@ export class UploadManager {
     
     try {
       // 1. Verify Telegram authentication first
-      const loggedIn = await isLoggedIn();
+      const loggedIn = await tdLibClient.isLoggedIn().catch(() => false);
       if (!loggedIn) {
         throw new Error('NOT_LOGGED_IN: You are not connected to Telegram. Please connect your Telegram account first.');
       }
@@ -119,7 +138,7 @@ export class UploadManager {
   }
 
   async uploadSingleItem(item: QueueItem): Promise<void> {
-    const loggedIn = await isLoggedIn();
+    const loggedIn = await tdLibClient.isLoggedIn().catch(() => false);
     if (!loggedIn) {
       throw new Error('NOT_LOGGED_IN: You are not connected to Telegram. Please connect your Telegram account first.');
     }
@@ -149,61 +168,63 @@ export class UploadManager {
       if (!fileInfo.exists && !item.uri.startsWith('content://')) {
         throw new Error('File does not exist or cannot be accessed');
       }
-      
-      if (fileInfo.size && fileInfo.size > MAX_UPLOAD_SIZE_BYTES) {
-        throw new Error(`File too large (${Math.round(fileInfo.size / 1024 / 1024)}MB). Max ${Math.round(MAX_UPLOAD_SIZE_BYTES / 1024 / 1024)}MB (Telegram limit).`);
+
+      // Fix 2.2: Use actual file size from disk, overriding stale cached value
+      const actualSize = fileInfo.size > 0 ? fileInfo.size : item.size;
+
+      if (actualSize && actualSize > MAX_UPLOAD_SIZE_BYTES) {
+        throw new Error(`File too large (${Math.round(actualSize / 1024 / 1024)}MB). Max ${Math.round(MAX_UPLOAD_SIZE_BYTES / 1024 / 1024)}MB (Telegram limit).`);
       }
       
       const config = await getConfig();
       const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
       
-      const result = await sendFile(
-        item.uri,
-        item.fileName,
-        targetChat,
-        (progress: number) => {
-          const now = Date.now();
-          if (!this.progressTrack[item.id]) {
-            this.progressTrack[item.id] = { bytes: 0, time: now };
-          }
-          const uploadedBytes = Math.round(progress * (item.size || 0));
-          const last = this.progressTrack[item.id];
-          const deltaBytes = uploadedBytes - last.bytes;
-          const deltaTime = (now - last.time) / 1000;
-          let speedKbps = 0;
-          if (deltaTime > 0 && deltaBytes > 0) {
-            speedKbps = (deltaBytes / 1024) / deltaTime;
-          }
-          this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
-          this.updateItemStatus(item.id, 'uploading', Math.round(progress * 100), undefined, undefined, undefined, undefined, speedKbps);
+      let result: any;
+      const onUploadProgress = (progress: number) => {
+        const now = Date.now();
+        if (!this.progressTrack[item.id]) {
+          this.progressTrack[item.id] = { bytes: 0, time: now };
         }
-      );
-      
-      const durationMs = Date.now() - startTime;
+        const actualSize = fileInfo.size > 0 ? fileInfo.size : item.size || 0;
+        const uploadedBytes = Math.round(progress * actualSize);
+        const last = this.progressTrack[item.id];
+        const deltaBytes = uploadedBytes - last.bytes;
+        const deltaTime = (now - last.time) / 1000;
+        let speedKbps = 0;
+        if (deltaTime > 0 && deltaBytes > 0) {
+          speedKbps = (deltaBytes / 1024) / deltaTime;
+        }
+        this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
+        // Fix 1.6: Only update in-memory progress — no AsyncStorage writes during progress
+        this.inMemoryProgress.set(item.id, { progress: Math.round(progress * 100), speedKbps: Math.round(speedKbps) });
+      };
 
-      await markUploaded({
-        uri: item.uri,
-        fileName: item.fileName,
-        size: item.size,
-        uploadedAt: Date.now(),
-        telegramMessageId: result?.id,
-      });
+      console.log('[UploadManager] Uploading via native TDLib MTProto engine');
+      result = await tdLibClient.sendFile(item.uri, item.fileName, targetChat, onUploadProgress);
+
+      const durationMs = Date.now() - startTime;
 
       const destName =
         config.targetChatTitle ||
         (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
 
-      await recordActionHistory({
-        fileName: item.fileName,
+      // Atomically update queue, uploaded index, and history in parallel (3 reads + 3 writes)
+      // instead of 5 sequential read+write pairs — critical for 100+ concurrent uploads
+      await completeUploadAtomically({
+        queueId: item.id,
         uri: item.uri,
-        size: item.size,
-        status: 'uploaded',
-        destination: destName,
+        fileName: item.fileName,
+        size: actualSize ?? item.size,
+        telegramMessageId: result?.id,
+        uploadedAt: Date.now(),
         uploadDurationMs: durationMs,
+        destination: destName,
       });
-      
-      await this.updateItemStatus(item.id, 'completed', 100, undefined, undefined, Date.now(), durationMs);
-      
+
+      // Clean up in-memory progress tracking
+      this.inMemoryProgress.delete(item.id);
+      delete this.progressTrack[item.id];
+
       console.log(`Uploaded ${item.fileName} successfully in ${(durationMs / 1000).toFixed(1)}s`);
     } catch (error: any) {
       const durationMs = Date.now() - startTime;
@@ -245,6 +266,21 @@ export class UploadManager {
     uploadDurationMs?: number,
     speedKbps?: number
   ): Promise<void> {
+    // Fix 1.6: Skip AsyncStorage writes for pure progress updates during upload;
+    // only persist on real state transitions (uploading start, completed, failed).
+    const isProgressOnlyUpdate =
+      status === 'uploading' &&
+      uploadStartedAt === undefined &&
+      uploadedAt === undefined &&
+      uploadDurationMs === undefined &&
+      error === undefined;
+    if (isProgressOnlyUpdate) {
+      // Update in-memory only — UI can read from inMemoryProgress if needed
+      if (progress !== undefined && speedKbps !== undefined) {
+        this.inMemoryProgress.set(id, { progress, speedKbps: Math.round(speedKbps) });
+      }
+      return;
+    }
     const queue = await getQueue();
     const index = queue.findIndex((item: QueueItem) => item.id === id);
     if (index >= 0) {

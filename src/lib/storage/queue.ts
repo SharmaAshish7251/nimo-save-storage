@@ -7,6 +7,8 @@ export interface WatchedFolder {
   assetCount?: number;
 }
 
+export type ScheduleMode = 'interval' | 'window' | 'continuous';
+
 export interface AppConfig {
   watchFolders: string[]; // folder paths/URIs
   watchedFolders?: WatchedFolder[];
@@ -19,6 +21,22 @@ export interface AppConfig {
   targetChatId?: string;
   targetChatTitle?: string;
   targetChatType?: 'saved' | 'channel' | 'group' | 'chat';
+  // Modern scheduler configurations
+  scheduleMode?: ScheduleMode;
+  intervalMinutes?: number; // Minimum 1m support (1, 5, 15, 30, 60, etc.)
+  onlyWhenCharging?: boolean;
+  batteryGuard?: boolean;
+  notifyOnComplete?: boolean;
+}
+
+export interface SchedulerState {
+  lastRunAt?: number;
+  lastRunStatus?: 'idle' | 'running' | 'success' | 'skipped' | 'partial' | 'failed';
+  lastRunSummary?: string;
+  lastSkipReason?: string;
+  nextEstimatedRunAt?: number;
+  totalAutoUploadedCount?: number;
+  totalAutoUploadedBytes?: number;
 }
 
 const CONFIG_KEY = '@nimo/config';
@@ -26,6 +44,7 @@ const QUEUE_KEY = '@nimo/queue';
 const UPLOADED_KEY = '@nimo/uploaded';
 const LAST_SCAN_KEY = '@nimo/last_scan';
 const ACTION_HISTORY_KEY = '@nimo/action_history';
+const SCHEDULER_STATE_KEY = '@nimo/scheduler_state';
 
 const DEFAULT_CONFIG: AppConfig = {
   watchFolders: [],
@@ -38,6 +57,11 @@ const DEFAULT_CONFIG: AppConfig = {
   targetChatId: 'me',
   targetChatTitle: 'Saved Messages',
   targetChatType: 'saved',
+  scheduleMode: 'interval',
+  intervalMinutes: 1, // Minimum 1m interval default
+  onlyWhenCharging: false,
+  batteryGuard: true,
+  notifyOnComplete: false,
 };
 
 export async function getConfig(): Promise<AppConfig> {
@@ -103,6 +127,9 @@ export async function saveQueue(queue: QueueItem[]): Promise<void> {
 
 export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>): Promise<QueueItem> {
   const queue = await getQueue();
+  // Fix 2.1: Deduplicate by URI — skip if already in queue with a non-completed status
+  const existing = queue.find(q => q.uri === item.uri && q.status !== 'completed');
+  if (existing) return existing;
   const newItem: QueueItem = {
     ...item,
     id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -114,6 +141,50 @@ export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progre
   queue.push(newItem);
   await saveQueue(queue);
   return newItem;
+}
+
+/**
+ * Batch add multiple items to the queue in a single AsyncStorage read+write.
+ * Use instead of calling addToQueue() in a loop for 10+ files.
+ * Returns { added: QueueItem[], skipped: number } where skipped = duplicates.
+ */
+export async function addManyToQueue(
+  items: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>[]
+): Promise<{ added: QueueItem[]; skipped: number }> {
+  if (items.length === 0) return { added: [], skipped: 0 };
+
+  const queue = await getQueue();
+  // Build a Set of URIs already in queue (non-completed) for O(1) dedup lookup
+  const existingUris = new Set(
+    queue.filter(q => q.status !== 'completed').map(q => q.uri)
+  );
+
+  const now = Date.now();
+  const newItems: QueueItem[] = [];
+  let skipped = 0;
+
+  for (const item of items) {
+    if (existingUris.has(item.uri)) {
+      skipped++;
+      continue;
+    }
+    const newItem: QueueItem = {
+      ...item,
+      id: `${now}_${Math.random().toString(36).substr(2, 9)}`,
+      status: 'pending',
+      progress: 0,
+      retries: 0,
+      addedAt: now,
+    };
+    newItems.push(newItem);
+    existingUris.add(item.uri); // prevent intra-batch duplicates
+  }
+
+  if (newItems.length > 0) {
+    await saveQueue([...queue, ...newItems]);
+  }
+
+  return { added: newItems, skipped };
 }
 
 export async function resetItemToPending(id: string): Promise<QueueItem | null> {
@@ -157,6 +228,64 @@ export async function markUploaded(record: UploadedRecord): Promise<void> {
   await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filtered));
 }
 
+
+/**
+ * Atomically records a completed upload across all three stores in parallel.
+ * For 100+ concurrent uploads this reduces 5 sequential read+write pairs
+ * down to 3 parallel reads then 3 parallel writes.
+ */
+export async function completeUploadAtomically(params: {
+  queueId: string;
+  uri: string;
+  fileName: string;
+  size: number;
+  telegramMessageId?: number;
+  uploadedAt: number;
+  uploadDurationMs: number;
+  destination: string;
+}): Promise<void> {
+  const [queue, uploadedIndex, history] = await Promise.all([
+    getQueue(),
+    getUploadedIndex(),
+    getActionHistory(),
+  ]);
+
+  const queueIndex = queue.findIndex((item: QueueItem) => item.id === params.queueId);
+  if (queueIndex >= 0) {
+    queue[queueIndex].status = 'completed';
+    queue[queueIndex].progress = 100;
+    queue[queueIndex].uploadedAt = params.uploadedAt;
+    queue[queueIndex].uploadDurationMs = params.uploadDurationMs;
+    queue[queueIndex].lastAttemptAt = Date.now();
+  }
+
+  const filteredUploaded = uploadedIndex.filter((r: UploadedRecord) => r.uri !== params.uri);
+  filteredUploaded.push({
+    uri: params.uri,
+    fileName: params.fileName,
+    size: params.size,
+    uploadedAt: params.uploadedAt,
+    telegramMessageId: params.telegramMessageId,
+  });
+
+  const newHistoryItem: ActionHistoryItem = {
+    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    fileName: params.fileName,
+    uri: params.uri,
+    size: params.size,
+    status: 'uploaded',
+    timestamp: Date.now(),
+    uploadDurationMs: params.uploadDurationMs,
+    destination: params.destination,
+  };
+  const updatedHistory = [newHistoryItem, ...history].slice(0, MAX_HISTORY_ITEMS);
+
+  await Promise.all([
+    saveQueue(queue),
+    AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filteredUploaded)),
+    AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory)),
+  ]);
+}
 export async function isUploaded(uri: string): Promise<boolean> {
   const index = await getUploadedIndex();
   return index.some(r => r.uri === uri);
@@ -196,10 +325,11 @@ export function formatFileSize(bytes: number): string {
 }
 
 export function formatDuration(ms?: number): string {
-  if (!ms || ms <= 0) return '';
-  if (ms < 1000) return `${ms}ms`;
+  if (!ms || ms <= 0) return '0.0s';
   const sec = ms / 1000;
-  if (sec < 60) return `${sec.toFixed(1)}s`;
+  if (sec < 60) {
+    return `${sec < 1 ? sec.toFixed(2) : sec.toFixed(1)}s`;
+  }
   const mins = Math.floor(sec / 60);
   const remainingSec = Math.round(sec % 60);
   return `${mins}m ${remainingSec}s`;
@@ -281,4 +411,26 @@ export async function clearAllQueue(
     }
   }
   await saveQueue([]);
+}
+
+
+export async function getSchedulerState(): Promise<SchedulerState> {
+  try {
+    const raw = await AsyncStorage.getItem(SCHEDULER_STATE_KEY);
+    if (!raw) return { lastRunStatus: 'idle' };
+    return JSON.parse(raw);
+  } catch {
+    return { lastRunStatus: 'idle' };
+  }
+}
+
+export async function saveSchedulerState(patch: Partial<SchedulerState>): Promise<SchedulerState> {
+  const current = await getSchedulerState();
+  const updated: SchedulerState = { ...current, ...patch };
+  await AsyncStorage.setItem(SCHEDULER_STATE_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+export async function resetSchedulerState(): Promise<void> {
+  await AsyncStorage.removeItem(SCHEDULER_STATE_KEY);
 }

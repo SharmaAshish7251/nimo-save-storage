@@ -9,14 +9,18 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { getTelegramDialogs, TelegramDestination } from '@/lib/telegram/client';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { tdLibClient } from '@/lib/tdlib/client';
+import { TelegramDestination } from '@/lib/tdlib/types';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
 
 interface Props {
   onDestinationChanged?: (dest: TelegramDestination) => void;
 }
 
-export function DestinationSelector({ onDestinationChanged }: Props) {
+export const DestinationSelector = React.memo(function DestinationSelector({
+  onDestinationChanged,
+}: Props) {
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [destinations, setDestinations] = useState<TelegramDestination[]>([]);
@@ -43,9 +47,9 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
   const fetchDialogs = async () => {
     setLoading(true);
     try {
-      const dialogs = await getTelegramDialogs();
+      const dialogs = await tdLibClient.getChats();
       setDestinations(dialogs);
-    } catch (error: any) {
+    } catch {
     } finally {
       setLoading(false);
     }
@@ -65,7 +69,7 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
       if (onDestinationChanged) {
         onDestinationChanged(dest);
       }
-    } catch (error: any) {
+    } catch {
     }
   };
 
@@ -84,12 +88,16 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
     setCustomInput('');
   };
 
-  const getDestinationIcon = (type?: string) => {
+  const getDestinationIcon = (type?: string, size = 18) => {
     switch (type) {
-      case 'saved': return '💬';
-      case 'channel': return '📢';
-      case 'group': return '👥';
-      default: return '✉️';
+      case 'saved':
+        return <FontAwesome name="comment" size={size} color="#208AEF" />;
+      case 'channel':
+        return <FontAwesome name="bullhorn" size={size} color="#208AEF" />;
+      case 'group':
+        return <FontAwesome name="users" size={size} color="#208AEF" />;
+      default:
+        return <FontAwesome name="envelope-o" size={size} color="#208AEF" />;
     }
   };
 
@@ -118,7 +126,7 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
         <View style={styles.infoCol}>
           <Text style={styles.caption}>Upload Destination</Text>
           <View style={styles.currentRow}>
-            <Text style={styles.icon}>{getDestinationIcon(displayType)}</Text>
+            <View style={styles.iconContainer}>{getDestinationIcon(displayType, 18)}</View>
             <Text style={styles.title} numberOfLines={1}>
               {displayTitle}
             </Text>
@@ -143,7 +151,7 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
                 style={styles.closeHeaderButton}
                 onPress={() => setModalVisible(false)}
               >
-                <Text style={styles.closeHeaderText}>✕</Text>
+                <FontAwesome name="times" size={18} color="#6B7280" />
               </TouchableOpacity>
             </View>
 
@@ -196,9 +204,9 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
                       ]}
                       onPress={() => selectDestination(item)}
                     >
-                      <Text style={styles.dialogIcon}>
-                        {getDestinationIcon(item.type)}
-                      </Text>
+                      <View style={styles.dialogIconContainer}>
+                        {getDestinationIcon(item.type, 18)}
+                      </View>
                       <View style={styles.dialogTextContainer}>
                         <Text style={styles.dialogTitle} numberOfLines={1}>
                           {item.title}
@@ -209,7 +217,7 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
                         </Text>
                       </View>
                       {isSelected && (
-                        <Text style={styles.checkmarkText}>✓</Text>
+                        <FontAwesome name="check" size={16} color="#208AEF" style={styles.checkmarkIcon} />
                       )}
                     </TouchableOpacity>
                   );
@@ -225,14 +233,17 @@ export function DestinationSelector({ onDestinationChanged }: Props) {
               onPress={fetchDialogs}
               disabled={loading}
             >
-              <Text style={styles.refreshButtonText}>↻ Refresh Chats</Text>
+              <View style={styles.refreshBtnContent}>
+                <FontAwesome name="refresh" size={14} color="#208AEF" style={{ marginRight: 8 }} />
+                <Text style={styles.refreshButtonText}>Refresh Chats</Text>
+              </View>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -266,9 +277,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  icon: {
-    fontSize: 18,
-    marginRight: 6,
+  iconContainer: {
+    width: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  dialogIconContainer: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  checkmarkIcon: {
+    marginLeft: 6,
+  },
+  refreshBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     fontSize: 15,

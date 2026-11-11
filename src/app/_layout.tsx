@@ -2,11 +2,13 @@ import 'react-native-get-random-values';
 import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { useColorScheme, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
 
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
+import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -29,9 +31,18 @@ export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
+        // Fix 3.5: Clean up orphaned temp upload files from previous sessions
+        try {
+          const uploadCacheDir = `${LegacyFileSystem.cacheDirectory}tdlib_upload/`;
+          const info = await LegacyFileSystem.getInfoAsync(uploadCacheDir);
+          if (info.exists) {
+            await LegacyFileSystem.deleteAsync(uploadCacheDir, { idempotent: true });
+          }
+        } catch {}
         await registerBackgroundUploadTask().catch((err) => {
           console.warn('Background task registration error:', err);
         });
+        schedulerEngine.startActiveRunner();
       } catch (err) {
         console.warn('App initialization error:', err);
       } finally {
@@ -40,6 +51,10 @@ export default function RootLayout() {
     }
 
     prepare();
+
+    return () => {
+      schedulerEngine.stopActiveRunner();
+    };
   }, []);
 
   return (

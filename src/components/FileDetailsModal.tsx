@@ -1,4 +1,5 @@
 import React from 'react';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import {
   Modal,
   View,
@@ -50,13 +51,13 @@ export function FileDetailsModal({
 
   const category = getFileCategory(file.fileName, file.mimeType);
 
-  const getCategoryIcon = (cat: string) => {
+  const getCategoryIcon = (cat: string, size = 24) => {
     switch (cat) {
-      case 'image': return '🖼️';
-      case 'video': return '🎥';
-      case 'audio': return '🎵';
-      case 'document': return '📄';
-      default: return '📦';
+      case 'image': return <FontAwesome name="picture-o" size={size} color="#208AEF" />;
+      case 'video': return <FontAwesome name="video-camera" size={size} color="#8B5CF6" />;
+      case 'audio': return <FontAwesome name="music" size={size} color="#EC4899" />;
+      case 'document': return <FontAwesome name="file-text-o" size={size} color="#10B981" />;
+      default: return <FontAwesome name="file-o" size={size} color="#6B7280" />;
     }
   };
 
@@ -103,7 +104,7 @@ export function FileDetailsModal({
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <Text style={styles.fileIcon}>{getCategoryIcon(category)}</Text>
+              <View style={styles.fileIconContainer}>{getCategoryIcon(category, 26)}</View>
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle} numberOfLines={1}>
                   {file.fileName}
@@ -116,7 +117,7 @@ export function FileDetailsModal({
               </View>
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.closeBtnText}>✕</Text>
+              <FontAwesome name="times" size={18} color="#6B7280" />
             </TouchableOpacity>
           </View>
 
@@ -199,14 +200,14 @@ export function FileDetailsModal({
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Upload Duration</Text>
                     <Text style={[styles.detailValue, styles.durationHighlight]}>
-                      ⏱️ {formatDuration(file.uploadDurationMs)} ({file.uploadDurationMs} ms)
+                      {formatDuration(file.uploadDurationMs)}
                     </Text>
                   </View>
                   {file.size > 0 && (
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Upload Speed</Text>
                       <Text style={[styles.detailValue, { color: '#0284C7', fontWeight: 'bold' }]}>
-                        ⚡ {formatSpeed(file.size / (file.uploadDurationMs / 1000))}
+                        {formatSpeed(file.size / (file.uploadDurationMs / 1000))}
                       </Text>
                     </View>
                   )}
@@ -229,7 +230,10 @@ export function FileDetailsModal({
             {/* Error Message if Failed */}
             {file.error && (
               <View style={styles.errorBox}>
-                <Text style={styles.errorTitle}>⚠️ Error Description</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
+                  <FontAwesome name="exclamation-triangle" size={14} color="#DC2626" style={{ marginRight: 6 }} />
+                  <Text style={styles.errorTitle}>Error Description</Text>
+                </View>
                 <Text style={styles.errorMsg} selectable={true}>
                   {file.error}
                 </Text>
@@ -247,7 +251,10 @@ export function FileDetailsModal({
                   onUploadNow(file);
                 }}
               >
-                <Text style={styles.primaryBtnText}>🚀 Upload File</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.primaryBtnText}>Upload File</Text>
+                </View>
               </TouchableOpacity>
             )}
 
@@ -259,7 +266,10 @@ export function FileDetailsModal({
                   onRetry(file);
                 }}
               >
-                <Text style={styles.primaryBtnText}>↻ Retry Upload</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="refresh" size={14} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.primaryBtnText}>Retry Upload</Text>
+                </View>
               </TouchableOpacity>
             )}
 
@@ -271,7 +281,10 @@ export function FileDetailsModal({
                   onRetry(file);
                 }}
               >
-                <Text style={styles.primaryBtnText}>↻ Re-queue Upload</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="refresh" size={14} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.primaryBtnText}>Re-queue Upload</Text>
+                </View>
               </TouchableOpacity>
             )}
 
@@ -283,7 +296,10 @@ export function FileDetailsModal({
                   onDiscard(file);
                 }}
               >
-                <Text style={styles.dangerBtnText}>✕ Discard</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="trash-o" size={14} color="#DC2626" style={{ marginRight: 6 }} />
+                  <Text style={styles.dangerBtnText}>Discard</Text>
+                </View>
               </TouchableOpacity>
             )}
 
@@ -332,6 +348,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: 10,
+  },
+  fileIconContainer: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
     marginRight: 10,
   },
   fileIcon: {

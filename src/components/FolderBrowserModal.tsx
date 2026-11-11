@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import {
   View,
   Text,
@@ -83,8 +84,11 @@ export function FolderBrowserModal({
     }
   }, [visible]);
 
+  const isSelectingSafRef = useRef(false);
+
   // Handle opening an album to pick individual files
   const handleOpenAlbum = async (album: MediaAlbum) => {
+    if (loading) return;
     setLoading(true);
     try {
       setFolderName(`Gallery: ${album.title}`);
@@ -93,7 +97,7 @@ export function FolderBrowserModal({
       // By default start unselected (user chooses what they want)
       setSelectedUris(new Set());
       setStep('select_files');
-    } catch (error: any) {
+    } catch {
     } finally {
       setLoading(false);
     }
@@ -101,10 +105,15 @@ export function FolderBrowserModal({
 
   // Handle picking a custom SAF directory
   const handleSelectSAFDirectory = async () => {
+    if (isSelectingSafRef.current || loading) return;
+    isSelectingSafRef.current = true;
     setLoading(true);
     try {
       const result = await requestAndScanSAFDirectory();
-      if (!result) return;
+      if (!result) {
+        // Fix 2.3: User simply cancelled the system folder picker — no error alert needed
+        return;
+      }
 
       const newSafFolder: WatchedFolder = {
         id: result.directoryUri,
@@ -125,9 +134,10 @@ export function FolderBrowserModal({
       // By default start unselected
       setSelectedUris(new Set());
       setStep('select_files');
-    } catch (error: any) {
+    } catch {
     } finally {
       setLoading(false);
+      isSelectingSafRef.current = false;
     }
   };
 
@@ -217,13 +227,13 @@ export function FolderBrowserModal({
     onClose();
   };
 
-  const getCategoryIcon = (category: string) => {
+  const getCategoryIcon = (category: string, size = 18) => {
     switch (category) {
-      case 'image': return '🖼️';
-      case 'video': return '🎥';
-      case 'audio': return '🎵';
-      case 'document': return '📄';
-      default: return '📁';
+      case 'image': return <FontAwesome name="picture-o" size={size} color="#208AEF" />;
+      case 'video': return <FontAwesome name="video-camera" size={size} color="#8B5CF6" />;
+      case 'audio': return <FontAwesome name="music" size={size} color="#EC4899" />;
+      case 'document': return <FontAwesome name="file-text-o" size={size} color="#10B981" />;
+      default: return <FontAwesome name="folder" size={size} color="#F59E0B" />;
     }
   };
 
@@ -246,7 +256,7 @@ export function FolderBrowserModal({
               )}
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Text style={styles.closeBtnText}>✕</Text>
+              <FontAwesome name="times" size={18} color="#6B7280" />
             </TouchableOpacity>
           </View>
 
@@ -259,14 +269,17 @@ export function FolderBrowserModal({
             /* STEP 1: MULTI-FOLDER SELECTION & ALBUM BROWSING */
             <View style={styles.folderStepContainer}>
               <TouchableOpacity
-                style={styles.safButton}
+                style={[styles.safButton, loading && { opacity: 0.6 }]}
                 onPress={handleSelectSAFDirectory}
+                disabled={loading}
               >
-                <Text style={styles.safButtonIcon}>📂</Text>
+                <View style={{ width: 28, alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                  <FontAwesome name="folder-open" size={22} color="#208AEF" />
+                </View>
                 <View style={styles.safButtonTexts}>
                   <Text style={styles.safButtonTitle}>+ Add Device Storage Folder</Text>
                   <Text style={styles.safButtonSubtitle}>
-                    Select any folder on internal storage or SD card
+                    Select a specific folder (e.g. DCIM, Movies, Pictures)
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -306,7 +319,7 @@ export function FolderBrowserModal({
                         }
                       >
                         <View style={[styles.checkbox, isChecked && styles.checkboxActive]}>
-                          {isChecked && <Text style={styles.checkmark}>✓</Text>}
+                          {isChecked && <FontAwesome name="check" size={11} color="#FFF" />}
                         </View>
                       </TouchableOpacity>
 
@@ -322,7 +335,9 @@ export function FolderBrowserModal({
                           }
                         }}
                       >
-                        <Text style={styles.albumIcon}>{item.isSaf ? '📂' : '📁'}</Text>
+                        <View style={{ width: 26, alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                          <FontAwesome name={item.isSaf ? "folder-open" : "folder"} size={18} color="#F59E0B" />
+                        </View>
                         <View style={styles.albumInfo}>
                           <Text style={styles.albumTitle} numberOfLines={1}>
                             {item.title}
@@ -353,18 +368,20 @@ export function FolderBrowserModal({
                   disabled={selectedFoldersCount === 0}
                   onPress={() => handleSaveWatchedFolders(true)}
                 >
-                  <Text style={styles.primaryFolderBtnText}>
-                    ⚡ Scan Selected Folders ({selectedFoldersCount})
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                    <FontAwesome name="bolt" size={14} color="#FFF" style={{ marginRight: 6 }} />
+                    <Text style={styles.primaryFolderBtnText}>Scan Selected Folders ({selectedFoldersCount})</Text>
+                  </View>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.secondaryFolderBtn}
                   onPress={() => handleSaveWatchedFolders(false)}
                 >
-                  <Text style={styles.secondaryFolderBtnText}>
-                    💾 Save Folders Only ({selectedFoldersCount})
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                    <FontAwesome name="floppy-o" size={14} color="#208AEF" style={{ marginRight: 6 }} />
+                    <Text style={styles.secondaryFolderBtnText}>Save Folders Only ({selectedFoldersCount})</Text>
+                  </View>
                 </TouchableOpacity>
               </View>
             </View>
@@ -395,8 +412,9 @@ export function FolderBrowserModal({
                     style={[styles.filterChip, activeFilter === 'image' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('image')}
                   >
-                    <Text style={[styles.filterChipText, activeFilter === 'image' && styles.filterChipTextActive]}>
-                      🖼️ Images ({categoryCounts.image})
+                    <FontAwesome name="picture-o" size={11} color={activeFilter === "image" ? "#fff" : "#208AEF"} style={{ marginRight: 4 }} />
+                    <Text style={[styles.filterChipText, activeFilter === "image" && styles.filterChipTextActive]}>
+                      Images ({categoryCounts.image})
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -406,8 +424,9 @@ export function FolderBrowserModal({
                     style={[styles.filterChip, activeFilter === 'video' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('video')}
                   >
-                    <Text style={[styles.filterChipText, activeFilter === 'video' && styles.filterChipTextActive]}>
-                      🎥 Videos ({categoryCounts.video})
+                    <FontAwesome name="video-camera" size={11} color={activeFilter === "video" ? "#fff" : "#8B5CF6"} style={{ marginRight: 4 }} />
+                    <Text style={[styles.filterChipText, activeFilter === "video" && styles.filterChipTextActive]}>
+                      Videos ({categoryCounts.video})
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -417,8 +436,9 @@ export function FolderBrowserModal({
                     style={[styles.filterChip, activeFilter === 'audio' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('audio')}
                   >
-                    <Text style={[styles.filterChipText, activeFilter === 'audio' && styles.filterChipTextActive]}>
-                      🎵 Audio ({categoryCounts.audio})
+                    <FontAwesome name="music" size={11} color={activeFilter === "audio" ? "#fff" : "#EC4899"} style={{ marginRight: 4 }} />
+                    <Text style={[styles.filterChipText, activeFilter === "audio" && styles.filterChipTextActive]}>
+                      Audio ({categoryCounts.audio})
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -428,8 +448,9 @@ export function FolderBrowserModal({
                     style={[styles.filterChip, activeFilter === 'document' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('document')}
                   >
-                    <Text style={[styles.filterChipText, activeFilter === 'document' && styles.filterChipTextActive]}>
-                      📄 Docs ({categoryCounts.document})
+                    <FontAwesome name="file-text-o" size={11} color={activeFilter === "document" ? "#fff" : "#10B981"} style={{ marginRight: 4 }} />
+                    <Text style={[styles.filterChipText, activeFilter === "document" && styles.filterChipTextActive]}>
+                      Docs ({categoryCounts.document})
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -438,10 +459,16 @@ export function FolderBrowserModal({
               {/* Batch Select Controls */}
               <View style={styles.batchControls}>
                 <TouchableOpacity onPress={selectAllFiltered} style={styles.batchBtn}>
-                  <Text style={styles.batchBtnText}>☑️ Select All</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <FontAwesome name="check-square-o" size={13} color="#208AEF" style={{ marginRight: 4 }} />
+                    <Text style={styles.batchBtnText}>Select All</Text>
+                  </View>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={deselectAllFiltered} style={styles.batchBtn}>
-                  <Text style={styles.batchBtnText}>◻️ Clear All</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <FontAwesome name="square-o" size={13} color="#6B7280" style={{ marginRight: 4 }} />
+                    <Text style={styles.batchBtnText}>Clear All</Text>
+                  </View>
                 </TouchableOpacity>
                 <Text style={styles.selectedCountText}>
                   {selectedFiles.length} of {filteredFiles.length} selected
@@ -463,9 +490,11 @@ export function FolderBrowserModal({
                       activeOpacity={0.7}
                     >
                       <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
-                        {isSelected && <Text style={styles.checkmark}>✓</Text>}
+                        {isSelected && <FontAwesome name="check" size={11} color="#FFF" />}
                       </View>
-                      <Text style={styles.fileIcon}>{getCategoryIcon(category)}</Text>
+                      <View style={{ width: 28, alignItems: "center", justifyContent: "center", marginHorizontal: 8 }}>
+                        {getCategoryIcon(category, 18)}
+                      </View>
                       <View style={styles.fileInfo}>
                         <Text style={styles.fileName} numberOfLines={1}>
                           {item.fileName}
@@ -485,7 +514,7 @@ export function FolderBrowserModal({
                           });
                         }}
                       >
-                        <Text style={styles.detailsBtnText}>ℹ️</Text>
+                        <FontAwesome name="info-circle" size={16} color="#208AEF" />
                       </TouchableOpacity>
                     </TouchableOpacity>
                   );
@@ -511,14 +540,20 @@ export function FolderBrowserModal({
                     disabled={selectedFiles.length === 0}
                     onPress={() => confirmSelection(false)}
                   >
-                    <Text style={styles.queueBtnText}>+ Add to Queue</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                      <FontAwesome name="plus" size={13} color="#208AEF" style={{ marginRight: 6 }} />
+                      <Text style={styles.queueBtnText}>Add to Queue</Text>
+                    </View>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.uploadNowBtn, selectedFiles.length === 0 && styles.disabledBtn]}
                     disabled={selectedFiles.length === 0}
                     onPress={() => confirmSelection(true)}
                   >
-                    <Text style={styles.uploadNowBtnText}>⚡ Upload Now</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                      <FontAwesome name="rocket" size={13} color="#FFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.uploadNowBtnText}>Upload Now</Text>
+                    </View>
                   </TouchableOpacity>
                 </View>
               </View>

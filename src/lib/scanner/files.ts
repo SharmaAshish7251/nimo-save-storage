@@ -1,7 +1,7 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import { getUploadedIndex, getWatchedFolders, WatchedFolder } from '../storage/queue';
+import { getUploadedIndex, getWatchedFolders, getQueue, WatchedFolder } from '../storage/queue';
 import { getFileInfo } from '../storage/fileHelper';
 
 export { getFileInfo };
@@ -206,10 +206,19 @@ export async function scanSAFDirectory(
     for (const fileUri of fileUris) {
       if (abortSignal?.aborted) break;
       const name = decodeURIComponent(fileUri.split('%2F').pop() || 'file');
+      let size = 0;
+      try {
+        const info = await FileSystem.getInfoAsync(fileUri);
+        // Fix 1.4: Skip sub-directories — only process actual files
+        if (!info.exists || (info as any).isDirectory) continue;
+        if (typeof (info as any).size === 'number') {
+          size = (info as any).size;
+        }
+      } catch {}
       files.push({
         uri: fileUri,
         fileName: name,
-        size: 0,
+        size,
         source: 'document',
         folderName: folderTitle,
       });
@@ -221,11 +230,18 @@ export async function scanSAFDirectory(
   }
 }
 
+let isRequestingSAF = false;
+
 export async function requestAndScanSAFDirectory(): Promise<{
   directoryUri: string;
   folderTitle: string;
   files: ScannedFile[];
 } | null> {
+  if (isRequestingSAF) {
+    console.warn('[SAF] A directory permission request is already in progress');
+    return null;
+  }
+  isRequestingSAF = true;
   try {
     const permissions =
       await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
@@ -241,9 +257,15 @@ export async function requestAndScanSAFDirectory(): Promise<{
     const files = await scanSAFDirectory(directoryUri, cleanName);
 
     return { directoryUri, folderTitle: cleanName, files };
-  } catch (error) {
-    console.error('Error requesting SAF directory:', error);
+  } catch (error: any) {
+    if (error?.message?.includes('unfinished permission request')) {
+      console.warn('[SAF] Ignored duplicate unfinished permission request');
+    } else {
+      console.error('Error requesting SAF directory:', error);
+    }
     return null;
+  } finally {
+    isRequestingSAF = false;
   }
 }
 
@@ -251,8 +273,14 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
   const abortSignal = options?.abortSignal;
   if (abortSignal?.aborted) return [];
 
-  const uploaded = await getUploadedIndex();
+  const [uploaded, queue] = await Promise.all([
+    getUploadedIndex(),
+    getQueue().catch(() => []),
+  ]);
   const uploadedUris = new Set(uploaded.map((u) => u.uri));
+  const activeQueueUris = new Set(
+    queue.filter((q) => q.status !== 'completed').map((q) => q.uri)
+  );
 
   const targetFolders: WatchedFolder[] =
     options?.folders && options.folders.length > 0
@@ -282,8 +310,10 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
 
   if (abortSignal?.aborted) return [];
 
-  // Filter out already uploaded files
-  const newFiles = allFiles.filter((f) => !uploadedUris.has(f.uri));
+  // Filter out already uploaded files and files already active in the queue
+  const newFiles = allFiles.filter(
+    (f) => !uploadedUris.has(f.uri) && !activeQueueUris.has(f.uri)
+  );
 
   if (abortSignal?.aborted) return [];
 

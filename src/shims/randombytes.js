@@ -5,7 +5,7 @@ function randomBytes(length, cb) {
   
   try {
     require('react-native-get-random-values');
-  } catch (e) {}
+  } catch (_e) {}
   
   const cryptoObj =
     (typeof globalThis !== 'undefined' && globalThis.crypto) ||
@@ -16,7 +16,7 @@ function randomBytes(length, cb) {
   if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
     try {
       cryptoObj.getRandomValues(buf);
-    } catch (e) {
+    } catch (_e) {
       for (let i = 0; i < length; i++) {
         buf[i] = Math.floor(Math.random() * 256);
       }

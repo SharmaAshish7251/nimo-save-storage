@@ -1,7 +1,7 @@
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, FlatList, Share } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useRef } from 'react';
-import { Share } from 'react-native';
+import { useState, useEffect } from 'react';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 declare global {
   var __nimo_logs: string[];
@@ -50,7 +50,6 @@ console.error = (...args: any[]) => {
 
 export default function LogsScreen() {
   const [logs, setLogs] = useState<string[]>(globalThis.__nimo_logs || []);
-  const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -76,23 +75,25 @@ export default function LogsScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity style={styles.button} onPress={copyAll}>
+          <FontAwesome name="copy" size={13} color="#fff" style={{ marginRight: 6 }} />
           <Text style={styles.buttonText}>Copy All</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.button, styles.clearButton]} onPress={clearLogs}>
+          <FontAwesome name="trash" size={13} color="#fff" style={{ marginRight: 6 }} />
           <Text style={styles.buttonText}>Clear</Text>
         </TouchableOpacity>
       </View>
-      <ScrollView ref={scrollRef as any} style={styles.scroll} contentContainerStyle={styles.content}>
-        {logs.length === 0 ? (
-          <Text style={styles.empty}>No logs yet</Text>
-        ) : (
-          logs.map((log, idx) => (
-            <Text key={idx} style={styles.logLine}>
-              {log}
-            </Text>
-          ))
+      {/* Fix 3.6: Use FlatList for virtualized rendering — prevents 2000+ unvirtualized Text elements */}
+      <FlatList
+        data={logs}
+        keyExtractor={(_, i) => String(i)}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        renderItem={({ item }) => (
+          <Text style={styles.logLine}>{item}</Text>
         )}
-      </ScrollView>
+        ListEmptyComponent={<Text style={styles.empty}>No logs yet</Text>}
+      />
     </SafeAreaView>
   );
 }
@@ -110,6 +111,9 @@ const styles = StyleSheet.create({
   },
   button: {
     backgroundColor: '#208AEF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 6,

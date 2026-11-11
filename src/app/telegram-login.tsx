@@ -1,53 +1,52 @@
 import { View, StyleSheet, Text, TextInput, TouchableOpacity, ScrollView, Image, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { router } from 'expo-router';
-import { saveApiCredentials, getApiCredentials } from '@/lib/storage/secure';
-import { startAuth, signIn, signInWithPassword, initializeClient } from '@/lib/telegram/client';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { saveApiCredentials } from '@/lib/storage/secure';
+import { tdLibClient } from '@/lib/tdlib/client';
 
 export default function TelegramLoginScreen() {
   const [step, setStep] = useState<'phone' | 'code' | '2fa'>('phone');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneCodeHash, setPhoneCodeHash] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   // Optional custom credentials
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const rotateAnim = useRef(new Animated.Value(0)).current;
+  const [pulseAnim] = useState(() => new Animated.Value(1));
+  const [rotateAnim] = useState(() => new Animated.Value(0));
+
+  useEffect(() => {
+    tdLibClient.isLoggedIn().then((loggedIn) => {
+      if (loggedIn) {
+        console.log('[AUTH] Already logged in, returning home');
+        router.replace('/');
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (loading) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.05,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-          }),
+          Animated.timing(pulseAnim, { toValue: 1.05, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
         ])
       ).start();
       Animated.loop(
-        Animated.timing(rotateAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true,
-        })
+        Animated.timing(rotateAnim, { toValue: 1, duration: 1000, useNativeDriver: true })
       ).start();
     } else {
       pulseAnim.setValue(1);
       rotateAnim.setValue(0);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
   const spin = rotateAnim.interpolate({
@@ -57,31 +56,27 @@ export default function TelegramLoginScreen() {
 
   const sendCode = async () => {
     const trimmedPhone = phone.trim();
-    if (!trimmedPhone) {
-      return;
-    }
-
-    if (!trimmedPhone.startsWith('+')) {
-      return;
-    }
+    if (!trimmedPhone || !trimmedPhone.startsWith('+')) return;
 
     setLoading(true);
+    setError('');
     try {
-      console.log('[AUTH] Sending code to', trimmedPhone);
-      // Clear any cached login
-      (globalThis as any).__nimo_cached_login = null;
-      const result = await startAuth(trimmedPhone);
-      console.log('[AUTH] Code sent successfully');
-      setPhoneCodeHash(result.phoneCodeHash);
+      // Fix 3.4: Auto-save custom credentials before initiating login (don't require explicit Save tap)
+      if (apiId.trim() && apiHash.trim()) {
+        await saveApiCredentials(apiId.trim(), apiHash.trim());
+      }
+      console.log('[AUTH] Initiating TDLib login for', trimmedPhone);
+      await tdLibClient.loginWithPhone(trimmedPhone);
+      console.log('[AUTH] TDLib code requested successfully');
       setStep('code');
-    } catch (error: any) {
-      console.log('[AUTH] Error:', error?.errorMessage || error?.message);
-      console.error(error);
-      if (String(error?.errorMessage || error?.message).includes('AUTH_RESTART')) {
-        // Try once more with fresh client
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      console.error('[AUTH] sendCode error:', msg);
+      if (msg.includes('AUTH_RESTART')) {
         setTimeout(() => sendCode(), 500);
         return;
       }
+      setError(msg || 'Failed to send code. Check phone number and try again.');
     } finally {
       setLoading(false);
     }
@@ -89,76 +84,71 @@ export default function TelegramLoginScreen() {
 
   const verifyCode = async () => {
     const trimmedCode = code.trim();
-    if (!trimmedCode) {
-      return;
-    }
+    if (!trimmedCode) return;
 
     setLoading(true);
+    setError('');
     try {
-      console.log('[AUTH] Verifying code...');
-      await signIn(phone.trim(), trimmedCode, phoneCodeHash);
-      console.log('[AUTH] Sign in successful');
-      setLoading(false);
+      console.log('[AUTH] Verifying code via TDLib...');
+      await tdLibClient.verifyCode(trimmedCode);
+      console.log('[AUTH] TDLib verify successful');
       router.replace('/');
-    } catch (error: any) {
-      console.log('[AUTH] Verify error:', error?.errorMessage || error?.message);
-      console.error(error);
-      if (error.errorMessage === 'SESSION_PASSWORD_NEEDED' || error.message === '2FA_PASSWORD_REQUIRED' || String(error.message).includes('SESSION_PASSWORD_NEEDED')) {
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      console.log('[AUTH] verifyCode error:', msg);
+      if (msg.includes('PASSWORD') || msg.includes('2FA') || msg.includes('SESSION_PASSWORD_NEEDED')) {
         console.log('[AUTH] Switching to 2FA step');
-        setLoading(false);
         setStep('2fa');
         return;
-      } else {
       }
+      setError(msg || 'Invalid code. Please try again.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const verify2FA = async () => {
-    if (!password) {
-      return;
-    }
+    if (!password) return;
 
     setLoading(true);
+    setError('');
     try {
-      await Promise.race([
-        (async () => {
-          const c = await initializeClient();
-          if (!c) throw new Error('Failed to initialize client');
-          try {
-            if (!(c as any).isConnected?.()) {
-              await c.connect();
-            }
-          } catch {}
-          const passwordSrp: any = await (c as any).invoke(new (await import('telegram')).Api.account.GetPassword());
-          const { computeCheck } = await import('telegram/Password');
-          const passwordSrpCheck = await computeCheck(passwordSrp, password);
-          await (c as any).invoke(new (await import('telegram')).Api.auth.CheckPassword({ password: passwordSrpCheck }));
-          const sessionStr = (c as any).session.save();
-          const { saveSession } = await import('@/lib/storage/secure');
-          await saveSession(sessionStr);
-          const cached = { value: true, timestamp: Date.now() };
-          (globalThis as any).__nimo_cached_login = cached;
-          return true;
-        })(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout. Please try again.')), 45000))
-      ]);
-      setLoading(false);
+      console.log('[AUTH] TDLib 2FA verify...');
+      await tdLibClient.verifyPassword(password);
+      console.log('[AUTH] TDLib 2FA successful');
       router.replace('/');
-    } catch (error: any) {
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      console.error('[AUTH] 2FA error:', msg);
+      setError(msg || 'Wrong password. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resendCode = async () => {
+    if (loading) return;
+    setCode('');
+    setError('');
+    setLoading(true);
+    try {
+      console.log('[AUTH] Resending code...');
+      // TDLib handles resend by calling login again with the same phone
+      await tdLibClient.loginWithPhone(phone.trim());
+      console.log('[AUTH] Code resent successfully');
+    } catch (err: any) {
+      console.log('[AUTH] Resend error:', err?.message || err);
+      setError('Failed to resend code. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   const saveCustomCredentials = async () => {
-    if (!apiId.trim() || !apiHash.trim()) {
-      return;
-    }
+    if (!apiId.trim() || !apiHash.trim()) return;
     try {
       await saveApiCredentials(apiId.trim(), apiHash.trim());
-    } catch (e: any) {
-    }
+    } catch {}
   };
 
   return (
@@ -171,13 +161,20 @@ export default function TelegramLoginScreen() {
           />
           <Text style={styles.title}>Telegram Login</Text>
 
-          {/* STEP 1: DIRECT PHONE NUMBER LOGIN */}
+          {/* Error banner */}
+          {!!error && (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          )}
+
+          {/* STEP 1: PHONE NUMBER */}
           {step === 'phone' && (
             <View style={styles.form}>
               <Text style={styles.instruction}>
                 Enter your mobile number to sign in with Telegram.
               </Text>
-              
+
               <Text style={styles.label}>Mobile Phone Number</Text>
               <TextInput
                 style={styles.input}
@@ -204,14 +201,22 @@ export default function TelegramLoginScreen() {
                 </Animated.View>
               </TouchableOpacity>
 
-              {/* Advanced / Custom Credentials Collapsible */}
+              {/* Advanced / Custom Credentials */}
               <TouchableOpacity
                 style={styles.advancedToggle}
                 onPress={() => setShowAdvanced(!showAdvanced)}
               >
-                <Text style={styles.advancedToggleText}>
-                  {showAdvanced ? '▼ Hide Custom API Credentials' : '⚙️ Custom API Credentials (Optional)'}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <FontAwesome
+                    name={showAdvanced ? 'chevron-up' : 'cog'}
+                    size={13}
+                    color="#208AEF"
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={styles.advancedToggleText}>
+                    {showAdvanced ? 'Hide Custom API Credentials' : 'Custom API Credentials (Optional)'}
+                  </Text>
+                </View>
               </TouchableOpacity>
 
               {showAdvanced && (
@@ -280,7 +285,7 @@ export default function TelegramLoginScreen() {
 
               <TouchableOpacity
                 style={styles.textButton}
-                onPress={() => setStep('phone')}
+                onPress={() => { setStep('phone'); setError(''); }}
                 disabled={loading}
               >
                 <Text style={styles.textButtonText}>Change Phone Number</Text>
@@ -288,31 +293,7 @@ export default function TelegramLoginScreen() {
 
               <TouchableOpacity
                 style={styles.textButton}
-                onPress={() => {
-                  if (loading) return;
-                  setCode('');
-                  setLoading(true);
-                  (async () => {
-                    try {
-                      console.log('[AUTH] Resending code...');
-                      (globalThis as any).__nimo_cached_login = null;
-                      const { initializeClient } = await import('@/lib/telegram/client');
-                      const c = await initializeClient();
-                      if (c) {
-                        try { await c.disconnect(); } catch {}
-                      }
-                      // reset client
-                      const mod = await import('@/lib/telegram/client');
-                      (mod as any).client = null;
-                      const result = await mod.startAuth(phone.trim());
-                      setPhoneCodeHash(result.phoneCodeHash);
-                    } catch (error: any) {
-                      console.log('[AUTH] Resend error:', error?.errorMessage || error?.message);
-                    } finally {
-                      setLoading(false);
-                    }
-                  })();
-                }}
+                onPress={resendCode}
                 disabled={loading}
               >
                 <Text style={styles.textButtonText}>Resend Code</Text>
@@ -355,9 +336,9 @@ export default function TelegramLoginScreen() {
                 onPress={() => {
                   if (loading) return;
                   setStep('phone');
-                  setLoading(false);
                   setPassword('');
                   setCode('');
+                  setError('');
                 }}
                 disabled={loading}
               >
@@ -372,127 +353,52 @@ export default function TelegramLoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  content: {
-    flex: 1,
-    padding: 24,
-  },
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  scrollContent: { flexGrow: 1 },
+  content: { flex: 1, padding: 24 },
   title: {
-    fontSize: 26,
-    fontWeight: '700',
-    marginBottom: 12,
-    textAlign: 'center',
-    color: '#111',
+    fontSize: 26, fontWeight: '700', marginBottom: 12,
+    textAlign: 'center', color: '#111',
   },
   logo: {
-    width: 100,
-    height: 100,
-    borderRadius: 22,
-    alignSelf: 'center',
-    marginTop: 10,
-    marginBottom: 4,
+    width: 100, height: 100, borderRadius: 22,
+    alignSelf: 'center', marginTop: 10, marginBottom: 4,
   },
   instruction: {
-    fontSize: 15,
-    color: '#555',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
+    fontSize: 15, color: '#555', textAlign: 'center',
+    marginBottom: 24, lineHeight: 22,
   },
-  form: {
-    width: '100%',
+  errorBanner: {
+    backgroundColor: '#fdecea', borderRadius: 8, padding: 12,
+    marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#e53935',
   },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 8,
-    color: '#333',
-  },
+  errorText: { color: '#c62828', fontSize: 14, lineHeight: 20 },
+  form: { width: '100%' },
+  label: { fontSize: 14, fontWeight: '600', marginBottom: 8, color: '#333' },
   input: {
-    backgroundColor: '#ffffff',
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    fontSize: 16,
-    color: '#111',
+    backgroundColor: '#ffffff', padding: 14, borderRadius: 10,
+    marginBottom: 10, borderWidth: 1, borderColor: '#ddd',
+    fontSize: 16, color: '#111',
   },
-  codeInput: {
-    fontSize: 22,
-    letterSpacing: 4,
-    textAlign: 'center',
-  },
-  helpText: {
-    fontSize: 13,
-    color: '#777',
-    marginBottom: 24,
-  },
+  codeInput: { fontSize: 22, letterSpacing: 4, textAlign: 'center' },
+  helpText: { fontSize: 13, color: '#777', marginBottom: 24 },
   button: {
-    backgroundColor: '#208AEF',
-    padding: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 4,
+    backgroundColor: '#208AEF', padding: 14, borderRadius: 10,
+    alignItems: 'center', marginTop: 4,
   },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  textButton: {
-    marginTop: 16,
-    padding: 10,
-    alignItems: 'center',
-  },
-  textButtonText: {
-    color: '#208AEF',
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  advancedToggle: {
-    marginTop: 32,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  advancedToggleText: {
-    color: '#666',
-    fontSize: 14,
-    fontWeight: '500',
-  },
+  buttonDisabled: { opacity: 0.6 },
+  buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
+  textButton: { marginTop: 16, padding: 10, alignItems: 'center' },
+  textButtonText: { color: '#208AEF', fontSize: 15, fontWeight: '500' },
+  advancedToggle: { marginTop: 32, paddingVertical: 12, alignItems: 'center' },
+  advancedToggleText: { color: '#666', fontSize: 14, fontWeight: '500' },
   advancedCard: {
-    backgroundColor: '#eaecee',
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 8,
+    backgroundColor: '#eaecee', borderRadius: 12, padding: 16, marginTop: 8,
   },
-  advancedNote: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 14,
-    lineHeight: 18,
-  },
+  advancedNote: { fontSize: 12, color: '#666', marginBottom: 14, lineHeight: 18 },
   secondaryButton: {
-    backgroundColor: '#ffffff',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#ccc',
-    marginTop: 8,
+    backgroundColor: '#ffffff', padding: 12, borderRadius: 8,
+    alignItems: 'center', borderWidth: 1, borderColor: '#ccc', marginTop: 8,
   },
-  secondaryButtonText: {
-    color: '#333',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+  secondaryButtonText: { color: '#333', fontSize: 14, fontWeight: '600' },
 });

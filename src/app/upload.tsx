@@ -1,4 +1,5 @@
 import { Stack, router } from 'expo-router';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DestinationSelector } from '@/components/DestinationSelector';
 import { FileDetailData, FileDetailsModal } from '@/components/FileDetailsModal';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
@@ -12,6 +13,7 @@ import {
 import {
   ActionHistoryItem,
   addToQueue,
+  addManyToQueue,
   clearActionHistory,
   formatDuration,
   formatFileSize,
@@ -62,10 +64,51 @@ export default function UploadScreen() {
   const scanAbortRef = useRef<AbortController | null>(null);
 
   const loadData = async () => {
+    // Load queue and history in parallel; watched folders change rarely so fetch less often
     const [q, h, wf] = await Promise.all([getQueue(), getActionHistory(), getWatchedFolders()]);
-    setQueue(q);
-    setHistory(h);
-    setWatchedFolders(wf);
+
+    // Merge live in-memory progress from UploadManager so progress bars update
+    // without requiring AsyncStorage writes on every TDLib progress event (Fix 1.6)
+    const liveProgress = uploadManager.getLiveProgress();
+    const qWithLiveProgress = liveProgress.size === 0 ? q : q.map((item: QueueItem) => {
+      const live = liveProgress.get(item.id);
+      if (!live) return item;
+      return { ...item, progress: live.progress, speedKbps: live.speedKbps };
+    });
+
+    setQueue((prev) => {
+      if (
+        prev.length === qWithLiveProgress.length &&
+        prev.every((p, idx) => {
+          const next = qWithLiveProgress[idx];
+          return (
+            p.id === next?.id &&
+            p.status === next?.status &&
+            p.progress === next?.progress &&
+            p.speedKbps === next?.speedKbps &&
+            p.error === next?.error
+          );
+        })
+      ) {
+        return prev;
+      }
+      return qWithLiveProgress;
+    });
+    setHistory((prev) => {
+      if (
+        prev.length === h.length &&
+        (h.length === 0 || (prev[0]?.id === h[0]?.id && prev[prev.length - 1]?.id === h[h.length - 1]?.id))
+      ) {
+        return prev;
+      }
+      return h;
+    });
+    setWatchedFolders((prev) => {
+      if (prev.length === wf.length && prev.every((p, idx) => p.id === wf[idx]?.id)) {
+        return prev;
+      }
+      return wf;
+    });
   };
 
   useEffect(() => {
@@ -98,25 +141,20 @@ export default function UploadScreen() {
 
   const handleFolderFilesSelected = async (files: ScannedFile[], uploadNow: boolean) => {
     try {
-      let totalBytes = 0;
-      for (const file of files) {
-        totalBytes += file.size || 0;
-        await addToQueue({
-          uri: file.uri,
-          fileName: file.fileName,
-          size: file.size,
-          mimeType: file.mimeType,
-        });
-      }
+      // Batch add all files in a single AsyncStorage read+write (not N separate writes)
+      const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+      const { added, skipped } = await addManyToQueue(
+        files.map(f => ({ uri: f.uri, fileName: f.fileName, size: f.size, mimeType: f.mimeType }))
+      );
       loadData();
 
       if (uploadNow) {
         startUpload();
       } else {
-        Alert.alert(
-          'Success',
-          `Added ${files.length} files (${formatFileSize(totalBytes)}) to queue`
-        );
+        const msg = skipped > 0
+          ? `Added ${added.length} files (${formatFileSize(totalBytes)}) to queue. ${skipped} duplicates skipped.`
+          : `Added ${added.length} files (${formatFileSize(totalBytes)}) to queue`;
+        Alert.alert('Success', msg);
       }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to add files to queue');
@@ -174,25 +212,25 @@ export default function UploadScreen() {
       }
 
       let totalBytes = 0;
-      for (const file of newFiles) {
-        if (controller.signal.aborted) break;
-        totalBytes += file.size || 0;
-        await addToQueue({
-          uri: file.uri,
-          fileName: file.fileName,
-          size: file.size,
-          mimeType: file.mimeType,
+      // Batch add all scanned files in a single AsyncStorage read+write (not N separate writes)
+      const toAdd = newFiles
+        .filter(() => !controller.signal.aborted)
+        .map(file => {
+          totalBytes += file.size || 0;
+          return { uri: file.uri, fileName: file.fileName, size: file.size, mimeType: file.mimeType };
         });
-      }
+
+      const { added, skipped } = await addManyToQueue(toAdd);
 
       if (controller.signal.aborted) {
         Alert.alert('Scan Cancelled', 'Adding files to queue was stopped.');
         return;
       }
 
+      const skippedNote = skipped > 0 ? ` (${skipped} duplicates skipped)` : '';
       Alert.alert(
         'Success',
-        `Added ${newFiles.length} files (${formatFileSize(totalBytes)}) from ${foldersToScan.length} folder(s) to queue`
+        `Added ${added.length} files (${formatFileSize(totalBytes)}) from ${foldersToScan.length} folder(s) to queue${skippedNote}`
       );
       loadData();
     } catch (error: any) {
@@ -380,6 +418,9 @@ export default function UploadScreen() {
   const completedItems = queue.filter((item) => item.status === 'completed');
   const completedBytes = completedItems.reduce((sum, item) => sum + (item.size || 0), 0);
 
+  const uploadingItem = queue.find((i) => i.status === 'uploading');
+  const activeUploadingSpeed = (uploadingItem?.speedKbps || 0) * 1024;
+
   const completedWithTime = completedItems.filter(
     (i) => i.uploadDurationMs && i.uploadDurationMs > 0 && i.size > 0
   );
@@ -468,15 +509,15 @@ export default function UploadScreen() {
     >
       <View style={styles.itemHeader}>
         <View style={styles.itemIconCol}>
-          <Text style={styles.itemTypeIcon}>
-            {getFileCategory(item.fileName, item.mimeType) === 'image'
-              ? '🖼️'
-              : getFileCategory(item.fileName, item.mimeType) === 'video'
-              ? '🎥'
-              : getFileCategory(item.fileName, item.mimeType) === 'audio'
-              ? '🎵'
-              : '📄'}
-          </Text>
+          {getFileCategory(item.fileName, item.mimeType) === 'image' ? (
+            <FontAwesome name="picture-o" size={18} color="#208AEF" />
+          ) : getFileCategory(item.fileName, item.mimeType) === 'video' ? (
+            <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
+          ) : getFileCategory(item.fileName, item.mimeType) === 'audio' ? (
+            <FontAwesome name="music" size={18} color="#EC4899" />
+          ) : (
+            <FontAwesome name="file-text-o" size={18} color="#10B981" />
+          )}
         </View>
         <View style={styles.itemInfo}>
           <Text style={styles.fileName} numberOfLines={1}>
@@ -485,7 +526,14 @@ export default function UploadScreen() {
           <View style={styles.metaRow}>
             <Text style={styles.metaText}>{formatFileSize(item.size)}</Text>
             {item.status === 'uploading' && (
-              <Text style={styles.metaProgressText}>• {item.progress}%</Text>
+              <>
+                <Text style={styles.metaProgressText}>• {item.progress}%</Text>
+                {typeof item.speedKbps === 'number' && item.speedKbps > 0 ? (
+                  <Text style={[styles.metaProgressText, { color: '#0284C7', fontWeight: '600' }]}>
+                    • {formatSpeed(item.speedKbps * 1024)}
+                  </Text>
+                ) : null}
+              </>
             )}
             {item.uploadDurationMs && item.uploadDurationMs > 0 && item.status === 'completed' && (
               <Text style={styles.metaDurationText}>
@@ -509,7 +557,7 @@ export default function UploadScreen() {
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.itemUploadBtnText}>🚀</Text>
+              <FontAwesome name="rocket" size={13} color="#208AEF" />
             </TouchableOpacity>
           )}
           {item.status === 'failed' && (
@@ -521,7 +569,7 @@ export default function UploadScreen() {
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={[styles.itemUploadBtnText, { color: '#DC2626' }]}>↻</Text>
+              <FontAwesome name="refresh" size={13} color="#DC2626" />
             </TouchableOpacity>
           )}
           {item.status === 'pending' && (
@@ -533,7 +581,7 @@ export default function UploadScreen() {
               }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.discardButtonText}>✕</Text>
+              <FontAwesome name="times" size={13} color="#9CA3AF" />
             </TouchableOpacity>
           )}
         </View>
@@ -555,15 +603,15 @@ export default function UploadScreen() {
     >
       <View style={styles.historyRow}>
         <View style={styles.itemIconCol}>
-          <Text style={styles.itemTypeIcon}>
-            {getFileCategory(item.fileName) === 'image'
-              ? '🖼️'
-              : getFileCategory(item.fileName) === 'video'
-              ? '🎥'
-              : getFileCategory(item.fileName) === 'audio'
-              ? '🎵'
-              : '📄'}
-          </Text>
+          {getFileCategory(item.fileName) === 'image' ? (
+            <FontAwesome name="picture-o" size={18} color="#208AEF" />
+          ) : getFileCategory(item.fileName) === 'video' ? (
+            <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
+          ) : getFileCategory(item.fileName) === 'audio' ? (
+            <FontAwesome name="music" size={18} color="#EC4899" />
+          ) : (
+            <FontAwesome name="file-text-o" size={18} color="#10B981" />
+          )}
         </View>
         <View style={styles.historyInfo}>
           <Text style={styles.historyFileName} numberOfLines={1}>
@@ -588,7 +636,7 @@ export default function UploadScreen() {
         </View>
         <View style={[styles.statusTag, { backgroundColor: getActionColor(item.status) + '18' }]}>
           <Text style={[styles.statusTagText, { color: getActionColor(item.status) }]}>
-            {item.status === 'uploaded' ? '✓ DONE' : item.status.toUpperCase()}
+            {item.status === 'uploaded' ? 'DONE' : item.status.toUpperCase()}
           </Text>
         </View>
       </View>
@@ -601,7 +649,10 @@ export default function UploadScreen() {
               handleRetryItem(item);
             }}
           >
-            <Text style={styles.retryButtonText}>↻ Retry Upload</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="refresh" size={12} color="#DC2626" style={{ marginRight: 6 }} />
+              <Text style={styles.retryButtonText}>Retry Upload</Text>
+            </View>
           </TouchableOpacity>
         </View>
       )}
@@ -623,7 +674,7 @@ export default function UploadScreen() {
           style={[styles.actionCard, styles.actionCardBlue]}
           onPress={handlePickSingleFile}
         >
-          <Text style={styles.actionCardIcon}>📄</Text>
+          <FontAwesome name="file-text-o" size={24} color="#208AEF" style={styles.actionCardIcon} />
           <Text style={styles.actionCardTitle}>Pick Single File</Text>
           <Text style={styles.actionCardSubtitle}>Photo, Video or Doc</Text>
         </TouchableOpacity>
@@ -632,7 +683,7 @@ export default function UploadScreen() {
           style={[styles.actionCard, styles.actionCardGreen, watchedFolders.length === 0 ? { borderWidth: 2, borderColor: '#3B82F6' } : null]}
           onPress={() => setFolderModalVisible(true)}
         >
-          <Text style={styles.actionCardIcon}>📁</Text>
+          <FontAwesome name="folder-open" size={24} color="#10B981" style={styles.actionCardIcon} />
           <Text style={styles.actionCardTitle}>Browse Folder</Text>
           <Text style={styles.actionCardSubtitle}>Filter & Multi-Select</Text>
         </TouchableOpacity>
@@ -642,7 +693,7 @@ export default function UploadScreen() {
       <View style={styles.watchedFoldersContainer}>
         <View style={styles.watchedFoldersHeader}>
           <Text style={styles.watchedFoldersTitle}>
-            📁 Watched Folders ({watchedFolders.length})
+            Watched Folders ({watchedFolders.length})
           </Text>
           <TouchableOpacity
             onPress={() => setFolderModalVisible(true)}
@@ -667,7 +718,7 @@ export default function UploadScreen() {
           >
             {watchedFolders.map((f) => (
               <View key={f.id} style={styles.watchedChip}>
-                <Text style={styles.watchedChipIcon}>{f.type === 'saf' ? '📂' : '📁'}</Text>
+                <FontAwesome name={f.type === "saf" ? "folder-open" : "folder"} size={12} color="#4B5563" style={{ marginRight: 5 }} />
                 <Text style={styles.watchedChipText} numberOfLines={1}>
                   {f.title}
                 </Text>
@@ -681,7 +732,10 @@ export default function UploadScreen() {
       <View style={styles.buttonRow}>
         {scanning ? (
           <TouchableOpacity style={styles.abortButton} onPress={abortScan}>
-            <Text style={styles.abortButtonText}>🛑 Abort Scan</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="stop-circle" size={14} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.abortButtonText}>Abort Scan</Text>
+            </View>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -691,9 +745,10 @@ export default function UploadScreen() {
               scanAndQueueAll();
             }}
           >
-            <Text style={styles.secondaryButtonText}>
-              ⚡ Scan Folders ({watchedFolders.length})
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="bolt" size={14} color="#208AEF" style={{ marginRight: 6 }} />
+              <Text style={styles.secondaryButtonText}>Scan Folders ({watchedFolders.length})</Text>
+            </View>
           </TouchableOpacity>
         )}
 
@@ -702,9 +757,10 @@ export default function UploadScreen() {
           onPress={startUpload}
           disabled={uploading || scanning}
         >
-          <Text style={styles.uploadButtonText}>
-            {uploading ? 'Uploading...' : '🚀 Upload Now'}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+            <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 6 }} />
+            <Text style={styles.uploadButtonText}>{uploading ? "Uploading..." : "Upload Now"}</Text>
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -755,12 +811,22 @@ export default function UploadScreen() {
             <View style={styles.statsDivider} />
             <View style={styles.statsCol}>
               <Text style={styles.statsLabel}>
-                {queueAvgSpeed > 0 ? 'Avg Speed' : 'Completed'}
+                {activeUploadingSpeed > 0
+                  ? 'Live Speed'
+                  : queueAvgSpeed > 0
+                  ? 'Avg Speed'
+                  : 'Completed'}
               </Text>
-              <Text style={[styles.statsValue, { color: '#4CAF50' }]}>
-                {queueAvgSpeed > 0 ? formatSpeed(queueAvgSpeed) : formatFileSize(completedBytes)}
+              <Text style={[styles.statsValue, { color: activeUploadingSpeed > 0 ? '#0284C7' : '#4CAF50' }]}>
+                {activeUploadingSpeed > 0
+                  ? formatSpeed(activeUploadingSpeed)
+                  : queueAvgSpeed > 0
+                  ? formatSpeed(queueAvgSpeed)
+                  : formatFileSize(completedBytes)}
               </Text>
-              <Text style={styles.statsSub}>{completedItems.length} uploaded</Text>
+              <Text style={styles.statsSub}>
+                {activeUploadingSpeed > 0 ? 'transfer rate' : `${completedItems.length} uploaded`}
+              </Text>
             </View>
           </View>
 
@@ -779,7 +845,7 @@ export default function UploadScreen() {
               onPress={() => setQueueFilter('image')}
             >
               <Text style={[styles.filterChipText, queueFilter === 'image' && styles.filterChipTextActive]}>
-                🖼️ Images ({queueCategoryCounts.image})
+                Images ({queueCategoryCounts.image})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -787,7 +853,7 @@ export default function UploadScreen() {
               onPress={() => setQueueFilter('video')}
             >
               <Text style={[styles.filterChipText, queueFilter === 'video' && styles.filterChipTextActive]}>
-                🎥 Videos ({queueCategoryCounts.video})
+                Videos ({queueCategoryCounts.video})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -795,7 +861,7 @@ export default function UploadScreen() {
               onPress={() => setQueueFilter('audio')}
             >
               <Text style={[styles.filterChipText, queueFilter === 'audio' && styles.filterChipTextActive]}>
-                🎵 Audio ({queueCategoryCounts.audio})
+                Audio ({queueCategoryCounts.audio})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -803,7 +869,7 @@ export default function UploadScreen() {
               onPress={() => setQueueFilter('document')}
             >
               <Text style={[styles.filterChipText, queueFilter === 'document' && styles.filterChipTextActive]}>
-                📄 Docs ({queueCategoryCounts.document})
+                Docs ({queueCategoryCounts.document})
               </Text>
             </TouchableOpacity>
           </View>
@@ -877,24 +943,27 @@ export default function UploadScreen() {
               style={[styles.filterChip, historyFilter === 'uploaded' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('uploaded')}
             >
-              <Text style={[styles.filterChipText, historyFilter === 'uploaded' && styles.filterChipTextActive]}>
-                ✓ Uploaded ({uploadedHistoryItems.length})
+              <FontAwesome name="check" size={11} color={historyFilter === "uploaded" ? "#fff" : "#10B981"} style={{ marginRight: 4 }} />
+              <Text style={[styles.filterChipText, historyFilter === "uploaded" && styles.filterChipTextActive]}>
+                Uploaded ({uploadedHistoryItems.length})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.filterChip, historyFilter === 'failed' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('failed')}
             >
-              <Text style={[styles.filterChipText, historyFilter === 'failed' && styles.filterChipTextActive]}>
-                ✕ Failed
+              <FontAwesome name="times" size={11} color={historyFilter === "failed" ? "#fff" : "#EF4444"} style={{ marginRight: 4 }} />
+              <Text style={[styles.filterChipText, historyFilter === "failed" && styles.filterChipTextActive]}>
+                Failed
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.filterChip, historyFilter === 'dismissed' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('dismissed')}
             >
-              <Text style={[styles.filterChipText, historyFilter === 'dismissed' && styles.filterChipTextActive]}>
-                ⊘ Dismissed
+              <FontAwesome name="ban" size={11} color={historyFilter === "dismissed" ? "#fff" : "#F59E0B"} style={{ marginRight: 4 }} />
+              <Text style={[styles.filterChipText, historyFilter === "dismissed" && styles.filterChipTextActive]}>
+                Dismissed
               </Text>
             </TouchableOpacity>
           </View>
@@ -935,7 +1004,7 @@ export default function UploadScreen() {
             onPress={() => setQueueShowAll(!queueShowAll)}
           >
             <Text style={styles.paginationBtnText}>
-              {queueShowAll ? '🔼 Show 20 by default' : `🔽 Show All (${filteredQueue.length} files)`}
+              {queueShowAll ? "Show 20 by default" : `Show All (${filteredQueue.length} files)`}
             </Text>
           </TouchableOpacity>
         </View>
@@ -953,7 +1022,7 @@ export default function UploadScreen() {
             onPress={() => setHistoryShowAll(!historyShowAll)}
           >
             <Text style={styles.paginationBtnText}>
-              {historyShowAll ? '🔼 Show 20 by default' : `🔽 Show All (${filteredHistory.length} records)`}
+              {historyShowAll ? "Show 20 by default" : `Show All (${filteredHistory.length} records)`}
             </Text>
           </TouchableOpacity>
         </View>
@@ -967,7 +1036,7 @@ export default function UploadScreen() {
     if (activeTab === 'queue') {
       return (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>📭</Text>
+          <FontAwesome name="inbox" size={44} color="#9CA3AF" style={{ alignSelf: "center", marginBottom: 12 }} />
           <Text style={styles.emptyText}>No files in upload queue</Text>
           <Text style={styles.emptySubtext}>
             {queueFilter !== 'all'
@@ -980,7 +1049,7 @@ export default function UploadScreen() {
 
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyIcon}>📜</Text>
+        <FontAwesome name="history" size={44} color="#9CA3AF" style={{ alignSelf: "center", marginBottom: 12 }} />
         <Text style={styles.emptyText}>No history records</Text>
         <Text style={styles.emptySubtext}>
           Actions like uploaded, failed, and dismissed files will appear here.
@@ -1022,7 +1091,7 @@ export default function UploadScreen() {
               activeOpacity={0.7}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Text style={styles.navSettingsIcon}>⚙️</Text>
+              <FontAwesome name="cog" size={20} color={isDark ? "#FFFFFF" : "#374151"} />
             </TouchableOpacity>
           ),
         }}
@@ -1035,9 +1104,9 @@ export default function UploadScreen() {
         data={activeTab === 'queue' ? (displayedQueue as any) : (displayedHistory as any)}
         renderItem={activeTab === 'queue' ? (renderQueueItem as any) : (renderHistoryItem as any)}
         keyExtractor={(item) => item.id}
-        ListHeaderComponent={renderHeader}
-        ListFooterComponent={renderFooter}
-        ListEmptyComponent={renderEmpty}
+        ListHeaderComponent={renderHeader()}
+        ListFooterComponent={renderFooter() || undefined}
+        ListEmptyComponent={renderEmpty()}
       />
 
       {/* Folder Browser Modal */}
@@ -1355,6 +1424,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 16,

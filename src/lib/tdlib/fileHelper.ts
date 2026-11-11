@@ -21,23 +21,33 @@ function safeDecodeURI(uri: string): string {
  * Therefore, any file that is not already inside the app's private sandbox
  * (/data/user/0/ or /data/data/) is streamed natively into the app cache.
  */
-export async function resolveToLocalPath(uri: string): Promise<{ path: string; isTemp: boolean }> {
+export async function resolveToLocalPath(
+  uri: string,
+  preferredFileName?: string
+): Promise<{ path: string; isTemp: boolean }> {
   if (!uri) {
     throw new Error('resolveToLocalPath: URI is required');
   }
 
-  // Fix 2.5: If already an accessible file on disk (app sandbox or local storage),
-  // TDLib C++ can read it directly without duplicating gigabytes into cache.
+  // Clean / sanitize preferred filename if provided
+  const safeName = preferredFileName
+    ? preferredFileName.replace(/[/\\?%*:|"<>]/g, '_')
+    : null;
+
+  // Direct disk access if already an accessible file on disk AND already has the correct filename
   if (uri.startsWith('/') || uri.startsWith('file://')) {
     const rawPath = safeDecodeURI(uri.replace(/^file:\/\//, ''));
-    try {
-      const fileInfo = await LegacyFileSystem.getInfoAsync(uri);
-      if (fileInfo.exists) {
-        console.log(`[resolveToLocalPath] Direct local path used (zero-copy): ${rawPath}`);
-        return { path: rawPath, isTemp: false };
+    const currentBaseName = rawPath.split('/').pop() || '';
+    if (!safeName || currentBaseName === safeName) {
+      try {
+        const fileInfo = await LegacyFileSystem.getInfoAsync(uri);
+        if (fileInfo.exists) {
+          console.log(`[resolveToLocalPath] Direct local path used (zero-copy): ${rawPath}`);
+          return { path: rawPath, isTemp: false };
+        }
+      } catch (e) {
+        console.warn('[resolveToLocalPath] Direct path check failed, falling back to cache:', e);
       }
-    } catch (e) {
-      console.warn('[resolveToLocalPath] Direct path check failed, falling back to cache:', e);
     }
   }
 
@@ -51,12 +61,28 @@ export async function resolveToLocalPath(uri: string): Promise<{ path: string; i
     console.warn('[resolveToLocalPath] Failed to ensure cache directory:', err);
   }
 
-  // Extract extension if available
-  const cleanUri = uri.split('?')[0];
-  const extMatch = cleanUri.match(/\.([a-zA-Z0-9]+)$/);
-  const ext = extMatch ? `.${extMatch[1]}` : '.bin';
-  const fileName = `tdlib_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const targetUri = `${UPLOAD_CACHE_DIR}${fileName}`;
+  // Preserve the real file name and extension
+  let fileName: string;
+  if (safeName) {
+    fileName = safeName;
+  } else {
+    const cleanUri = uri.split('?')[0];
+    const extMatch = cleanUri.match(/\.([a-zA-Z0-9]+)$/);
+    const ext = extMatch ? `.${extMatch[1]}` : '.bin';
+    fileName = `tdlib_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+  }
+
+  let targetUri = `${UPLOAD_CACHE_DIR}${fileName}`;
+  // Avoid collision if a temp file with the same name already exists in cache
+  try {
+    const existing = await LegacyFileSystem.getInfoAsync(targetUri);
+    if (existing.exists) {
+      const dotIdx = fileName.lastIndexOf('.');
+      const base = dotIdx !== -1 ? fileName.slice(0, dotIdx) : fileName;
+      const ext = dotIdx !== -1 ? fileName.slice(dotIdx) : '';
+      targetUri = `${UPLOAD_CACHE_DIR}${base}_${Date.now()}${ext}`;
+    }
+  } catch {}
 
   try {
     console.log(`[resolveToLocalPath] Copying ${uri.slice(0, 50)}... to app cache: ${targetUri}`);

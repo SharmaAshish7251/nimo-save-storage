@@ -380,8 +380,8 @@ class TdLibClientService {
   ): Promise<{ id: number }> {
     await this.init();
 
-    // 1. Resolve to native absolute filesystem path
-    const { path: localPath, isTemp } = await resolveToLocalPath(uri);
+    // 1. Resolve to native absolute filesystem path, preserving real filename & extension
+    const { path: localPath, isTemp } = await resolveToLocalPath(uri, fileName);
 
     const targetChatId = await this.resolveTargetChatId(targetChat);
 

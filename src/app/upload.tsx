@@ -1,5 +1,6 @@
 import { Stack, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import * as Haptics from 'expo-haptics';
 import { DestinationSelector } from '@/components/DestinationSelector';
 import { FileDetailData, FileDetailsModal } from '@/components/FileDetailsModal';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
@@ -119,6 +120,7 @@ export default function UploadScreen() {
 
   const handlePickSingleFile = async () => {
     try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const file = await pickSingleFile();
       if (!file) return;
 
@@ -256,17 +258,21 @@ export default function UploadScreen() {
 
   const startUpload = async () => {
     setUploading(true);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       const result = await uploadManager.processQueue({ forceManual: true });
       loadData();
       if (result.failed === 0) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert('Success', `Successfully uploaded ${result.uploaded} file(s)!`);
       } else if (result.uploaded > 0) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         Alert.alert(
           'Upload Completed with Warnings',
           `Uploaded ${result.uploaded} of ${result.total} files.\n\n${result.failed} file(s) failed:\n${result.errors[0] || 'Unknown error'}`
         );
       } else {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         Alert.alert(
           'Upload Failed',
           `${result.failed} file(s) failed to upload:\n${result.errors[0] || 'Unknown error'}`
@@ -370,6 +376,7 @@ export default function UploadScreen() {
   };
 
   const handleDiscardItem = async (item: { id: string }) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await removeFromQueue(item.id, true);
     loadData();
   };

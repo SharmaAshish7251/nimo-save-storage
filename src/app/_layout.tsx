@@ -67,6 +67,7 @@ export default function RootLayout() {
         <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
         <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
         <Stack.Screen name="logs" options={{ title: 'Logs' }} />
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       </Stack>
       <BiometricLockOverlay />
     </ThemeProvider>

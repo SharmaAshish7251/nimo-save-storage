@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
   Dimensions,
@@ -126,13 +127,21 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      checkStatus();
-      const unsub = tdLibClient.onAuthStateChange((state) => {
-        setLoggedIn(state === 'authorizationStateReady');
-      });
-      return () => {
-        unsub();
+      const run = async () => {
+        const done = await AsyncStorage.getItem('nimo_onboarding_done');
+        if (!done) {
+          router.replace('/onboarding' as never);
+          return;
+        }
+        checkStatus();
+        const unsub = tdLibClient.onAuthStateChange((state) => {
+          setLoggedIn(state === 'authorizationStateReady');
+        });
+        return () => {
+          unsub();
+        };
       };
+      run();
     }, [])
   );
 

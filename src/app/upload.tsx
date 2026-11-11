@@ -4,6 +4,13 @@ import * as Haptics from 'expo-haptics';
 import { DestinationSelector } from '@/components/DestinationSelector';
 import { FileDetailData, FileDetailsModal } from '@/components/FileDetailsModal';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
+import { DuplicateCleanerModal } from '@/components/DuplicateCleanerModal';
+import {
+  findLocalDuplicates,
+  deleteDuplicates,
+  type DuplicateGroup,
+  type ScanDuplicatesProgress,
+} from '@/lib/storage/duplicates';
 import {
   getFileCategory,
   pickSingleFile,
@@ -64,6 +71,53 @@ export default function UploadScreen() {
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [selectedFileForDetails, setSelectedFileForDetails] = useState<FileDetailData | null>(null);
   const scanAbortRef = useRef<AbortController | null>(null);
+
+  // Smart Duplicate Cleaner state
+  const [duplicateModalVisible, setDuplicateModalVisible] = useState(false);
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
+  const [isScanningDuplicates, setIsScanningDuplicates] = useState(false);
+  const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
+  const [duplicateProgress, setDuplicateProgress] = useState<ScanDuplicatesProgress | null>(null);
+
+  const handleOpenDuplicateCleaner = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setDuplicateModalVisible(true);
+    setIsScanningDuplicates(true);
+    setDuplicateProgress(null);
+    try {
+      const currentQueue = await getQueue();
+      const uris = Array.from(new Set(currentQueue.map((q) => q.uri).filter(Boolean)));
+      if (uris.length === 0) {
+        setDuplicateGroups([]);
+        setIsScanningDuplicates(false);
+        return;
+      }
+      const groups = await findLocalDuplicates(uris, (p) => setDuplicateProgress(p));
+      setDuplicateGroups(groups);
+    } catch (err: any) {
+      console.warn('Duplicate scan error:', err);
+      Alert.alert('Scan Error', err?.message || 'Could not scan for duplicates');
+    } finally {
+      setIsScanningDuplicates(false);
+    }
+  };
+
+  const handleCleanDuplicates = async (strategy: 'oldest' | 'newest') => {
+    setIsCleaningDuplicates(true);
+    try {
+      const result = await deleteDuplicates(duplicateGroups, strategy);
+      await loadData();
+      setDuplicateModalVisible(false);
+      Alert.alert(
+        'Duplicates Cleaned ✓',
+        `Removed ${result.deletedCount} duplicate file(s) and freed ${formatFileSize(result.freedBytes)} of device storage.`
+      );
+    } catch (err: any) {
+      Alert.alert('Clean Error', err?.message || 'Failed to clean duplicates');
+    } finally {
+      setIsCleaningDuplicates(false);
+    }
+  };
 
   const loadData = async () => {
     // Load queue and history in parallel; watched folders change rarely so fetch less often
@@ -783,6 +837,17 @@ export default function UploadScreen() {
         </View>
       )}
 
+      {/* Duplicate Cleaner Tool Row */}
+      <View style={styles.utilityActionRow}>
+        <TouchableOpacity
+          style={styles.duplicateToolBtn}
+          onPress={handleOpenDuplicateCleaner}
+        >
+          <FontAwesome name="clone" size={12} color="#208AEF" style={{ marginRight: 6 }} />
+          <Text style={styles.duplicateToolBtnText}>Duplicate Cleaner</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Tabs: Queue vs History */}
       <View style={styles.tabContainer}>
         <TouchableOpacity
@@ -1159,6 +1224,16 @@ export default function UploadScreen() {
           handleRetryItem(file as any);
         }}
       />
+
+      <DuplicateCleanerModal
+        visible={duplicateModalVisible}
+        groups={duplicateGroups}
+        isScanning={isScanningDuplicates}
+        scanProgress={duplicateProgress}
+        isCleaning={isCleaningDuplicates}
+        onClose={() => setDuplicateModalVisible(false)}
+        onClean={handleCleanDuplicates}
+      />
     </SafeAreaView>
   );
 }
@@ -1300,7 +1375,27 @@ const styles = StyleSheet.create({
   buttonRow: {
     flexDirection: 'row',
     gap: 12,
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  utilityActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: 8,
+  },
+  duplicateToolBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  duplicateToolBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#208AEF',
   },
   secondaryButton: {
     flex: 1,

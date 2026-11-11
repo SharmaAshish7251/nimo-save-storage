@@ -78,6 +78,12 @@ export default function CloudExplorerScreen() {
   const [downloadStatusText, setDownloadStatusText] = useState<string>('');
   const [mediaPlayerItem, setMediaPlayerItem] = useState<MediaPreviewItem | null>(null);
 
+  // Multi-select & Bulk actions state
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
+  const [isBulkOperating, setIsBulkOperating] = useState(false);
+  const [bulkStatusText, setBulkStatusText] = useState('');
+
   const loadCloudItems = useCallback(async () => {
     try {
       const [uploaded, appConfig] = await Promise.all([
@@ -291,6 +297,164 @@ export default function CloudExplorerScreen() {
     });
   }, [items, searchQuery, activeCategory, sortOption]);
 
+  const toggleSelection = (uri: string) => {
+    setSelectedUris((prev) => {
+      const next = new Set(prev);
+      if (next.has(uri)) {
+        next.delete(uri);
+      } else {
+        next.add(uri);
+      }
+      return next;
+    });
+  };
+
+  const exitSelectMode = () => {
+    setIsSelectMode(false);
+    setSelectedUris(new Set());
+  };
+
+  const handleItemPress = (item: CloudItem) => {
+    if (isSelectMode) {
+      Haptics.selectionAsync().catch(() => {});
+      toggleSelection(item.uri);
+    } else {
+      Haptics.selectionAsync().catch(() => {});
+      setSelectedItem(item);
+    }
+  };
+
+  const handleItemLongPress = (item: CloudItem) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    if (!isSelectMode) {
+      setIsSelectMode(true);
+      setSelectedUris(new Set([item.uri]));
+    } else {
+      toggleSelection(item.uri);
+    }
+  };
+
+  const selectedItemsList = useMemo(() => {
+    return items.filter((it) => selectedUris.has(it.uri));
+  }, [items, selectedUris]);
+
+  const selectedTotalBytes = useMemo(() => {
+    return selectedItemsList.reduce(
+      (acc, it) => acc + (it.chunkManifest ? it.chunkManifest.originalSize : it.size),
+      0
+    );
+  }, [selectedItemsList]);
+
+  const handleSelectAll = () => {
+    Haptics.selectionAsync().catch(() => {});
+    if (selectedUris.size === filteredAndSortedItems.length) {
+      setSelectedUris(new Set());
+    } else {
+      setSelectedUris(new Set(filteredAndSortedItems.map((it) => it.uri)));
+    }
+  };
+
+  const handleBulkDownload = async () => {
+    if (selectedItemsList.length === 0) return;
+    Alert.alert(
+      'Download to Device',
+      `Download ${selectedItemsList.length} file(s) (${formatFileSize(selectedTotalBytes)}) to your device storage?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            setIsBulkOperating(true);
+            let downloadedCount = 0;
+            try {
+              for (let i = 0; i < selectedItemsList.length; i++) {
+                const it = selectedItemsList[i];
+                setBulkStatusText(`Downloading ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
+                const localUri = await downloadCloudItemToLocal(it);
+                if (it.category === 'image' || it.category === 'video') {
+                  const perm = await MediaLibrary.requestPermissionsAsync().catch(() => ({ status: 'denied' }));
+                  if (perm.status === 'granted') {
+                    await MediaLibrary.createAssetAsync(localUri).catch(() => {});
+                  }
+                }
+                downloadedCount++;
+              }
+              Alert.alert('Download Complete ✓', `Saved ${downloadedCount} file(s) to device.`);
+              exitSelectMode();
+              await loadCloudItems();
+            } catch (err: any) {
+              Alert.alert('Download Error', err?.message || 'Failed during bulk download.');
+            } finally {
+              setIsBulkOperating(false);
+              setBulkStatusText('');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleBulkShare = async () => {
+    if (selectedItemsList.length === 0) return;
+    setIsBulkOperating(true);
+    setBulkStatusText('Preparing files for sharing...');
+    try {
+      if (selectedItemsList.length === 1) {
+        await handleShareFile(selectedItemsList[0]);
+        exitSelectMode();
+        return;
+      }
+      const localUris: string[] = [];
+      for (let i = 0; i < selectedItemsList.length; i++) {
+        const it = selectedItemsList[i];
+        setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}...`);
+        const uri = await downloadCloudItemToLocal(it);
+        localUris.push(uri);
+      }
+      if (localUris.length > 0) {
+        await Sharing.shareAsync(localUris[0]);
+      }
+      exitSelectMode();
+    } catch (err: any) {
+      Alert.alert('Share Error', err?.message || 'Could not prepare files to share.');
+    } finally {
+      setIsBulkOperating(false);
+      setBulkStatusText('');
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedItemsList.length === 0) return;
+    Alert.alert(
+      'Delete from Telegram Cloud',
+      `Are you sure you want to delete ${selectedItemsList.length} file(s) from your Telegram cloud storage? This action cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setIsBulkOperating(true);
+            setBulkStatusText(`Deleting ${selectedItemsList.length} items from cloud...`);
+            try {
+              for (const it of selectedItemsList) {
+                await deleteCloudRecord(it);
+              }
+              exitSelectMode();
+              await loadCloudItems();
+              Alert.alert('Deleted', `Removed ${selectedItemsList.length} file(s) from cloud catalog.`);
+            } catch (err: any) {
+              Alert.alert('Delete Error', err?.message || 'Failed to delete some items.');
+            } finally {
+              setIsBulkOperating(false);
+              setBulkStatusText('');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const downloadCloudItemToLocal = async (item: CloudItem): Promise<string> => {
     if (item.existsLocally) {
       const info = await FileSystem.getInfoAsync(item.uri).catch(() => ({ exists: false }));
@@ -448,13 +612,17 @@ export default function CloudExplorerScreen() {
 
   const renderGridItem = ({ item }: { item: CloudItem }) => {
     const isImage = item.category === 'image';
+    const isSelected = selectedUris.has(item.uri);
     return (
       <TouchableOpacity
-        style={[styles.gridCell, { backgroundColor: cardBg, borderColor: border }]}
-        onPress={() => {
-          Haptics.selectionAsync().catch(() => {});
-          setSelectedItem(item);
-        }}
+        style={[
+          styles.gridCell,
+          { backgroundColor: cardBg, borderColor: border },
+          isSelected && styles.gridCellSelected,
+        ]}
+        onPress={() => handleItemPress(item)}
+        onLongPress={() => handleItemLongPress(item)}
+        delayLongPress={300}
         activeOpacity={0.8}
       >
         {isImage && item.existsLocally ? (
@@ -498,21 +666,48 @@ export default function CloudExplorerScreen() {
             color="#FFFFFF"
           />
         </View>
+
+        {/* Multi-Select Checkmark Circle */}
+        {isSelectMode && (
+          <View
+            style={[
+              styles.gridSelectCircle,
+              isSelected && styles.gridSelectCircleActive,
+            ]}
+          >
+            {isSelected && <FontAwesome name="check" size={10} color="#FFFFFF" />}
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
 
   const renderListItem = ({ item }: { item: CloudItem }) => {
     const isImage = item.category === 'image';
+    const isSelected = selectedUris.has(item.uri);
     return (
       <TouchableOpacity
-        style={[styles.listRow, { backgroundColor: cardBg, borderColor: border }]}
-        onPress={() => {
-          Haptics.selectionAsync().catch(() => {});
-          setSelectedItem(item);
-        }}
+        style={[
+          styles.listRow,
+          { backgroundColor: cardBg, borderColor: border },
+          isSelected && styles.listRowSelected,
+        ]}
+        onPress={() => handleItemPress(item)}
+        onLongPress={() => handleItemLongPress(item)}
+        delayLongPress={300}
         activeOpacity={0.7}
       >
+        {isSelectMode && (
+          <View
+            style={[
+              styles.listSelectCircle,
+              isSelected && styles.listSelectCircleActive,
+            ]}
+          >
+            {isSelected && <FontAwesome name="check" size={10} color="#FFFFFF" />}
+          </View>
+        )}
+
         <View style={styles.listThumbWrap}>
           {isImage && item.existsLocally ? (
             <Image source={{ uri: item.uri }} style={styles.listThumbImage} />
@@ -580,58 +775,81 @@ export default function CloudExplorerScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
-      {/* Top App Header */}
-      <View style={[styles.header, { borderBottomColor: border }]}>
-        <View>
-          <Text style={[styles.headerTitle, { color: textColor }]}>Cloud Explorer</Text>
-          <Text style={[styles.headerSub, { color: subtextColor }]}>
-            {items.length} files • {formatFileSize(totalCloudBytes)} in Telegram
-          </Text>
-        </View>
-        <View style={styles.headerRightActions}>
-          <TouchableOpacity
-            style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
-            onPress={handleImportFromTelegram}
-            disabled={isImporting}
-          >
-            {isImporting ? (
-              <ActivityIndicator size="small" color="#10B981" />
-            ) : (
-              <FontAwesome name="cloud-download" size={14} color="#10B981" />
-            )}
+      {/* Top App Header / Selection Header */}
+      {isSelectMode ? (
+        <View style={[styles.selectModeHeader, { backgroundColor: cardBg, borderBottomColor: border }]}>
+          <TouchableOpacity onPress={exitSelectMode} style={styles.selectCloseBtn}>
+            <FontAwesome name="times" size={16} color={textColor} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
-            onPress={() => {
-              Haptics.selectionAsync().catch(() => {});
-              setViewMode((m) => (m === 'grid' ? 'list' : 'grid'));
-            }}
-          >
-            <FontAwesome
-              name={viewMode === 'grid' ? 'list' : 'th'}
-              size={14}
-              color="#208AEF"
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
-            onPress={() => {
-              Haptics.selectionAsync().catch(() => {});
-              setSortOption((prev) =>
-                prev === 'newest'
-                  ? 'oldest'
-                  : prev === 'oldest'
-                  ? 'largest'
-                  : prev === 'largest'
-                  ? 'name'
-                  : 'newest'
-              );
-            }}
-          >
-            <FontAwesome name="sort" size={14} color="#6366F1" />
+          <View style={styles.selectCountWrap}>
+            <Text style={[styles.selectCountText, { color: textColor }]}>
+              {selectedUris.size} selected
+            </Text>
+            <Text style={[styles.selectSizeText, { color: subtextColor }]}>
+              ({formatFileSize(selectedTotalBytes)})
+            </Text>
+          </View>
+          <TouchableOpacity onPress={handleSelectAll} style={styles.selectAllBtn}>
+            <Text style={styles.selectAllBtnText}>
+              {selectedUris.size === filteredAndSortedItems.length && filteredAndSortedItems.length > 0
+                ? 'Deselect All'
+                : 'Select All'}
+            </Text>
           </TouchableOpacity>
         </View>
-      </View>
+      ) : (
+        <View style={[styles.header, { borderBottomColor: border }]}>
+          <View>
+            <Text style={[styles.headerTitle, { color: textColor }]}>Cloud Explorer</Text>
+            <Text style={[styles.headerSub, { color: subtextColor }]}>
+              {items.length} files • {formatFileSize(totalCloudBytes)} in Telegram
+            </Text>
+          </View>
+          <View style={styles.headerRightActions}>
+            <TouchableOpacity
+              style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
+              onPress={handleImportFromTelegram}
+              disabled={isImporting}
+            >
+              {isImporting ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <FontAwesome name="cloud-download" size={14} color="#10B981" />
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setViewMode((m) => (m === 'grid' ? 'list' : 'grid'));
+              }}
+            >
+              <FontAwesome
+                name={viewMode === 'grid' ? 'list' : 'th'}
+                size={14}
+                color="#208AEF"
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setSortOption((prev) =>
+                  prev === 'newest'
+                    ? 'oldest'
+                    : prev === 'oldest'
+                    ? 'largest'
+                    : prev === 'largest'
+                    ? 'name'
+                    : 'newest'
+                );
+              }}
+            >
+              <FontAwesome name="sort" size={14} color="#6366F1" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Search Input Bar */}
       <View style={styles.searchBarWrap}>
@@ -999,6 +1217,50 @@ export default function CloudExplorerScreen() {
         downloadProgress={downloadProgress}
         downloadStatusText={downloadStatusText}
       />
+
+      {/* Floating Bulk Action Bar */}
+      {isSelectMode && selectedUris.size > 0 && (
+        <View style={[styles.bulkActionBar, { backgroundColor: cardBg, borderColor: border }]}>
+          <TouchableOpacity
+            style={styles.bulkActionBtn}
+            onPress={handleBulkDownload}
+            disabled={isBulkOperating}
+          >
+            <FontAwesome name="download" size={16} color="#208AEF" />
+            <Text style={[styles.bulkActionText, { color: '#208AEF' }]}>Download ({selectedUris.size})</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.bulkDivider, { backgroundColor: border }]} />
+
+          <TouchableOpacity
+            style={styles.bulkActionBtn}
+            onPress={handleBulkShare}
+            disabled={isBulkOperating}
+          >
+            <FontAwesome name="share" size={16} color="#208AEF" />
+            <Text style={[styles.bulkActionText, { color: '#208AEF' }]}>Share</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.bulkDivider, { backgroundColor: border }]} />
+
+          <TouchableOpacity
+            style={styles.bulkActionBtn}
+            onPress={handleBulkDelete}
+            disabled={isBulkOperating}
+          >
+            <FontAwesome name="trash" size={16} color="#EF4444" />
+            <Text style={[styles.bulkActionText, { color: '#EF4444' }]}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Bulk Progress Toast / Overlay */}
+      {isBulkOperating && (
+        <View style={styles.bulkProgressOverlay}>
+          <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+          <Text style={styles.bulkProgressText}>{bulkStatusText}</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -1404,5 +1666,137 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#EF4444',
     lineHeight: 16,
+  },
+  // Multi-Select Styles
+  selectModeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  selectCloseBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectCountWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  selectCountText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  selectSizeText: {
+    fontSize: 13,
+  },
+  selectAllBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#EFF6FF',
+  },
+  selectAllBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#208AEF',
+  },
+  gridCellSelected: {
+    borderColor: '#208AEF',
+    borderWidth: 2,
+  },
+  gridSelectCircle: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gridSelectCircleActive: {
+    backgroundColor: '#208AEF',
+    borderColor: '#FFFFFF',
+  },
+  listRowSelected: {
+    borderColor: '#208AEF',
+    borderWidth: 1.5,
+    backgroundColor: 'rgba(32, 138, 239, 0.05)',
+  },
+  listSelectCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  listSelectCircleActive: {
+    backgroundColor: '#208AEF',
+    borderColor: '#208AEF',
+  },
+  bulkActionBar: {
+    position: 'absolute',
+    bottom: 24,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  bulkActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  bulkActionText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  bulkDivider: {
+    width: 1,
+    height: 20,
+  },
+  bulkProgressOverlay: {
+    position: 'absolute',
+    bottom: 90,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 10,
+  },
+  bulkProgressText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

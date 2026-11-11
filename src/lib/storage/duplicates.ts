@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Crypto from 'expo-crypto';
 
 export interface DuplicateFile {
@@ -156,9 +157,21 @@ export async function deleteDuplicates(
 
     for (const copy of redundantCopies) {
       try {
-        await FileSystem.deleteAsync(copy.uri, { idempotent: true });
-        deletedCount++;
-        freedBytes += group.size;
+        let deleted = false;
+        if (copy.uri.startsWith('ph://') || copy.uri.includes('content://media')) {
+          try {
+            const res = await MediaLibrary.deleteAssetsAsync([copy.uri]);
+            if (res) deleted = true;
+          } catch {}
+        }
+        if (!deleted) {
+          await FileSystem.deleteAsync(copy.uri, { idempotent: true });
+          deleted = true;
+        }
+        if (deleted) {
+          deletedCount++;
+          freedBytes += group.size;
+        }
       } catch (err: any) {
         errors.push(`Failed to delete ${copy.name}: ${err?.message || 'Permission denied'}`);
       }

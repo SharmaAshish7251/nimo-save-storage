@@ -825,6 +825,15 @@ class TdLibClientService {
 
       updateHandler = (type: string, data: any) => {
         const lowerType = (type || data?.['@type'] || '').toLowerCase();
+
+        if (lowerType === 'error' && data) {
+          completed = true;
+          clearTimeout(timeoutId);
+          cleanup();
+          reject(new Error(data.message || 'TDLib download error'));
+          return;
+        }
+
         if (lowerType === 'updatefile' && data?.file) {
           const f = data.file;
           if (f.id === fileId) {

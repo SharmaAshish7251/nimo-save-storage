@@ -129,6 +129,7 @@ class SchedulerEngine {
   private isRunning: boolean = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private appStateSubscription: any = null;
+  private chargingSubscription: { remove: () => void } | null = null;
   private listeners: Set<(state: SchedulerState) => void> = new Set();
 
   /**
@@ -147,7 +148,7 @@ class SchedulerEngine {
       return { canRun: false, reason: 'Telegram not connected', code: 'NOT_LOGGED_IN' };
     }
 
-    if (!options.forceManual && !config.autoUploadEnabled) {
+    if (!options.forceManual && !config.autoUploadEnabled && !config.syncOnPlug) {
       return { canRun: false, reason: 'Auto upload disabled', code: 'DISABLED' };
     }
 
@@ -459,9 +460,41 @@ class SchedulerEngine {
         }
       }
     });
+    // Start charging state listener for auto-sync on plug
+    this.startChargingListener();
+  }
+
+  startChargingListener(): void {
+    if (this.chargingSubscription) return;
+    Battery.isAvailableAsync().then((available) => {
+      if (!available) return;
+      this.chargingSubscription = Battery.addBatteryStateListener(async ({ batteryState }) => {
+        const isCharging =
+          batteryState === Battery.BatteryState.CHARGING ||
+          batteryState === Battery.BatteryState.FULL;
+        if (!isCharging) return;
+        try {
+          const config = await getConfig();
+          if (!config.autoUploadEnabled && !config.syncOnPlug) return;
+          if (this.isRunning || uploadManager.isActive) return;
+          console.log('[Scheduler] Charging detected — triggering opportunistic backup...');
+          await this.executeScheduler({ triggerSource: 'interval_timer', forceManual: false });
+        } catch (err) {
+          console.warn('[Scheduler] Charging trigger error:', err);
+        }
+      });
+    }).catch(() => {});
+  }
+
+  stopChargingListener(): void {
+    if (this.chargingSubscription) {
+      this.chargingSubscription.remove();
+      this.chargingSubscription = null;
+    }
   }
 
   stopActiveRunner(): void {
+    this.stopChargingListener();
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;

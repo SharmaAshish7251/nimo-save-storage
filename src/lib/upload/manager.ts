@@ -18,6 +18,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
 import { splitFileIntoChunks, needsChunking, cleanupChunks } from './chunker';
 import type { ChunkManifest } from '../storage/reassembler';
+import { uploadNotificationService } from '../notifications/uploadNotificationService';
 
 export interface ProcessQueueResult {
   total: number;
@@ -35,6 +36,10 @@ export class UploadManager {
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
   // Fix 1.6: In-memory progress cache to avoid AsyncStorage thrashing
   private inMemoryProgress: Map<string, { progress: number; speedKbps: number }> = new Map();
+  private totalBatchItems = 0;
+  private completedBatchItems = 0;
+  private totalBatchBytes = 0;
+  private uploadedBatchBytes = 0;
 
   /**
    * Returns live progress for all currently-uploading items.
@@ -111,6 +116,14 @@ export class UploadManager {
       const config = await getConfig();
       this.setConcurrency(config.concurrency || 3);
       
+      this.totalBatchItems = pendingItems.length;
+      this.completedBatchItems = 0;
+      this.totalBatchBytes = pendingItems.reduce((acc: number, it: QueueItem) => acc + (it.size || 0), 0);
+      this.uploadedBatchBytes = 0;
+
+      // Start initial progress notification
+      uploadNotificationService.showUploadProgress(0, this.totalBatchItems, 0, 0, 0).catch(() => {});
+
       let uploadedCount = 0;
       let failedCount = 0;
       const errorMessages: string[] = [];
@@ -120,6 +133,18 @@ export class UploadManager {
           try {
             await this.uploadItem(item);
             uploadedCount++;
+            this.completedBatchItems++;
+            this.uploadedBatchBytes += (item.size || 0);
+            const batchPercent = this.totalBatchBytes > 0
+              ? Math.round((this.uploadedBatchBytes / this.totalBatchBytes) * 100)
+              : Math.round((this.completedBatchItems / this.totalBatchItems) * 100);
+            uploadNotificationService.showUploadProgress(
+              this.completedBatchItems,
+              this.totalBatchItems,
+              batchPercent,
+              0,
+              0
+            ).catch(() => {});
           } catch (err: any) {
             failedCount++;
             const msg = err.message || 'Upload failed';
@@ -132,6 +157,8 @@ export class UploadManager {
       
       await this.queue.onIdle();
 
+      await uploadNotificationService.showUploadComplete(uploadedCount, this.uploadedBatchBytes);
+
       return {
         total: pendingItems.length,
         uploaded: uploadedCount,
@@ -139,6 +166,7 @@ export class UploadManager {
         errors: errorMessages,
       };
     } finally {
+      await uploadNotificationService.dismissProgress();
       this.isRunning = false;
     }
   }
@@ -188,7 +216,23 @@ export class UploadManager {
       }
 
       const config = await getConfig();
-      const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
+      let targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
+
+      // Categorical multi-channel routing if enabled
+      if (config.multiChannelRouting) {
+        const mime = item.mimeType || '';
+        const ext = (item.fileName.split('.').pop() || '').toLowerCase();
+        const isPhoto = mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(ext);
+        const isVideo = mime.startsWith('video/') || ['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp'].includes(ext);
+
+        if (isPhoto && config.photoChannelId) {
+          targetChat = config.photoChannelId;
+        } else if (isVideo && config.videoChannelId) {
+          targetChat = config.videoChannelId;
+        } else if (!isPhoto && !isVideo && config.documentChannelId) {
+          targetChat = config.documentChannelId;
+        }
+      }
 
       // ── Multi-part chunking for free-tier accounts with large files ──────
       // Triggered when file > 1.95 GB on a free Telegram account.
@@ -229,6 +273,21 @@ export class UploadManager {
         this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
         // Fix 1.6: Only update in-memory progress — no AsyncStorage writes during progress
         this.inMemoryProgress.set(item.id, { progress: Math.round(progress * 100), speedKbps: Math.round(speedKbps) });
+
+        // Update live sticky notification with speed and ETA
+        const currentBatchBytes = this.uploadedBatchBytes + uploadedBytes;
+        const totalPercent = this.totalBatchBytes > 0
+          ? Math.round((currentBatchBytes / this.totalBatchBytes) * 100)
+          : Math.round(progress * 100);
+        const remainingBytes = Math.max(0, this.totalBatchBytes - currentBatchBytes);
+        const etaSeconds = speedKbps > 0 ? Math.round((remainingBytes / 1024) / speedKbps) : 0;
+        uploadNotificationService.showUploadProgress(
+          this.completedBatchItems + 1,
+          this.totalBatchItems,
+          totalPercent,
+          speedKbps,
+          etaSeconds
+        ).catch(() => {});
       };
 
       console.log('[UploadManager] Uploading via native TDLib MTProto engine');
@@ -261,6 +320,7 @@ export class UploadManager {
     } catch (error: any) {
       const durationMs = Date.now() - startTime;
       console.error(`Failed to upload ${item.fileName}:`, error);
+      uploadNotificationService.showUploadError(item.fileName, error.message || 'Upload failed').catch(() => {});
       await this.updateItemStatus(item.id, 'failed', item.progress, error.message, undefined, undefined, durationMs);
 
       try {

@@ -995,6 +995,34 @@ export default function SettingsScreen() {
             <View style={styles.rowBetween}>
               <View style={styles.rowTextCol}>
                 <View style={styles.rowAligned}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Sync When Plugged In</Text>
+                  <View style={[styles.pillBadge, { backgroundColor: '#ECFDF5', marginLeft: 8 }]}>
+                    <FontAwesome name="bolt" size={10} color="#10B981" />
+                    <Text style={[styles.pillBadgeText, { color: '#059669', marginLeft: 4 }]}>
+                      Auto-Trigger
+                    </Text>
+                  </View>
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Automatically start backup as soon as phone is connected to charger
+                </Text>
+              </View>
+              <Switch
+                value={config.syncOnPlug ?? false}
+                onValueChange={(val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ syncOnPlug: val });
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.syncOnPlug ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <View style={styles.rowAligned}>
                   <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Battery Guard</Text>
                   {batteryLevel !== null && (
                     <View style={[styles.pillBadge, { backgroundColor: '#EFF6FF', marginLeft: 8 }]}>

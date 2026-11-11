@@ -34,6 +34,18 @@ export interface AppConfig {
   notifyOnComplete?: boolean;
   biometricLockEnabled?: boolean;
   biometricLockTimeout?: number; // in seconds: 0 (immediate), 60 (1m), 300 (5m)
+  // Charging auto-sync
+  syncOnPlug?: boolean;
+  // Multi-channel categorical routing
+  multiChannelRouting?: boolean;
+  photoChannelId?: string;
+  photoChannelTitle?: string;
+  videoChannelId?: string;
+  videoChannelTitle?: string;
+  documentChannelId?: string;
+  documentChannelTitle?: string;
+  // Zero-knowledge encrypted vault
+  vaultEnabled?: boolean;
 }
 
 export interface SchedulerState {
@@ -76,6 +88,9 @@ const DEFAULT_CONFIG: AppConfig = {
   notifyOnComplete: false,
   biometricLockEnabled: false,
   biometricLockTimeout: 0,
+  syncOnPlug: false,
+  multiChannelRouting: false,
+  vaultEnabled: false,
 };
 
 export async function getConfig(): Promise<AppConfig> {

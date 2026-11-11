@@ -684,6 +684,192 @@ class TdLibClientService {
   }
 
   /**
+   * Downloads a file from Telegram by chatId and messageId.
+   * Reports progress (0 to 1) and returns the local file path on completion.
+   */
+  public async downloadMessageFile(
+    chatId: number,
+    messageId: number,
+    onProgress?: (progress: number, downloadedBytes: number, totalBytes: number) => void
+  ): Promise<string> {
+    await this.init();
+
+    // 1. Fetch message from TDLib
+    const result = await TdLib.getMessage(chatId, messageId);
+    if (!result) {
+      throw new Error(`Message ${messageId} not found in chat ${chatId}`);
+    }
+
+    const raw = typeof result === 'string' ? result : (result as any).raw || result;
+    const msg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    if (!msg || msg['@type'] === 'error') {
+      const errMsg = msg?.message || `Message ${messageId} not found in chat ${chatId}`;
+      throw new Error(`Failed to fetch cloud message: ${errMsg}`);
+    }
+
+    // 2. Extract fileId from content
+    let fileId: number | null = null;
+    let expectedSize = 0;
+    let localPath: string | null = null;
+    const content = msg.content;
+
+    if (content) {
+      const doc = content.document?.document || content.document;
+      const photo = content.photo?.sizes?.length ? content.photo.sizes[content.photo.sizes.length - 1]?.photo : null;
+      const video = content.video?.video || content.video;
+      const audio = content.audio?.audio || content.audio;
+      const voice = content.voice_note?.voice || content.voice_note;
+
+      const targetFile = doc || photo || video || audio || voice;
+      if (targetFile) {
+        fileId = targetFile.id ?? null;
+        expectedSize = targetFile.size || targetFile.expected_size || 0;
+        if (targetFile.local?.is_downloading_completed && targetFile.local?.path) {
+          localPath = targetFile.local.path;
+        }
+      }
+    }
+
+    if (!fileId) {
+      throw new Error(`Message ${messageId} contains no downloadable file content.`);
+    }
+
+    // If already downloaded and file exists
+    if (localPath) {
+      const exists = await LegacyFileSystem.getInfoAsync(localPath).catch(() => ({ exists: false }));
+      if (exists.exists) {
+        if (onProgress) onProgress(1, expectedSize, expectedSize);
+        return localPath;
+      }
+    }
+
+    // 3. Request download & await completion via updateListener
+    return new Promise<string>((resolve, reject) => {
+      let completed = false;
+      let updateHandler: any = null;
+
+      const cleanup = () => {
+        if (updateHandler) {
+          this.updateListeners.delete(updateHandler);
+          updateHandler = null;
+        }
+      };
+
+      const timeoutId = setTimeout(() => {
+        if (!completed) {
+          cleanup();
+          reject(new Error(`Download timed out for message ${messageId} (fileId: ${fileId})`));
+        }
+      }, 10 * 60 * 1000); // 10 minutes timeout for large files
+
+      updateHandler = (type: string, data: any) => {
+        const lowerType = (type || data?.['@type'] || '').toLowerCase();
+        if (lowerType === 'updatefile' && data?.file) {
+          const f = data.file;
+          if (f.id === fileId) {
+            const downloaded = f.local?.downloaded_size ?? (f.local as any)?.downloadedSize ?? 0;
+            const total = f.expected_size || f.size || expectedSize || 1;
+            const progress = Math.min(1, Math.max(0, downloaded / total));
+
+            if (onProgress) {
+              onProgress(progress, downloaded, total);
+            }
+
+            const isCompleted = f.local?.is_downloading_completed ?? (f.local as any)?.isDownloadingCompleted;
+            if (isCompleted && f.local?.path) {
+              completed = true;
+              clearTimeout(timeoutId);
+              cleanup();
+              resolve(f.local.path);
+            }
+          }
+        }
+      };
+
+      this.updateListeners.add(updateHandler);
+
+      // Invoke downloadFile in TDLib
+      TdLib.td_json_client_send({
+        '@type': 'downloadFile',
+        file_id: fileId,
+        priority: 32,
+        offset: 0,
+        limit: 0,
+        synchronous: false,
+      }).catch((err: any) => {
+        clearTimeout(timeoutId);
+        cleanup();
+        reject(new Error(`Failed to initiate TDLib downloadFile: ${err?.message || err}`));
+      });
+    });
+  }
+
+  /**
+   * Downloads a small message thumbnail if present.
+   */
+  public async downloadMessageThumbnail(
+    chatId: number,
+    messageId: number
+  ): Promise<string | null> {
+    try {
+      await this.init();
+      const result = await TdLib.getMessage(chatId, messageId);
+      if (!result) return null;
+
+      const raw = typeof result === 'string' ? result : (result as any).raw || result;
+      const msg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+      const thumb =
+        msg?.content?.document?.thumbnail?.file ||
+        msg?.content?.video?.thumbnail?.file ||
+        msg?.content?.photo?.sizes?.[0]?.photo;
+
+      if (!thumb?.id) return null;
+      if (thumb.local?.is_downloading_completed && thumb.local?.path) {
+        const exists = await LegacyFileSystem.getInfoAsync(thumb.local.path).catch(() => ({ exists: false }));
+        if (exists.exists) return thumb.local.path;
+      }
+
+      return new Promise<string | null>((resolve) => {
+        let updateHandler: any = null;
+        const timeoutId = setTimeout(() => {
+          if (updateHandler) this.updateListeners.delete(updateHandler);
+          resolve(null);
+        }, 15000); // 15s timeout for thumbnails
+
+        updateHandler = (type: string, data: any) => {
+          const lowerType = (type || data?.['@type'] || '').toLowerCase();
+          if (lowerType === 'updatefile' && data?.file?.id === thumb.id) {
+            if (data.file.local?.is_downloading_completed && data.file.local?.path) {
+              clearTimeout(timeoutId);
+              if (updateHandler) this.updateListeners.delete(updateHandler);
+              resolve(data.file.local.path);
+            }
+          }
+        };
+
+        this.updateListeners.add(updateHandler);
+
+        TdLib.td_json_client_send({
+          '@type': 'downloadFile',
+          file_id: thumb.id,
+          priority: 16,
+          offset: 0,
+          limit: 0,
+          synchronous: false,
+        }).catch(() => {
+          clearTimeout(timeoutId);
+          if (updateHandler) this.updateListeners.delete(updateHandler);
+          resolve(null);
+        });
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Alias for logout() — API symmetry with former GramJS disconnect().
    */
   public async disconnect(): Promise<void> {

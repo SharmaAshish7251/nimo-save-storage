@@ -19,6 +19,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { router, useFocusEffect } from 'expo-router';
 import {
   getUploadedIndex,
@@ -36,6 +37,9 @@ import {
   importFromTelegramHistory,
   startRealtimeDeleteListener,
 } from '@/lib/storage/cloudSync';
+import { tdLibClient } from '@/lib/tdlib/client';
+import { reassembleChunks } from '@/lib/storage/reassembler';
+import { MediaPlayerModal, MediaPreviewItem } from '@/components/MediaPlayerModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
@@ -47,6 +51,10 @@ type SortOption = 'newest' | 'oldest' | 'largest' | 'name';
 interface CloudItem extends UploadedRecord {
   category: 'image' | 'video' | 'audio' | 'document' | 'other';
   existsLocally?: boolean;
+}
+
+function getRestoredCachePath(fileName: string, id: string | number): string {
+  return `${FileSystem.cacheDirectory}restored_${id}_${fileName}`;
 }
 
 export default function CloudExplorerScreen() {
@@ -65,6 +73,10 @@ export default function CloudExplorerScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeletingCloud, setIsDeletingCloud] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [downloadingItemUri, setDownloadingItemUri] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [downloadStatusText, setDownloadStatusText] = useState<string>('');
+  const [mediaPlayerItem, setMediaPlayerItem] = useState<MediaPreviewItem | null>(null);
 
   const loadCloudItems = useCallback(async () => {
     try {
@@ -279,28 +291,137 @@ export default function CloudExplorerScreen() {
     });
   }, [items, searchQuery, activeCategory, sortOption]);
 
-  const handleShareFile = async (item: CloudItem) => {
-    if (!item.existsLocally) {
-      Alert.alert(
-        'Cloud-Only File',
-        'This file was cleaned locally to free up device space. It remains securely backed up in your Telegram cloud.'
-      );
-      return;
+  const downloadCloudItemToLocal = async (item: CloudItem): Promise<string> => {
+    if (item.existsLocally) {
+      const info = await FileSystem.getInfoAsync(item.uri).catch(() => ({ exists: false }));
+      if (info.exists) return item.uri;
     }
 
+    const chatId = await tdLibClient.resolveTargetChatId(config?.targetChatId || 'me');
+
+    // Case A: Multi-Part Chunked File
+    if (item.chunkManifest && item.chunkManifest.parts.length > 0) {
+      setDownloadStatusText(`Downloading chunked file (0/${item.chunkManifest.parts.length})...`);
+      const downloadedPartUris: string[] = [];
+
+      for (let i = 0; i < item.chunkManifest.parts.length; i++) {
+        const part = item.chunkManifest.parts[i];
+        if (!part.telegramMessageId) {
+          throw new Error(`Part ${i + 1} has no Telegram message ID.`);
+        }
+        setDownloadStatusText(`Downloading part ${i + 1} of ${item.chunkManifest.parts.length}...`);
+        const partLocalPath = await tdLibClient.downloadMessageFile(
+          chatId,
+          part.telegramMessageId,
+          (progress) => {
+            const overall = (i + progress) / item.chunkManifest!.parts.length;
+            setDownloadProgress(overall);
+          }
+        );
+        downloadedPartUris.push(`file://${partLocalPath}`);
+      }
+
+      setDownloadStatusText('Reassembling multi-part file...');
+      const reassembledDest = getRestoredCachePath(item.fileName, item.uploadedAt || item.telegramMessageId || 1);
+      await reassembleChunks(downloadedPartUris, reassembledDest, (pct) => {
+        setDownloadProgress(pct / 100);
+      });
+      return reassembledDest;
+    }
+
+    // Case B: Single file
+    if (!item.telegramMessageId) {
+      throw new Error('This file has no recorded Telegram message ID to download from.');
+    }
+
+    setDownloadStatusText('Downloading from Telegram cloud...');
+    const localPath = await tdLibClient.downloadMessageFile(
+      chatId,
+      item.telegramMessageId,
+      (progress, downloaded, total) => {
+        setDownloadProgress(progress);
+        setDownloadStatusText(
+          `Downloading (${formatFileSize(downloaded)} / ${formatFileSize(total)})...`
+        );
+      }
+    );
+
+    return localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+  };
+
+  const handleDownloadToDevice = async (item: CloudItem) => {
+    if (downloadingItemUri) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setDownloadingItemUri(item.uri);
+    setDownloadProgress(0);
+    setDownloadStatusText('Connecting to Telegram cloud...');
+
+    try {
+      const localUri = await downloadCloudItemToLocal(item);
+
+      // Save to MediaLibrary if image or video
+      if (item.category === 'image' || item.category === 'video') {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status === MediaLibrary.PermissionStatus.GRANTED) {
+          await MediaLibrary.createAssetAsync(localUri);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          Alert.alert(
+            'Saved to Device Gallery! 🎉',
+            `"${item.fileName}" has been downloaded and saved directly into your device Photos/Gallery.`
+          );
+        } else {
+          await Sharing.shareAsync(localUri);
+        }
+      } else {
+        await Sharing.shareAsync(localUri);
+      }
+
+      // Mark locally exists in state
+      setItems((prev) =>
+        prev.map((it) => (it.uri === item.uri ? { ...it, existsLocally: true } : it))
+      );
+      if (selectedItem?.uri === item.uri) {
+        setSelectedItem((prev) => (prev ? { ...prev, existsLocally: true } : null));
+      }
+      if (mediaPlayerItem?.uri === item.uri) {
+        setMediaPlayerItem((prev) => (prev ? { ...prev, existsLocally: true } : null));
+      }
+    } catch (err: any) {
+      Alert.alert('Download Failed', err?.message || 'Could not download file from Telegram.');
+    } finally {
+      setDownloadingItemUri(null);
+      setDownloadProgress(0);
+      setDownloadStatusText('');
+    }
+  };
+
+  const handleShareFile = async (item: CloudItem) => {
     setIsSharing(true);
+    setDownloadingItemUri(item.uri);
+    setDownloadProgress(0);
+    setDownloadStatusText('Preparing file to share...');
+
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
         Alert.alert('Sharing Unavailable', 'File sharing is not supported on this device.');
         return;
       }
-      await Sharing.shareAsync(item.uri);
+
+      let shareUri = item.uri;
+      if (!item.existsLocally) {
+        shareUri = await downloadCloudItemToLocal(item);
+      }
+
+      await Sharing.shareAsync(shareUri);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (err: any) {
       Alert.alert('Share Error', err?.message || 'Failed to share file.');
     } finally {
       setIsSharing(false);
+      setDownloadingItemUri(null);
+      setDownloadProgress(0);
+      setDownloadStatusText('');
     }
   };
 
@@ -789,29 +910,59 @@ export default function CloudExplorerScreen() {
                   </>
                 ) : (
                   <>
-                    {selectedItem.existsLocally ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryActionBtn,
+                        { backgroundColor: '#10B981', opacity: downloadingItemUri !== null ? 0.6 : 1 },
+                      ]}
+                      onPress={() => handleDownloadToDevice(selectedItem)}
+                      disabled={downloadingItemUri !== null}
+                    >
+                      {downloadingItemUri === selectedItem.uri ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
+                      ) : (
+                        <FontAwesome
+                          name={selectedItem.existsLocally ? 'check-circle' : 'download'}
+                          size={14}
+                          color="#FFFFFF"
+                          style={{ marginRight: 6 }}
+                        />
+                      )}
+                      <Text style={styles.primaryActionBtnText}>
+                        {downloadingItemUri === selectedItem.uri
+                          ? `${Math.round(downloadProgress * 100)}%`
+                          : selectedItem.existsLocally
+                          ? 'Save to Gallery'
+                          : 'Download'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryActionBtn,
+                        { backgroundColor: '#208AEF', opacity: isSharing ? 0.6 : 1 },
+                      ]}
+                      onPress={() => handleShareFile(selectedItem)}
+                      disabled={isSharing || downloadingItemUri !== null}
+                    >
+                      <FontAwesome name="share" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.primaryActionBtnText}>Share</Text>
+                    </TouchableOpacity>
+
+                    {(selectedItem.category === 'image' || selectedItem.category === 'video' || selectedItem.category === 'audio') && (
                       <TouchableOpacity
-                        style={[styles.primaryActionBtn, { opacity: isSharing ? 0.6 : 1 }]}
-                        onPress={() => handleShareFile(selectedItem)}
-                        disabled={isSharing}
-                      >
-                        <FontAwesome name="share" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                        <Text style={styles.primaryActionBtnText}>Share File</Text>
-                      </TouchableOpacity>
-                    ) : (
-                      <TouchableOpacity
-                        style={[styles.primaryActionBtn, { backgroundColor: '#10B981' }]}
+                        style={[styles.primaryActionBtn, { backgroundColor: '#6366F1' }]}
                         onPress={() => {
-                          Alert.alert(
-                            'Cloud File Secured',
-                            'This file is permanently stored in your Telegram Saved Messages / Channel cloud. You can also view or forward it directly via Telegram.'
-                          );
+                          const it = selectedItem;
+                          setSelectedItem(null);
+                          setMediaPlayerItem(it);
                         }}
                       >
-                        <FontAwesome name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                        <Text style={styles.primaryActionBtnText}>Cloud Backed Up</Text>
+                        <FontAwesome name="play" size={12} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.primaryActionBtnText}>View</Text>
                       </TouchableOpacity>
                     )}
+
                     <TouchableOpacity
                       style={[styles.dangerActionBtn, { opacity: isDeletingCloud ? 0.6 : 1 }]}
                       onPress={() => handleDeleteFromCloud(selectedItem)}
@@ -836,6 +987,18 @@ export default function CloudExplorerScreen() {
           </View>
         </Modal>
       )}
+
+      {/* Full-Screen Media Player Lightbox */}
+      <MediaPlayerModal
+        visible={mediaPlayerItem !== null}
+        item={mediaPlayerItem}
+        onClose={() => setMediaPlayerItem(null)}
+        onShare={(item) => handleShareFile(item as CloudItem)}
+        onDownload={(item) => handleDownloadToDevice(item as CloudItem)}
+        isDownloading={downloadingItemUri !== null}
+        downloadProgress={downloadProgress}
+        downloadStatusText={downloadStatusText}
+      />
     </SafeAreaView>
   );
 }

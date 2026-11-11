@@ -2,10 +2,6 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 
 const UPLOAD_CACHE_DIR = `${LegacyFileSystem.cacheDirectory}tdlib_upload/`;
 
-// Fix 2.5: Derive app-internal paths dynamically instead of hardcoding /data/user/0/
-const APP_CACHE_DIR = LegacyFileSystem.cacheDirectory?.replace(/^file:\/\//, '') ?? '';
-const APP_DOC_DIR = LegacyFileSystem.documentDirectory?.replace(/^file:\/\//, '') ?? '';
-
 // Fix 3.1: Safe wrapper — prevents URIError crash on filenames with literal % characters
 function safeDecodeURI(uri: string): string {
   try {
@@ -30,18 +26,19 @@ export async function resolveToLocalPath(uri: string): Promise<{ path: string; i
     throw new Error('resolveToLocalPath: URI is required');
   }
 
-  // Fix 2.5: Use dynamic runtime paths instead of hardcoded package ID
-  const rawUri = uri.replace(/^file:\/\//, '');
-  const isAppInternal = Boolean(
-    (APP_CACHE_DIR && rawUri.includes(APP_CACHE_DIR)) ||
-    (APP_DOC_DIR && rawUri.includes(APP_DOC_DIR)) ||
-    rawUri.includes('/data/data/com.digitalgaruda.nimosavestorage')
-  );
-
-  // If already an absolute file inside the app sandbox, TDLib C++ can read it directly
-  if (isAppInternal && (uri.startsWith('/') || uri.startsWith('file://'))) {
+  // Fix 2.5: If already an accessible file on disk (app sandbox or local storage),
+  // TDLib C++ can read it directly without duplicating gigabytes into cache.
+  if (uri.startsWith('/') || uri.startsWith('file://')) {
     const rawPath = safeDecodeURI(uri.replace(/^file:\/\//, ''));
-    return { path: rawPath, isTemp: false };
+    try {
+      const fileInfo = await LegacyFileSystem.getInfoAsync(uri);
+      if (fileInfo.exists) {
+        console.log(`[resolveToLocalPath] Direct local path used (zero-copy): ${rawPath}`);
+        return { path: rawPath, isTemp: false };
+      }
+    } catch (e) {
+      console.warn('[resolveToLocalPath] Direct path check failed, falling back to cache:', e);
+    }
   }
 
   // Ensure cache directory exists

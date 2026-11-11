@@ -21,7 +21,8 @@ export interface ProcessQueueResult {
   errors: string[];
 }
 
-const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Telegram limit
+const FREE_TIER_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Free Telegram limit
+const PREMIUM_TIER_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4GB - Telegram Premium limit
 
 export class UploadManager {
   private queue: any;
@@ -172,8 +173,27 @@ export class UploadManager {
       // Fix 2.2: Use actual file size from disk, overriding stale cached value
       const actualSize = fileInfo.size > 0 ? fileInfo.size : item.size;
 
-      if (actualSize && actualSize > MAX_UPLOAD_SIZE_BYTES) {
-        throw new Error(`File too large (${Math.round(actualSize / 1024 / 1024)}MB). Max ${Math.round(MAX_UPLOAD_SIZE_BYTES / 1024 / 1024)}MB (Telegram limit).`);
+      // Dynamically determine max upload limit based on Telegram Premium status
+      let isPremium = false;
+      try {
+        const me = await tdLibClient.getMe();
+        isPremium = Boolean(me?.is_premium || (me as any)?.isPremium);
+      } catch {
+        // Fallback to free tier limit if user info cannot be fetched
+      }
+
+      const maxLimitBytes = isPremium ? PREMIUM_TIER_MAX_BYTES : FREE_TIER_MAX_BYTES;
+      if (actualSize && actualSize > maxLimitBytes) {
+        const sizeMb = Math.round(actualSize / 1024 / 1024);
+        if (!isPremium && actualSize <= PREMIUM_TIER_MAX_BYTES) {
+          throw new Error(
+            `File size (${(actualSize / (1024 * 1024 * 1024)).toFixed(2)} GB) exceeds the 2 GB limit for Free Telegram accounts. Telegram Premium is required for up to 4 GB uploads.`
+          );
+        } else {
+          throw new Error(
+            `File size (${sizeMb} MB) exceeds Telegram's maximum upload limit of ${isPremium ? '4 GB' : '2 GB'}.`
+          );
+        }
       }
       
       const config = await getConfig();

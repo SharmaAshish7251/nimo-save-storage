@@ -137,6 +137,40 @@ export async function saveQueue(queue: QueueItem[]): Promise<void> {
   await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
 }
 
+/**
+ * Scans the queue and resets any orphaned items stuck with status 'uploading'
+ * back to 'pending'. This handles scenarios where the app was force-closed,
+ * crashed, or killed by Android OS mid-upload.
+ */
+export async function recoverInterruptedUploads(): Promise<number> {
+  try {
+    const queue = await getQueue();
+    let recoveredCount = 0;
+    const updated = queue.map((item) => {
+      if (item.status === 'uploading') {
+        recoveredCount++;
+        return {
+          ...item,
+          status: 'pending' as const,
+          progress: 0,
+          speedKbps: undefined,
+          error: undefined,
+        };
+      }
+      return item;
+    });
+
+    if (recoveredCount > 0) {
+      await saveQueue(updated);
+      console.log(`[Queue] Auto-recovered ${recoveredCount} interrupted upload item(s) back to pending.`);
+    }
+    return recoveredCount;
+  } catch (err) {
+    console.warn('[Queue] Failed to recover interrupted uploads:', err);
+    return 0;
+  }
+}
+
 export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>): Promise<QueueItem> {
   const queue = await getQueue();
   // Fix 2.1: Deduplicate by URI — skip if already in queue with a non-completed status

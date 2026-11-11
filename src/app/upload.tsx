@@ -25,6 +25,7 @@ import {
   QueueItem,
   removeFromQueue,
   clearAllQueue,
+  recoverInterruptedUploads,
   WatchedFolder,
 } from '@/lib/storage/queue';
 import { uploadManager } from '@/lib/upload/manager';
@@ -260,6 +261,8 @@ export default function UploadScreen() {
     setUploading(true);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
+      // Auto-recover any orphaned uploads before starting queue processing
+      await recoverInterruptedUploads().catch(() => {});
       const result = await uploadManager.processQueue({ forceManual: true });
       loadData();
       if (result.failed === 0) {
@@ -420,7 +423,9 @@ export default function UploadScreen() {
 
   // Queue metrics
   const totalQueueBytes = queue.reduce((sum, item) => sum + (item.size || 0), 0);
-  const pendingItems = queue.filter((item) => item.status === 'pending');
+  const pendingItems = queue.filter(
+    (item) => item.status === 'pending' || (item.status === 'uploading' && !uploading)
+  );
   const pendingBytes = pendingItems.reduce((sum, item) => sum + (item.size || 0), 0);
   const completedItems = queue.filter((item) => item.status === 'completed');
   const completedBytes = completedItems.reduce((sum, item) => sum + (item.size || 0), 0);
@@ -555,7 +560,7 @@ export default function UploadScreen() {
               {item.status.toUpperCase()}
             </Text>
           </View>
-          {item.status === 'pending' && (
+          {(item.status === 'pending' || (item.status === 'uploading' && !uploading)) && (
             <TouchableOpacity
               style={styles.itemUploadBtn}
               onPress={(e) => {
@@ -579,7 +584,7 @@ export default function UploadScreen() {
               <FontAwesome name="refresh" size={13} color="#DC2626" />
             </TouchableOpacity>
           )}
-          {item.status === 'pending' && (
+          {item.status !== 'completed' && (
             <TouchableOpacity
               style={styles.discardButton}
               onPress={(e) => {

@@ -99,7 +99,7 @@ export async function pickSingleFile(): Promise<ScannedFile | null> {
   try {
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*',
-      copyToCacheDirectory: true,
+      copyToCacheDirectory: false,
     });
 
     if (result.canceled || !result.assets || result.assets.length === 0) {

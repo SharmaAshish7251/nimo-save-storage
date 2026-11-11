@@ -10,6 +10,7 @@ import { useEffect } from 'react';
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
+import { recoverInterruptedUploads } from '@/lib/storage/queue';
 import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -42,6 +43,9 @@ export default function RootLayout() {
         } catch {}
         await registerBackgroundUploadTask().catch((err) => {
           console.warn('Background task registration error:', err);
+        });
+        await recoverInterruptedUploads().catch((err) => {
+          console.warn('Queue recovery error:', err);
         });
         schedulerEngine.startActiveRunner();
       } catch (err) {

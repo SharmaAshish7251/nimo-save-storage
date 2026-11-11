@@ -21,6 +21,7 @@ export interface TdUser {
     editable_username?: string;
   };
   phone_number: string;
+  is_premium?: boolean;
   status?: {
     '@type': string;
   };

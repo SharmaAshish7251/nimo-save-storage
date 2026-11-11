@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
   useColorScheme,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
@@ -18,6 +19,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { vaultService } from '@/lib/crypto/vault';
 import {
   getConfig,
   saveConfig,
@@ -167,6 +169,61 @@ export default function SettingsScreen() {
   const [timeEnd, setTimeEnd] = useState('06:00');
   const [concurrencyText, setConcurrencyText] = useState('3');
 
+  // Zero-Knowledge Encrypted Vault state
+  const [hasVaultKey, setHasVaultKey] = useState(false);
+  const [vaultPasswordModalVisible, setVaultPasswordModalVisible] = useState(false);
+  const [vaultPassword, setVaultPassword] = useState('');
+  const [vaultConfirm, setVaultConfirm] = useState('');
+  const [isSavingVault, setIsSavingVault] = useState(false);
+
+  const handleSaveVaultPassword = async () => {
+    if (!vaultPassword || vaultPassword.length < 6) {
+      Alert.alert('Invalid Password', 'Master vault password must be at least 6 characters.');
+      return;
+    }
+    if (vaultPassword !== vaultConfirm) {
+      Alert.alert('Mismatch', 'Passwords do not match. Please re-enter.');
+      return;
+    }
+    setIsSavingVault(true);
+    try {
+      await vaultService.setMasterPassword(vaultPassword);
+      setHasVaultKey(true);
+      await updateConfig({ vaultEnabled: true });
+      setVaultPasswordModalVisible(false);
+      setVaultPassword('');
+      setVaultConfirm('');
+      Alert.alert(
+        'Vault Enabled ✓',
+        'Your Zero-Knowledge AES-256 Vault is active. Backups will now be encrypted client-side before sending to Telegram.'
+      );
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to initialize vault');
+    } finally {
+      setIsSavingVault(false);
+    }
+  };
+
+  const handleClearVault = () => {
+    Alert.alert(
+      'Clear Vault Password',
+      'Are you sure you want to disable the vault and remove the master key from secure storage? Previously encrypted files will require you to set the same password again to decrypt.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disable & Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await vaultService.clearVaultKey();
+            setHasVaultKey(false);
+            await updateConfig({ vaultEnabled: false });
+            Alert.alert('Vault Cleared', 'Zero-knowledge encryption has been disabled.');
+          },
+        },
+      ]
+    );
+  };
+
   const loadData = async () => {
     try {
       const [appConfig, state] = await Promise.all([getConfig(), getSchedulerState()]);
@@ -175,6 +232,7 @@ export default function SettingsScreen() {
       setTimeStart(appConfig.timeWindowStart ?? '00:00');
       setTimeEnd(appConfig.timeWindowEnd ?? '06:00');
       setConcurrencyText(String(appConfig.concurrency ?? 3));
+      vaultService.hasVaultKey().then(setHasVaultKey).catch(() => {});
 
       // Query battery and storage analytics in parallel
       Battery.isAvailableAsync()
@@ -1400,6 +1458,69 @@ export default function SettingsScreen() {
               </>
             )}
           </View>
+
+          {/* Zero-Knowledge Vault Card */}
+          <View style={[styles.card, isDark && styles.cardDark, { marginTop: 12 }]}>
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <View style={styles.rowAligned}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Zero-Knowledge Vault</Text>
+                  <View style={[styles.pillBadge, { backgroundColor: hasVaultKey && config.vaultEnabled ? '#ECFDF5' : '#EFF6FF', marginLeft: 8 }]}>
+                    <FontAwesome name="shield" size={10} color={hasVaultKey && config.vaultEnabled ? '#059669' : '#208AEF'} />
+                    <Text style={[styles.pillBadgeText, { color: hasVaultKey && config.vaultEnabled ? '#059669' : '#208AEF', marginLeft: 4 }]}>
+                      {hasVaultKey && config.vaultEnabled ? 'AES-256 Active' : 'AES-256-CTR'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Encrypt all files on-device before uploading to Telegram. Telegram servers only see ciphertext.
+                </Text>
+              </View>
+              <Switch
+                value={config.vaultEnabled ?? false}
+                onValueChange={async (val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  if (val && !hasVaultKey) {
+                    setVaultPasswordModalVisible(true);
+                  } else {
+                    updateConfig({ vaultEnabled: val });
+                  }
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.vaultEnabled ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary, { fontSize: 13 }]}>Master Password</Text>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  {hasVaultKey ? 'Password configured in secure enclave' : 'Required to enable zero-knowledge encryption'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.smallActionBtn, { borderColor: hasVaultKey ? '#CBD5E1' : '#208AEF' }]}
+                onPress={() => setVaultPasswordModalVisible(true)}
+              >
+                <Text style={[styles.smallActionBtnText, { color: '#208AEF' }]}>
+                  {hasVaultKey ? 'Change' : 'Set Password'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {hasVaultKey && (
+              <TouchableOpacity
+                style={{ alignSelf: 'flex-start', marginTop: 10 }}
+                onPress={handleClearVault}
+              >
+                <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '600' }}>
+                  Disable & Clear Master Key
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {/* SECTION 7: DIAGNOSTICS & ACCOUNT ACTIONS */}
@@ -1484,6 +1605,75 @@ export default function SettingsScreen() {
           loadData();
         }}
       />
+
+      {/* Master Password Modal */}
+      <Modal
+        visible={vaultPasswordModalVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setVaultPasswordModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, isDark && styles.cardDark]}>
+            <View style={styles.modalHeaderRow}>
+              <View style={[styles.sectionIconBadge, { backgroundColor: '#ECFDF5' }]}>
+                <FontAwesome name="lock" size={16} color="#059669" />
+              </View>
+              <Text style={[styles.modalTitleText, isDark && styles.textDarkPrimary]}>Set Vault Password</Text>
+            </View>
+
+            <Text style={[styles.modalDescText, isDark && styles.textDarkSecondary]}>
+              Enter a master password to encrypt your files with AES-256 before uploading to Telegram. Keep this safe; if lost, encrypted files cannot be recovered.
+            </Text>
+
+            <Text style={[styles.inputLabel, isDark && styles.textDarkPrimary]}>Master Password</Text>
+            <TextInput
+              style={[styles.vaultInput, isDark && styles.inputDark]}
+              placeholder="At least 6 characters"
+              placeholderTextColor="#94A3B8"
+              secureTextEntry
+              value={vaultPassword}
+              onChangeText={setVaultPassword}
+            />
+
+            <Text style={[styles.inputLabel, isDark && styles.textDarkPrimary, { marginTop: 10 }]}>Confirm Password</Text>
+            <TextInput
+              style={[styles.vaultInput, isDark && styles.inputDark]}
+              placeholder="Re-enter password"
+              placeholderTextColor="#94A3B8"
+              secureTextEntry
+              value={vaultConfirm}
+              onChangeText={setVaultConfirm}
+            />
+
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setVaultPasswordModalVisible(false);
+                  setVaultPassword('');
+                  setVaultConfirm('');
+                }}
+                disabled={isSavingVault}
+              >
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, { backgroundColor: '#208AEF' }]}
+                onPress={handleSaveVaultPassword}
+                disabled={isSavingVault}
+              >
+                {isSavingVault ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalConfirmBtnText}>Save & Activate</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2426,5 +2616,97 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: '#334155',
+  },
+  smallActionBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  smallActionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  modalTitleText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  modalDescText: {
+    fontSize: 13,
+    color: '#64748B',
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+    marginBottom: 6,
+  },
+  vaultInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#0F172A',
+  },
+  modalButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 20,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+  },
+  modalCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  modalConfirmBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+  modalConfirmBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

@@ -40,6 +40,7 @@ import {
 import { tdLibClient } from '@/lib/tdlib/client';
 import { reassembleChunks } from '@/lib/storage/reassembler';
 import { MediaPlayerModal, MediaPreviewItem } from '@/components/MediaPlayerModal';
+import { vaultService } from '@/lib/crypto/vault';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
@@ -510,7 +511,18 @@ export default function CloudExplorerScreen() {
       }
     );
 
-    return localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+    const finalUri = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+
+    // Transparently decrypt zero-knowledge vault files
+    const isEncrypted = await vaultService.isEncryptedFile(finalUri).catch(() => false);
+    if (isEncrypted) {
+      setDownloadStatusText('Decrypting zero-knowledge vault file...');
+      const decryptedPath = getRestoredCachePath(`dec_${item.fileName}`, item.uploadedAt || 1);
+      await vaultService.decryptFile(finalUri, decryptedPath);
+      return decryptedPath;
+    }
+
+    return finalUri;
   };
 
   const handleDownloadToDevice = async (item: CloudItem) => {

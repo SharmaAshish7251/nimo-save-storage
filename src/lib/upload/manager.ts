@@ -19,6 +19,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { splitFileIntoChunks, needsChunking, cleanupChunks } from './chunker';
 import type { ChunkManifest } from '../storage/reassembler';
 import { uploadNotificationService } from '../notifications/uploadNotificationService';
+import { vaultService } from '../crypto/vault';
 
 export interface ProcessQueueResult {
   total: number;
@@ -290,8 +291,36 @@ export class UploadManager {
         ).catch(() => {});
       };
 
+      let uploadUri = item.uri;
+      let uploadFileName = item.fileName;
+      let tempVaultPath: string | null = null;
+
+      if (config.vaultEnabled) {
+        const hasKey = await vaultService.hasVaultKey().catch(() => false);
+        if (hasKey) {
+          const vaultDir = `${FileSystem.cacheDirectory}vault_upload/`;
+          await FileSystem.makeDirectoryAsync(vaultDir, { intermediates: true }).catch(() => {});
+          tempVaultPath = `${vaultDir}${Date.now()}_${item.fileName}.enc`;
+          try {
+            await vaultService.encryptFile(item.uri, tempVaultPath);
+            uploadUri = tempVaultPath;
+            uploadFileName = `${item.fileName}.enc`;
+            console.log(`[UploadManager] Encrypted ${item.fileName} with AES-256 vault`);
+          } catch (encErr) {
+            console.warn('[UploadManager] Encryption error, falling back to direct upload:', encErr);
+            tempVaultPath = null;
+          }
+        }
+      }
+
       console.log('[UploadManager] Uploading via native TDLib MTProto engine');
-      result = await tdLibClient.sendFile(item.uri, item.fileName, targetChat, onUploadProgress);
+      try {
+        result = await tdLibClient.sendFile(uploadUri, uploadFileName, targetChat, onUploadProgress);
+      } finally {
+        if (tempVaultPath) {
+          await FileSystem.deleteAsync(tempVaultPath, { idempotent: true }).catch(() => {});
+        }
+      }
 
       const durationMs = Date.now() - startTime;
 

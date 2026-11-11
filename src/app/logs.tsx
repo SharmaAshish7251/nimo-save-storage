@@ -133,10 +133,11 @@ export default function LogsScreen() {
 
   const flatListRef = useRef<FlatList<ParsedLog>>(null);
 
-  // Poll for new logs every 500ms
+  // Poll for new logs every 500ms (only update state when entries change)
   useEffect(() => {
     const interval = setInterval(() => {
-      setLogs([...(globalThis.__nimo_logs || [])]);
+      const current = globalThis.__nimo_logs || [];
+      setLogs((prev) => (prev.length === current.length ? prev : [...current]));
     }, 500);
     return () => clearInterval(interval);
   }, []);

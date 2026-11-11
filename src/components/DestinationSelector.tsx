@@ -15,10 +15,14 @@ import { TelegramDestination } from '@/lib/tdlib/types';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
 
 interface Props {
+  targetCategory?: 'default' | 'photo' | 'video' | 'document';
+  label?: string;
   onDestinationChanged?: (dest: TelegramDestination) => void;
 }
 
 export const DestinationSelector = React.memo(function DestinationSelector({
+  targetCategory = 'default',
+  label,
   onDestinationChanged,
 }: Props) {
   const [modalVisible, setModalVisible] = useState(false);
@@ -58,12 +62,22 @@ export const DestinationSelector = React.memo(function DestinationSelector({
   const selectDestination = async (dest: TelegramDestination) => {
     try {
       const isSaved = dest.id === 'me';
-      const updated = await saveConfig({
-        targetChatId: dest.id,
-        targetChatTitle: dest.title,
-        targetChatType: dest.type,
-        uploadToSavedMessages: isSaved,
-      });
+      let patch: Partial<AppConfig> = {};
+      if (targetCategory === 'photo') {
+        patch = { photoChannelId: dest.id, photoChannelTitle: dest.title };
+      } else if (targetCategory === 'video') {
+        patch = { videoChannelId: dest.id, videoChannelTitle: dest.title };
+      } else if (targetCategory === 'document') {
+        patch = { documentChannelId: dest.id, documentChannelTitle: dest.title };
+      } else {
+        patch = {
+          targetChatId: dest.id,
+          targetChatTitle: dest.title,
+          targetChatType: dest.type,
+          uploadToSavedMessages: isSaved,
+        };
+      }
+      const updated = await saveConfig(patch);
       setCurrentConfig(updated);
       setModalVisible(false);
       if (onDestinationChanged) {
@@ -110,21 +124,38 @@ export const DestinationSelector = React.memo(function DestinationSelector({
     );
   });
 
-  const displayTitle =
+  let displayTitle =
     currentConfig?.uploadToSavedMessages || currentConfig?.targetChatId === 'me'
       ? 'Saved Messages (Private Cloud)'
       : currentConfig?.targetChatTitle || currentConfig?.targetChatId || 'Saved Messages';
 
-  const displayType =
+  let displayType =
     currentConfig?.uploadToSavedMessages || currentConfig?.targetChatId === 'me'
       ? 'saved'
       : currentConfig?.targetChatType || 'channel';
+
+  if (targetCategory === 'photo') {
+    displayTitle = currentConfig?.photoChannelTitle || 'Default (Same as Main Destination)';
+    displayType = 'channel';
+  } else if (targetCategory === 'video') {
+    displayTitle = currentConfig?.videoChannelTitle || 'Default (Same as Main Destination)';
+    displayType = 'channel';
+  } else if (targetCategory === 'document') {
+    displayTitle = currentConfig?.documentChannelTitle || 'Default (Same as Main Destination)';
+    displayType = 'channel';
+  }
+
+  const captionText =
+    label ||
+    (targetCategory === 'default'
+      ? 'Upload Destination'
+      : `${targetCategory.charAt(0).toUpperCase() + targetCategory.slice(1)} Channel`);
 
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.infoCol}>
-          <Text style={styles.caption}>Upload Destination</Text>
+          <Text style={styles.caption}>{captionText}</Text>
           <View style={styles.currentRow}>
             <View style={styles.iconContainer}>{getDestinationIcon(displayType, 18)}</View>
             <Text style={styles.title} numberOfLines={1}>

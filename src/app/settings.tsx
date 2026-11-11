@@ -375,6 +375,53 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Telegram Destination</Text>
           </View>
           <DestinationSelector />
+
+          {/* Multi-Channel Categorical Auto-Routing */}
+          <View style={[styles.card, isDark && styles.cardDark, { marginTop: 10 }]}>
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <View style={styles.rowAligned}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Route by File Category</Text>
+                  <View style={[styles.pillBadge, { backgroundColor: '#EFF6FF', marginLeft: 8 }]}>
+                    <FontAwesome name="random" size={10} color="#208AEF" />
+                    <Text style={[styles.pillBadgeText, { color: '#208AEF', marginLeft: 4 }]}>Multi-Channel</Text>
+                  </View>
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Send photos, videos, and documents to separate private Telegram channels
+                </Text>
+              </View>
+              <Switch
+                value={config.multiChannelRouting ?? false}
+                onValueChange={(val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ multiChannelRouting: val });
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.multiChannelRouting ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            {config.multiChannelRouting && (
+              <View style={{ marginTop: 12, gap: 10 }}>
+                <DestinationSelector
+                  targetCategory="photo"
+                  label="📸 Photos Channel"
+                  onDestinationChanged={() => loadData()}
+                />
+                <DestinationSelector
+                  targetCategory="video"
+                  label="🎬 Videos Channel"
+                  onDestinationChanged={() => loadData()}
+                />
+                <DestinationSelector
+                  targetCategory="document"
+                  label="📄 Documents Channel"
+                  onDestinationChanged={() => loadData()}
+                />
+              </View>
+            )}
+          </View>
         </View>
 
         {/* DEVICE STORAGE CLEANER */}

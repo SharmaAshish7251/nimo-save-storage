@@ -268,6 +268,66 @@ class TdLibClientService {
     }
   }
 
+  public async requestQrLogin(): Promise<string> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.updateListeners.delete(listener);
+        reject(new Error('QR login request timed out. Please try again.'));
+      }, 30000);
+
+      const listener: UpdateListener = (type: string, raw: any) => {
+        if (type === 'updateAuthorizationState') {
+          const state = raw?.authorization_state;
+          const authType = state?.['@type'];
+          if (authType === 'authorizationStateWaitOtherDeviceConfirmation') {
+            clearTimeout(timeout);
+            this.updateListeners.delete(listener);
+            resolve(state.link as string);
+          }
+        }
+      };
+
+      this.updateListeners.add(listener);
+
+      TdLib.td_json_client_send({
+        '@type': 'requestQrCodeAuthentication',
+        other_user_ids: [],
+      });
+    });
+  }
+
+  public async listenForQrConfirmation(timeoutMs: number = 60000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.updateListeners.delete(listener);
+        reject(new Error('QR scan expired. Tap to refresh.'));
+      }, timeoutMs);
+
+      const listener: UpdateListener = (type: string, raw: any) => {
+        if (type === 'updateAuthorizationState') {
+          const state = raw?.authorization_state;
+          const authType = state?.['@type'];
+          if (authType === 'authorizationStateReady') {
+            clearTimeout(timeout);
+            this.updateListeners.delete(listener);
+            resolve();
+          } else if (authType === 'authorizationStateWaitPassword') {
+            clearTimeout(timeout);
+            this.updateListeners.delete(listener);
+            reject(new Error('2FA_REQUIRED'));
+          } else if (authType === 'authorizationStateWaitPhoneNumber') {
+            clearTimeout(timeout);
+            this.updateListeners.delete(listener);
+            reject(new Error('QR code was cancelled or expired.'));
+          }
+        }
+      };
+
+      this.updateListeners.add(listener);
+    });
+  }
+
   public async getMe(): Promise<TdUser> {
     await this.init();
     try {

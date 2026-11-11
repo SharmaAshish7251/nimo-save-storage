@@ -1,18 +1,27 @@
-import { View, StyleSheet, Text, TextInput, TouchableOpacity, ScrollView, Image, Animated } from 'react-native';
+import { View, StyleSheet, Text, TextInput, TouchableOpacity, ScrollView, Image, Animated, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import * as Haptics from 'expo-haptics';
+import QRCode from 'react-native-qrcode-svg';
 import { saveApiCredentials } from '@/lib/storage/secure';
 import { tdLibClient } from '@/lib/tdlib/client';
 
 export default function TelegramLoginScreen() {
+  const [authMethod, setAuthMethod] = useState<'phone' | 'qr'>('phone');
   const [step, setStep] = useState<'phone' | 'code' | '2fa'>('phone');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // QR Code login state
+  const [qrLink, setQrLink] = useState<string | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [qrCountdown, setQrCountdown] = useState(30);
 
   // Optional custom credentials
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -53,6 +62,58 @@ export default function TelegramLoginScreen() {
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
+
+  const fetchQrCode = useCallback(async () => {
+    setQrLoading(true);
+    setQrError(null);
+    setQrCountdown(30);
+    try {
+      console.log('[AUTH] Requesting QR code login link...');
+      const link = await tdLibClient.requestQrLogin();
+      setQrLink(link);
+      setQrLoading(false);
+
+      // Listen for confirmation asynchronously
+      try {
+        await tdLibClient.listenForQrConfirmation(35000);
+        console.log('[AUTH] QR code confirmed successfully!');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        router.replace('/');
+      } catch (confirmErr: any) {
+        if (confirmErr?.message === '2FA_REQUIRED') {
+          setStep('2fa');
+          setAuthMethod('phone');
+        } else {
+          setQrError('QR code expired. Tap to refresh.');
+        }
+      }
+    } catch (err: any) {
+      console.warn('[AUTH] QR request error:', err);
+      setQrError(err?.message || 'Failed to generate QR code');
+      setQrLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authMethod === 'qr' && !qrLink && !qrLoading) {
+      fetchQrCode();
+    }
+  }, [authMethod, qrLink, qrLoading, fetchQrCode]);
+
+  // Countdown timer for QR refresh
+  useEffect(() => {
+    if (authMethod !== 'qr' || !qrLink || qrLoading || qrError) return;
+    const interval = setInterval(() => {
+      setQrCountdown((prev) => {
+        if (prev <= 1) {
+          fetchQrCode();
+          return 30;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [authMethod, qrLink, qrLoading, qrError, fetchQrCode]);
 
   const sendCode = async () => {
     const trimmedPhone = phone.trim();
@@ -168,8 +229,107 @@ export default function TelegramLoginScreen() {
             </View>
           )}
 
-          {/* STEP 1: PHONE NUMBER */}
+          {/* Method Tabs */}
           {step === 'phone' && (
+            <View style={styles.tabPillRow}>
+              <TouchableOpacity
+                style={[styles.tabPill, authMethod === 'phone' && styles.tabPillActive]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setAuthMethod('phone');
+                }}
+              >
+                <FontAwesome
+                  name="phone"
+                  size={14}
+                  color={authMethod === 'phone' ? '#FFFFFF' : '#64748B'}
+                  style={{ marginRight: 6 }}
+                />
+                <Text
+                  style={[
+                    styles.tabPillText,
+                    authMethod === 'phone' && styles.tabPillTextActive,
+                  ]}
+                >
+                  Phone Number
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabPill, authMethod === 'qr' && styles.tabPillActive]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setAuthMethod('qr');
+                }}
+              >
+                <FontAwesome
+                  name="qrcode"
+                  size={14}
+                  color={authMethod === 'qr' ? '#FFFFFF' : '#64748B'}
+                  style={{ marginRight: 6 }}
+                />
+                <Text
+                  style={[
+                    styles.tabPillText,
+                    authMethod === 'qr' && styles.tabPillTextActive,
+                  ]}
+                >
+                  QR Code
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* QR CODE LOGIN VIEW */}
+          {step === 'phone' && authMethod === 'qr' && (
+            <View style={styles.qrContainer}>
+              <Text style={styles.instruction}>
+                Scan with Telegram on your phone or desktop to log in instantly.
+              </Text>
+
+              <View style={styles.qrBox}>
+                {qrLoading ? (
+                  <View style={styles.qrLoadingBox}>
+                    <ActivityIndicator size="large" color="#208AEF" />
+                    <Text style={styles.qrLoadingText}>Generating QR Code...</Text>
+                  </View>
+                ) : qrError ? (
+                  <View style={styles.qrErrorBox}>
+                    <FontAwesome name="exclamation-circle" size={36} color="#EF4444" />
+                    <Text style={styles.qrErrorText}>{qrError}</Text>
+                    <TouchableOpacity style={styles.qrRetryBtn} onPress={fetchQrCode}>
+                      <FontAwesome name="refresh" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.qrRetryBtnText}>Refresh QR Code</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : qrLink ? (
+                  <View style={styles.qrCodeWrap}>
+                    <QRCode
+                      value={qrLink}
+                      size={210}
+                      backgroundColor="#FFFFFF"
+                      color="#0F172A"
+                    />
+                    <View style={styles.qrTimerRow}>
+                      <FontAwesome name="clock-o" size={12} color="#64748B" />
+                      <Text style={styles.qrTimerText}>Auto-refreshes in {qrCountdown}s</Text>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+
+              {/* Instructions steps */}
+              <View style={styles.qrStepsCard}>
+                <Text style={styles.qrStepsTitle}>Quick Steps:</Text>
+                <Text style={styles.qrStepText}>1. Open Telegram on your phone or PC</Text>
+                <Text style={styles.qrStepText}>2. Go to Settings → Devices → Link Desktop Device</Text>
+                <Text style={styles.qrStepText}>3. Point camera at this QR code to confirm</Text>
+              </View>
+            </View>
+          )}
+
+          {/* STEP 1: PHONE NUMBER */}
+          {step === 'phone' && authMethod === 'phone' && (
             <View style={styles.form}>
               <Text style={styles.instruction}>
                 Enter your mobile number to sign in with Telegram.
@@ -401,4 +561,128 @@ const styles = StyleSheet.create({
     alignItems: 'center', borderWidth: 1, borderColor: '#ccc', marginTop: 8,
   },
   secondaryButtonText: { color: '#333', fontSize: 14, fontWeight: '600' },
+  // Tab Pills
+  tabPillRow: {
+    flexDirection: 'row',
+    backgroundColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 20,
+    gap: 4,
+  },
+  tabPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  tabPillActive: {
+    backgroundColor: '#208AEF',
+    shadowColor: '#208AEF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  tabPillText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  tabPillTextActive: {
+    color: '#FFFFFF',
+  },
+  // QR Container & Box
+  qrContainer: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  qrBox: {
+    width: 260,
+    height: 270,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 4,
+    marginBottom: 20,
+  },
+  qrCodeWrap: {
+    alignItems: 'center',
+  },
+  qrTimerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    gap: 6,
+  },
+  qrTimerText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  qrLoadingBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  qrLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  qrErrorBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  qrErrorText: {
+    fontSize: 13,
+    color: '#EF4444',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  qrRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#208AEF',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  qrRetryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  qrStepsCard: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  qrStepsTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 6,
+  },
+  qrStepText: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
+  },
 });

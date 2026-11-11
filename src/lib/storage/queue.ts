@@ -26,7 +26,13 @@ export interface AppConfig {
   intervalMinutes?: number; // Minimum 1m support (1, 5, 15, 30, 60, etc.)
   onlyWhenCharging?: boolean;
   batteryGuard?: boolean;
+  batteryGuardThreshold?: number; // e.g. 20 (percent)
+  minFileSizeKb?: number; // e.g. 50 (skip files < 50 KB), 0 = no min
+  maxFileSizeBytes?: number; // e.g. 2147483648 (2 GB), 0 = no max
+  excludedExtensions?: string[]; // e.g. ['tmp', 'log', 'nomedia', 'thumb']
   notifyOnComplete?: boolean;
+  biometricLockEnabled?: boolean;
+  biometricLockTimeout?: number; // in seconds: 0 (immediate), 60 (1m), 300 (5m)
 }
 
 export interface SchedulerState {
@@ -61,7 +67,13 @@ const DEFAULT_CONFIG: AppConfig = {
   intervalMinutes: 1, // Minimum 1m interval default
   onlyWhenCharging: false,
   batteryGuard: true,
+  batteryGuardThreshold: 20,
+  minFileSizeKb: 0,
+  maxFileSizeBytes: 0,
+  excludedExtensions: ['nomedia', 'tmp', 'log', 'thumb', 'bak'],
   notifyOnComplete: false,
+  biometricLockEnabled: false,
+  biometricLockTimeout: 0,
 };
 
 export async function getConfig(): Promise<AppConfig> {
@@ -309,7 +321,7 @@ export interface ActionHistoryItem {
   fileName: string;
   uri: string;
   size: number;
-  status: 'uploaded' | 'failed' | 'dismissed';
+  status: 'uploaded' | 'failed' | 'dismissed' | 'cleaned_locally';
   timestamp: number;
   uploadDurationMs?: number;
   destination?: string;

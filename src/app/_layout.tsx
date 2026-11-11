@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
+import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
 import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -31,7 +32,7 @@ export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
-        // Fix 3.5: Clean up orphaned temp upload files from previous sessions
+        // Clean up orphaned temp upload files from previous sessions
         try {
           const uploadCacheDir = `${LegacyFileSystem.cacheDirectory}tdlib_upload/`;
           const info = await LegacyFileSystem.getInfoAsync(uploadCacheDir);
@@ -67,6 +68,7 @@ export default function RootLayout() {
         <Stack.Screen name="explore" options={{ title: 'Explore' }} />
         <Stack.Screen name="logs" options={{ title: 'Logs' }} />
       </Stack>
+      <BiometricLockOverlay />
     </ThemeProvider>
   );
 }

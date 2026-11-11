@@ -15,6 +15,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import * as Haptics from 'expo-haptics';
+import * as Battery from 'expo-battery';
+import * as LocalAuthentication from 'expo-local-authentication';
 import {
   getConfig,
   saveConfig,
@@ -22,6 +25,7 @@ import {
   AppConfig,
   SchedulerState,
   ScheduleMode,
+  formatFileSize,
 } from '@/lib/storage/queue';
 import { requestMediaPermissions } from '@/lib/scanner/files';
 import {
@@ -30,6 +34,8 @@ import {
 } from '@/tasks/backgroundUpload';
 import { DestinationSelector } from '@/components/DestinationSelector';
 import { TimeDialerModal } from '@/components/TimeDialerModal';
+import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
+import { analyzeCleanableSpace } from '@/lib/storage/cleaner';
 import { tdLibClient } from '@/lib/tdlib/client';
 import * as SecureStoreLib from '@/lib/storage/secure';
 import {
@@ -77,6 +83,11 @@ export default function SettingsScreen() {
   const [isTestingScheduler, setIsTestingScheduler] = useState(false);
   const [testResultText, setTestResultText] = useState<string | null>(null);
   const [dialerTarget, setDialerTarget] = useState<'start' | 'end' | null>(null);
+  const [showFreeUpModal, setShowFreeUpModal] = useState(false);
+  const [cleanableBytes, setCleanableBytes] = useState<number | null>(null);
+  const [cleanableCount, setCleanableCount] = useState<number | null>(null);
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const [isCharging, setIsCharging] = useState<boolean | null>(null);
 
   // Local state for time & concurrency
   const [timeStart, setTimeStart] = useState('00:00');
@@ -91,6 +102,28 @@ export default function SettingsScreen() {
       setTimeStart(appConfig.timeWindowStart ?? '00:00');
       setTimeEnd(appConfig.timeWindowEnd ?? '06:00');
       setConcurrencyText(String(appConfig.concurrency ?? 3));
+
+      // Query battery and storage analytics in parallel
+      Battery.isAvailableAsync()
+        .then(async (avail) => {
+          if (!avail) return;
+          const [level, bState] = await Promise.all([
+            Battery.getBatteryLevelAsync().catch(() => -1),
+            Battery.getBatteryStateAsync().catch(() => Battery.BatteryState.UNKNOWN),
+          ]);
+          if (level >= 0) setBatteryLevel(Math.round(level * 100));
+          setIsCharging(
+            bState === Battery.BatteryState.CHARGING || bState === Battery.BatteryState.FULL
+          );
+        })
+        .catch(() => {});
+
+      analyzeCleanableSpace()
+        .then((analysis) => {
+          setCleanableBytes(analysis.totalBytes);
+          setCleanableCount(analysis.totalCount);
+        })
+        .catch(() => {});
     } catch (error) {
       console.error('Settings loadData error:', error);
     } finally {
@@ -263,6 +296,47 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Telegram Destination</Text>
           </View>
           <DestinationSelector />
+        </View>
+
+        {/* DEVICE STORAGE CLEANER */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#ECFDF5' }]}>
+              <FontAwesome name="recycle" size={14} color="#10B981" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Device Storage Cleaner</Text>
+            {cleanableBytes !== null && cleanableBytes > 0 && (
+              <View style={[styles.statusBadge, { backgroundColor: '#ECFDF5', borderColor: '#10B98140' }]}>
+                <Text style={[styles.statusBadgeText, { color: '#059669' }]}>
+                  {formatFileSize(cleanableBytes)} ({cleanableCount || 0} files) Freeable
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            <View style={styles.cleanerPromoRow}>
+              <View style={styles.cleanerPromoInfo}>
+                <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>
+                  Free Up Phone Storage
+                </Text>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Safely remove local photos & videos already preserved in Telegram cloud
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.cleanActionBtn}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  setShowFreeUpModal(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <FontAwesome name="trash" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.cleanActionBtnText}>Analyze & Clean</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
 
         {/* SECTION 2: AUTOMATED SCHEDULER */}
@@ -579,6 +653,96 @@ export default function SettingsScreen() {
 
             <View style={styles.rowBetween}>
               <View style={styles.rowTextCol}>
+                <View style={styles.rowAligned}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Only When Charging</Text>
+                  {isCharging !== null && (
+                    <View style={[styles.pillBadge, { backgroundColor: isCharging ? '#ECFDF5' : '#FEF3C7', marginLeft: 8 }]}>
+                      <FontAwesome
+                        name={isCharging ? 'bolt' : 'battery-three-quarters'}
+                        size={10}
+                        color={isCharging ? '#10B981' : '#D97706'}
+                      />
+                      <Text style={[styles.pillBadgeText, { color: isCharging ? '#059669' : '#D97706', marginLeft: 4 }]}>
+                        {isCharging ? 'Charging' : 'On Battery'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Only run background backups when connected to AC or USB power
+                </Text>
+              </View>
+              <Switch
+                value={config.onlyWhenCharging ?? false}
+                onValueChange={(val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ onlyWhenCharging: val });
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.onlyWhenCharging ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <View style={styles.rowAligned}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Battery Guard</Text>
+                  {batteryLevel !== null && (
+                    <View style={[styles.pillBadge, { backgroundColor: '#EFF6FF', marginLeft: 8 }]}>
+                      <FontAwesome name="battery-half" size={10} color="#208AEF" />
+                      <Text style={[styles.pillBadgeText, { color: '#208AEF', marginLeft: 4 }]}>
+                        {batteryLevel}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Automatically pause auto-backups when battery drops below threshold
+                </Text>
+              </View>
+              <Switch
+                value={config.batteryGuard ?? true}
+                onValueChange={(val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  updateConfig({ batteryGuard: val });
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.batteryGuard ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            {config.batteryGuard && (
+              <View style={styles.thresholdChipsRow}>
+                <Text style={[styles.thresholdLabel, isDark && styles.textDarkSecondary]}>
+                  Pause when below:
+                </Text>
+                {[15, 20, 30].map((pct) => {
+                  const isSelected = (config.batteryGuardThreshold ?? 20) === pct;
+                  return (
+                    <TouchableOpacity
+                      key={pct}
+                      style={[styles.thresholdChip, isSelected && styles.thresholdChipActive]}
+                      onPress={() => {
+                        Haptics.selectionAsync().catch(() => {});
+                        updateConfig({ batteryGuardThreshold: pct });
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.thresholdChipText, isSelected && styles.thresholdChipTextActive]}>
+                        {pct}%
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            <View style={styles.cardDivider} />
+
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
                 <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Upload to Saved Messages</Text>
                 <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
                   Store backups in your private Telegram cloud storage
@@ -590,6 +754,105 @@ export default function SettingsScreen() {
                 trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
                 thumbColor={config.uploadToSavedMessages ? '#208AEF' : '#F8FAFC'}
               />
+            </View>
+          </View>
+        </View>
+
+        {/* SECTION: SMART FILE FILTERS */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#EEF2FF' }]}>
+              <FontAwesome name="filter" size={13} color="#4F46E5" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Smart File Filters</Text>
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            {/* Min File Size */}
+            <View>
+              <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>Minimum File Size</Text>
+              <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+                Skip app icons, cache thumbnails, and tiny stickers
+              </Text>
+              <View style={styles.chipsContainer}>
+                {[
+                  { label: 'None', val: 0 },
+                  { label: '50 KB', val: 50 },
+                  { label: '100 KB', val: 100 },
+                  { label: '500 KB', val: 500 },
+                  { label: '1 MB', val: 1024 },
+                ].map((item) => {
+                  const isSelected = (config.minFileSizeKb || 0) === item.val;
+                  return (
+                    <TouchableOpacity
+                      key={item.label}
+                      style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                      onPress={() => {
+                        Haptics.selectionAsync().catch(() => {});
+                        updateConfig({ minFileSizeKb: item.val });
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            {/* Max File Size */}
+            <View>
+              <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>Maximum File Size</Text>
+              <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+                Skip oversized archives and ISO disk images (Telegram limit: 2 GB)
+              </Text>
+              <View style={styles.chipsContainer}>
+                {[
+                  { label: 'Unlimited (2 GB)', val: 0 },
+                  { label: '500 MB', val: 500 * 1024 * 1024 },
+                  { label: '1 GB', val: 1024 * 1024 * 1024 },
+                  { label: '1.5 GB', val: 1536 * 1024 * 1024 },
+                ].map((item) => {
+                  const isSelected = (config.maxFileSizeBytes || 0) === item.val;
+                  return (
+                    <TouchableOpacity
+                      key={item.label}
+                      style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                      onPress={() => {
+                        Haptics.selectionAsync().catch(() => {});
+                        updateConfig({ maxFileSizeBytes: item.val });
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            {/* Excluded Extensions */}
+            <View>
+              <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>Ignored File Extensions</Text>
+              <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+                System files and temp logs automatically skipped during scans
+              </Text>
+              <View style={styles.tagsContainer}>
+                {(config.excludedExtensions || ['nomedia', 'tmp', 'log', 'thumb', 'bak']).map((ext) => (
+                  <View key={ext} style={[styles.tagBadge, isDark && styles.tagBadgeDark]}>
+                    <Text style={styles.tagBadgeDot}>•</Text>
+                    <Text style={[styles.tagBadgeText, isDark && styles.textDarkPrimary]}>.{ext}</Text>
+                  </View>
+                ))}
+              </View>
             </View>
           </View>
         </View>
@@ -676,7 +939,88 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* SECTION 6: DIAGNOSTICS & ACCOUNT ACTIONS */}
+        {/* SECTION 6: SECURITY & PRIVACY */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#F0FDF4' }]}>
+              <FontAwesome name="lock" size={14} color="#16A34A" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Security & Privacy</Text>
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Biometric App Lock</Text>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Require fingerprint, Face ID, or passcode to open app
+                </Text>
+              </View>
+              <Switch
+                value={config.biometricLockEnabled ?? false}
+                onValueChange={async (val) => {
+                  Haptics.selectionAsync().catch(() => {});
+                  if (val) {
+                    try {
+                      const res = await LocalAuthentication.authenticateAsync({
+                        promptMessage: 'Verify identity to enable App Lock',
+                      });
+                      if (res.success) {
+                        updateConfig({ biometricLockEnabled: true });
+                      } else {
+                        Alert.alert('Authentication Failed', 'Unable to verify biometric identity.');
+                      }
+                    } catch (err: any) {
+                      Alert.alert('Biometric Error', err?.message || 'Biometric hardware unavailable.');
+                    }
+                  } else {
+                    updateConfig({ biometricLockEnabled: false });
+                  }
+                }}
+                trackColor={{ false: '#E2E8F0', true: '#93C5FD' }}
+                thumbColor={config.biometricLockEnabled ? '#208AEF' : '#F8FAFC'}
+              />
+            </View>
+
+            {config.biometricLockEnabled && (
+              <>
+                <View style={styles.cardDivider} />
+                <View>
+                  <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>Auto-Lock Timeout</Text>
+                  <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+                    Lock app when backgrounded or inactive
+                  </Text>
+                  <View style={styles.chipsContainer}>
+                    {[
+                      { label: 'Immediately', val: 0 },
+                      { label: '1 Minute', val: 60 },
+                      { label: '5 Minutes', val: 300 },
+                    ].map((item) => {
+                      const isSelected = (config.biometricLockTimeout ?? 0) === item.val;
+                      return (
+                        <TouchableOpacity
+                          key={item.label}
+                          style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                          onPress={() => {
+                            Haptics.selectionAsync().catch(() => {});
+                            updateConfig({ biometricLockTimeout: item.val });
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}>
+                            {item.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* SECTION 7: DIAGNOSTICS & ACCOUNT ACTIONS */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeaderRow}>
             <View style={[styles.sectionIconBadge, { backgroundColor: '#F1F5F9' }]}>
@@ -748,6 +1092,15 @@ export default function SettingsScreen() {
           }
         }}
         onClose={() => setDialerTarget(null)}
+      />
+
+      {/* Free Up Device Space Modal */}
+      <FreeUpSpaceModal
+        visible={showFreeUpModal}
+        onClose={() => setShowFreeUpModal(false)}
+        onCleanComplete={() => {
+          loadData();
+        }}
       />
     </SafeAreaView>
   );
@@ -1279,5 +1632,137 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748B',
     marginTop: 2,
+  },
+
+  /* Cleaner Promo */
+  cleanerPromoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  cleanerPromoInfo: {
+    flex: 1,
+  },
+  cleanActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10B981',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  cleanActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  /* Pill Badges */
+  pillBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  pillBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  thresholdChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingLeft: 4,
+  },
+  thresholdLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    marginRight: 4,
+  },
+  thresholdChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  thresholdChipActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#208AEF',
+    borderWidth: 1.5,
+  },
+  thresholdChipText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  thresholdChipTextActive: {
+    color: '#208AEF',
+    fontWeight: '700',
+  },
+
+  /* Filter chips and tags */
+  filterTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 2,
+  },
+  filterSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginBottom: 8,
+  },
+  filterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  filterChipActive: {
+    backgroundColor: '#EEF2FF',
+    borderColor: '#4F46E5',
+    borderWidth: 1.5,
+  },
+  filterChipText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: '#4F46E5',
+    fontWeight: '700',
+  },
+  tagsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  tagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  tagBadgeDark: {
+    backgroundColor: '#334155',
+  },
+  tagBadgeDot: {
+    color: '#6366F1',
+    marginRight: 4,
+    fontSize: 12,
+  },
+  tagBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#334155',
   },
 });

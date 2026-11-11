@@ -1,7 +1,7 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import { getUploadedIndex, getWatchedFolders, getQueue, WatchedFolder } from '../storage/queue';
+import { getUploadedIndex, getWatchedFolders, getQueue, getConfig, WatchedFolder } from '../storage/queue';
 import { getFileInfo } from '../storage/fileHelper';
 
 export { getFileInfo };
@@ -310,22 +310,47 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
 
   if (abortSignal?.aborted) return [];
 
-  // Filter out already uploaded files and files already active in the queue
-  const newFiles = allFiles.filter(
-    (f) => !uploadedUris.has(f.uri) && !activeQueueUris.has(f.uri)
+  const config = await getConfig().catch(() => null);
+  const excludedExts = new Set(
+    (config?.excludedExtensions || ['nomedia', 'tmp', 'log', 'thumb', 'bak']).map((e) =>
+      e.toLowerCase().replace(/^\./, '').trim()
+    )
   );
+
+  // Filter out already uploaded files, active queue files, and excluded extensions
+  const candidateFiles = allFiles.filter((f) => {
+    if (uploadedUris.has(f.uri) || activeQueueUris.has(f.uri)) return false;
+    const ext = f.fileName.split('.').pop()?.toLowerCase() || '';
+    if (ext && excludedExts.has(ext)) return false;
+    if (f.fileName.startsWith('.') || f.fileName.toLowerCase() === 'thumbs.db') return false;
+    return true;
+  });
 
   if (abortSignal?.aborted) return [];
 
-  // Populate file sizes efficiently
+  // Populate file sizes efficiently and enforce min/max size thresholds
   const filesWithSize: ScannedFile[] = [];
-  for (const file of newFiles) {
+  const minBytes = (config?.minFileSizeKb || 0) * 1024;
+  const maxBytes = config?.maxFileSizeBytes || 0;
+
+  for (const file of candidateFiles) {
     if (abortSignal?.aborted) break;
     try {
       const info = await getFileInfo(file.uri);
+      const actualSize = info.size > 0 ? info.size : file.size || 0;
+
+      // Filter by min size (e.g. skip icons/thumbnails smaller than threshold)
+      if (minBytes > 0 && actualSize > 0 && actualSize < minBytes) {
+        continue;
+      }
+      // Filter by max size (e.g. skip huge files larger than threshold)
+      if (maxBytes > 0 && actualSize > maxBytes) {
+        continue;
+      }
+
       filesWithSize.push({
         ...file,
-        size: info.size > 0 ? info.size : file.size || 0,
+        size: actualSize,
       });
     } catch {
       filesWithSize.push(file);

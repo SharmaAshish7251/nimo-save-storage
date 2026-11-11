@@ -6,12 +6,15 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import * as Haptics from 'expo-haptics';
+import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
 
 export default function HomeScreen() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<any>(null);
   const [queueInfo, setQueueInfo] = useState<{ count: number; totalBytes: number }>({ count: 0, totalBytes: 0 });
+  const [showFreeUpModal, setShowFreeUpModal] = useState(false);
 
   const checkStatus = async () => {
     try {
@@ -162,7 +165,26 @@ export default function HomeScreen() {
           <FontAwesome name="cloud-upload" size={16} color="#FFF" style={styles.buttonIcon} />
           <Text style={styles.buttonText}>Upload Queue</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: '#10B981' }]}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            setShowFreeUpModal(true);
+          }}
+        >
+          <FontAwesome name="recycle" size={16} color="#FFF" style={styles.buttonIcon} />
+          <Text style={styles.buttonText}>Free Up Device Space</Text>
+        </TouchableOpacity>
       </View>
+
+      <FreeUpSpaceModal
+        visible={showFreeUpModal}
+        onClose={() => setShowFreeUpModal(false)}
+        onCleanComplete={() => {
+          checkStatus();
+        }}
+      />
     </SafeAreaView>
   );
 }

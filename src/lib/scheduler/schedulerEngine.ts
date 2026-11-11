@@ -1,6 +1,7 @@
 import { AppState, AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import * as Notifications from 'expo-notifications';
+import * as Battery from 'expo-battery';
 import { tdLibClient } from '../tdlib/client';
 import { uploadManager } from '../upload/manager';
 import { scanForNewFiles } from '../scanner/files';
@@ -25,7 +26,9 @@ export interface ConditionCheckResult {
     | 'OUTSIDE_WINDOW'
     | 'INTERVAL_NOT_ELAPSED'
     | 'ALREADY_RUNNING'
-    | 'METERED_NETWORK';
+    | 'METERED_NETWORK'
+    | 'BATTERY_LOW'
+    | 'NOT_CHARGING';
 }
 
 export interface SchedulerRunResult {
@@ -155,6 +158,46 @@ class SchedulerEngine {
 
     if (!options.forceManual && config.wifiOnly && netInfo.type !== 'wifi') {
       return { canRun: false, reason: 'WiFi required (currently on cellular/other)', code: 'WIFI_REQUIRED' };
+    }
+
+    // Battery and power constraints (bypass if user manually tapped "Run Now")
+    if (!options.forceManual) {
+      try {
+        const isBatteryAvailable = await Battery.isAvailableAsync().catch(() => false);
+        if (isBatteryAvailable) {
+          const batteryState = await Battery.getBatteryStateAsync().catch(() => Battery.BatteryState.UNKNOWN);
+          const isCharging =
+            batteryState === Battery.BatteryState.CHARGING ||
+            batteryState === Battery.BatteryState.FULL;
+
+          // 1. Charge-Only Mode
+          if (config.onlyWhenCharging && !isCharging) {
+            return {
+              canRun: false,
+              reason: 'Device not charging (Charge-Only Mode active)',
+              code: 'NOT_CHARGING',
+            };
+          }
+
+          // 2. Battery Guard (skip if low battery and not charging)
+          if (config.batteryGuard && !isCharging) {
+            const rawLevel = await Battery.getBatteryLevelAsync().catch(() => -1);
+            if (rawLevel >= 0) {
+              const batteryPercent = Math.round(rawLevel * 100);
+              const threshold = config.batteryGuardThreshold ?? 20;
+              if (batteryPercent < threshold) {
+                return {
+                  canRun: false,
+                  reason: `Battery low (${batteryPercent}% < ${threshold}% threshold)`,
+                  code: 'BATTERY_LOW',
+                };
+              }
+            }
+          }
+        }
+      } catch (batteryErr) {
+        console.warn('[Scheduler] Battery check non-fatal error:', batteryErr);
+      }
     }
 
     // Schedule-specific constraints (bypass if user manually tapped "Run Now")

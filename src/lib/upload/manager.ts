@@ -9,10 +9,15 @@ import {
   clearAllQueue,
   resetItemToPending,
   completeUploadAtomically,
+  saveChunkManifest,
+  formatFileSize,
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
 import { getFileInfo } from '../storage/fileHelper';
+import * as FileSystem from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
+import { splitFileIntoChunks, needsChunking, cleanupChunks } from './chunker';
+import type { ChunkManifest } from '../storage/reassembler';
 
 export interface ProcessQueueResult {
   total: number;
@@ -182,6 +187,16 @@ export class UploadManager {
         // Fallback to free tier limit if user info cannot be fetched
       }
 
+      const config = await getConfig();
+      const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
+
+      // ── Multi-part chunking for free-tier accounts with large files ──────
+      // Triggered when file > 1.95 GB on a free Telegram account.
+      if (!isPremium && actualSize && needsChunking(actualSize)) {
+        await this.uploadItemAsChunks(item, actualSize, targetChat, config, startTime);
+        return;
+      }
+
       const maxLimitBytes = isPremium ? PREMIUM_TIER_MAX_BYTES : FREE_TIER_MAX_BYTES;
       if (actualSize && actualSize > maxLimitBytes) {
         const sizeMb = Math.round(actualSize / 1024 / 1024);
@@ -195,9 +210,6 @@ export class UploadManager {
           );
         }
       }
-      
-      const config = await getConfig();
-      const targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
       
       let result: any;
       const onUploadProgress = (progress: number) => {
@@ -275,7 +287,123 @@ export class UploadManager {
       throw error;
     }
   }
-  
+
+  /**
+   * Splits a large file into 1.95 GB chunks and uploads each part sequentially
+   * to Telegram, with a human-readable caption containing restoration instructions.
+   * After all parts are sent, saves a ChunkManifest to AsyncStorage so the
+   * Cloud Explorer can present the file as a single combined entry.
+   */
+  private async uploadItemAsChunks(
+    item: QueueItem,
+    actualSize: number,
+    targetChat: string,
+    config: Awaited<ReturnType<typeof getConfig>>,
+    startTime: number,
+  ): Promise<void> {
+    let chunkPaths: string[] = [];
+    try {
+      const destName =
+        config.targetChatTitle ||
+        (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+
+      // 1. Split the file into chunk files in the app cache directory
+      console.log(`[UploadManager] Starting chunk split for ${item.fileName} (${(actualSize / (1024 ** 3)).toFixed(2)} GB)`);
+      await this.updateItemStatus(item.id, 'uploading', 1, undefined, startTime);
+
+      const { chunkPaths: paths, totalParts } = await splitFileIntoChunks(item.uri, item.fileName);
+      chunkPaths = paths;
+
+      const manifestParts: ChunkManifest['parts'] = [];
+
+      // 2. Upload each chunk sequentially
+      for (let i = 0; i < chunkPaths.length; i++) {
+        const partNumber = i + 1;
+        const chunkPath = chunkPaths[i];
+
+        // Show overall progress: splitting counts as 5%, each part gets an equal share of the rest
+        const baseProgress = 5 + Math.round((i / totalParts) * 90);
+        this.inMemoryProgress.set(item.id, { progress: baseProgress, speedKbps: 0 });
+
+        const chunkInfo = await FileSystem.getInfoAsync(chunkPath);
+        const chunkSize = (chunkInfo as any).size ?? 0;
+
+        const caption =
+          `📦 ${item.fileName} [Part ${partNumber} of ${totalParts}]\n` +
+          `📊 Total: ${formatFileSize(actualSize)} | This part: ${formatFileSize(chunkSize)}\n` +
+          `─────────────────────\n` +
+          `💡 To restore:\n` +
+          `• Nimo Save: 1-tap auto-reassemble in Cloud Explorer\n` +
+          `• Android: ZArchiver or 7-Zip → open Part 1\n` +
+          `• Windows: Right-click Part 1 → 7-Zip → Extract Here\n` +
+          `• Terminal: cat ${item.fileName}.part* > ${item.fileName}`;
+
+        console.log(`[UploadManager] Uploading chunk ${partNumber}/${totalParts}: ${chunkPath}`);
+
+        const onChunkProgress = (progress: number) => {
+          const chunkProgress = baseProgress + Math.round((progress / totalParts) * 90);
+          this.inMemoryProgress.set(item.id, {
+            progress: Math.min(95, chunkProgress),
+            speedKbps: 0,
+          });
+        };
+
+        // sendFile with the chunk path and caption
+        const result = await tdLibClient.sendFile(
+          chunkPath,
+          `${item.fileName}.part${partNumber}`,
+          targetChat,
+          onChunkProgress,
+          caption,
+        );
+
+        manifestParts.push({
+          part: partNumber,
+          telegramMessageId: result?.id ?? 0,
+          size: chunkSize,
+        });
+      }
+
+      const durationMs = Date.now() - startTime;
+
+      // 3. Build and save the ChunkManifest
+      const manifest: ChunkManifest = {
+        originalFileName: item.fileName,
+        originalSize: actualSize,
+        totalParts,
+        parts: manifestParts,
+        uploadedAt: Date.now(),
+      };
+      await saveChunkManifest(item.fileName, manifest);
+
+      // 4. Record a single combined entry in the uploaded index and history
+      await completeUploadAtomically({
+        queueId: item.id,
+        uri: item.uri,
+        fileName: item.fileName,
+        size: actualSize,
+        // Use the first part's message ID as the representative ID
+        telegramMessageId: manifestParts[0]?.telegramMessageId,
+        uploadedAt: Date.now(),
+        uploadDurationMs: durationMs,
+        destination: destName,
+        chunkManifest: manifest,
+      });
+
+      // 5. Store the manifest link on the uploaded record as well (via queue storage)
+      this.inMemoryProgress.set(item.id, { progress: 100, speedKbps: 0 });
+      this.inMemoryProgress.delete(item.id);
+      delete this.progressTrack[item.id];
+
+      console.log(`[UploadManager] Chunked upload complete for ${item.fileName} (${totalParts} parts) in ${(durationMs / 1000).toFixed(1)}s`);
+    } finally {
+      // Always clean up temp chunk files, even on error
+      if (chunkPaths.length > 0) {
+        await cleanupChunks(chunkPaths);
+      }
+    }
+  }
+
   private async updateItemStatus(
     id: string,
     status: QueueItem['status'],

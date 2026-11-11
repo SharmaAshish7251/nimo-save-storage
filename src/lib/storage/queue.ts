@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { ChunkManifest } from './reassembler';
 
 export interface WatchedFolder {
   id: string;
@@ -51,6 +52,7 @@ const UPLOADED_KEY = '@nimo/uploaded';
 const LAST_SCAN_KEY = '@nimo/last_scan';
 const ACTION_HISTORY_KEY = '@nimo/action_history';
 const SCHEDULER_STATE_KEY = '@nimo/scheduler_state';
+const CHUNK_MANIFEST_KEY = '@nimo/chunk_manifests';
 
 const DEFAULT_CONFIG: AppConfig = {
   watchFolders: [],
@@ -254,6 +256,8 @@ export interface UploadedRecord {
   hash?: string;
   uploadedAt: number;
   telegramMessageId?: number;
+  /** Present only for files uploaded as multiple parts (>1.95 GB) */
+  chunkManifest?: ChunkManifest;
 }
 
 export async function getUploadedIndex(): Promise<UploadedRecord[]> {
@@ -289,6 +293,7 @@ export async function completeUploadAtomically(params: {
   uploadedAt: number;
   uploadDurationMs: number;
   destination: string;
+  chunkManifest?: ChunkManifest;
 }): Promise<void> {
   const [queue, uploadedIndex, history] = await Promise.all([
     getQueue(),
@@ -312,6 +317,7 @@ export async function completeUploadAtomically(params: {
     size: params.size,
     uploadedAt: params.uploadedAt,
     telegramMessageId: params.telegramMessageId,
+    ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
   });
 
   const newHistoryItem: ActionHistoryItem = {
@@ -479,4 +485,40 @@ export async function saveSchedulerState(patch: Partial<SchedulerState>): Promis
 
 export async function resetSchedulerState(): Promise<void> {
   await AsyncStorage.removeItem(SCHEDULER_STATE_KEY);
+}
+
+// ─── Chunk Manifest Storage ─────────────────────────────────────────────────
+
+/**
+ * Persists a ChunkManifest keyed by the original file name.
+ * Used by the Cloud Explorer to reconstruct multi-part files on demand.
+ */
+export async function saveChunkManifest(
+  fileName: string,
+  manifest: ChunkManifest,
+): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(CHUNK_MANIFEST_KEY);
+    const store: Record<string, ChunkManifest> = raw ? JSON.parse(raw) : {};
+    store[fileName] = manifest;
+    await AsyncStorage.setItem(CHUNK_MANIFEST_KEY, JSON.stringify(store));
+  } catch (err) {
+    console.warn('[Queue] Failed to save chunk manifest:', err);
+  }
+}
+
+/**
+ * Retrieves a ChunkManifest by original file name, or null if none stored.
+ */
+export async function getChunkManifest(
+  fileName: string,
+): Promise<ChunkManifest | null> {
+  try {
+    const raw = await AsyncStorage.getItem(CHUNK_MANIFEST_KEY);
+    if (!raw) return null;
+    const store: Record<string, ChunkManifest> = JSON.parse(raw);
+    return store[fileName] ?? null;
+  } catch {
+    return null;
+  }
 }

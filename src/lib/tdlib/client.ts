@@ -315,7 +315,8 @@ class TdLibClientService {
     uri: string,
     fileName: string,
     targetChat: string = 'me',
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    caption?: string
   ): Promise<{ id: number }> {
     await this.init();
 
@@ -500,7 +501,7 @@ class TdLibClientService {
           },
           caption: {
             '@type': 'formattedText',
-            text: fileName,
+            text: caption ?? fileName,
           },
         },
       }).catch((err) => {

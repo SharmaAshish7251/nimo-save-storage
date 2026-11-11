@@ -214,8 +214,16 @@ export default function CloudExplorerScreen() {
 
         {/* Floating Size Pill */}
         <View style={styles.gridSizeBadge}>
-          <Text style={styles.gridSizeText}>{formatFileSize(item.size)}</Text>
+          <Text style={styles.gridSizeText}>{formatFileSize(item.chunkManifest ? item.chunkManifest.originalSize : item.size)}</Text>
         </View>
+
+        {/* Split badge for multi-part files */}
+        {item.chunkManifest ? (
+          <View style={styles.gridSplitBadge}>
+            <FontAwesome name="puzzle-piece" size={8} color="#FFFFFF" />
+            <Text style={styles.gridSplitText}> {item.chunkManifest.totalParts}p</Text>
+          </View>
+        ) : null}
 
         {/* Telegram Cloud Icon Badge */}
         <View style={styles.gridCloudBadge}>
@@ -256,7 +264,7 @@ export default function CloudExplorerScreen() {
           </Text>
           <View style={styles.listMetaRow}>
             <Text style={[styles.listSize, { color: subtextColor }]}>
-              {formatFileSize(item.size)}
+              {formatFileSize(item.chunkManifest ? item.chunkManifest.originalSize : item.size)}
             </Text>
             <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
             <Text style={[styles.listDate, { color: subtextColor }]}>
@@ -265,7 +273,15 @@ export default function CloudExplorerScreen() {
                 day: 'numeric',
               })}
             </Text>
-            {item.telegramMessageId ? (
+            {item.chunkManifest ? (
+              <>
+                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
+                <View style={[styles.msgBadge, { backgroundColor: '#F59E0B' }]}>
+                  <Text style={styles.msgBadgeText}>{item.chunkManifest.totalParts} parts</Text>
+                </View>
+              </>
+            ) : null}
+            {item.telegramMessageId && !item.chunkManifest ? (
               <>
                 <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
                 <View style={styles.msgBadge}>
@@ -683,6 +699,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#208AEF',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  gridSplitBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F59E0B',
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  gridSplitText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '700',
   },
   listRow: {
     flexDirection: 'row',

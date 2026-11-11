@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
@@ -125,23 +125,25 @@ export default function HomeScreen() {
     }
   };
 
+  // One-time guard: redirect to onboarding only on first mount if not yet completed.
+  useEffect(() => {
+    AsyncStorage.getItem('nimo_onboarding_done').then((done) => {
+      if (!done) {
+        router.replace('/onboarding' as never);
+      }
+    });
+  }, []);
+
+  // Re-fetch data every time the screen comes into focus.
   useFocusEffect(
     useCallback(() => {
-      const run = async () => {
-        const done = await AsyncStorage.getItem('nimo_onboarding_done');
-        if (!done) {
-          router.replace('/onboarding' as never);
-          return;
-        }
-        checkStatus();
-        const unsub = tdLibClient.onAuthStateChange((state) => {
-          setLoggedIn(state === 'authorizationStateReady');
-        });
-        return () => {
-          unsub();
-        };
+      checkStatus();
+      const unsub = tdLibClient.onAuthStateChange((state) => {
+        setLoggedIn(state === 'authorizationStateReady');
+      });
+      return () => {
+        unsub();
       };
-      run();
     }, [])
   );
 

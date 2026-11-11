@@ -130,10 +130,11 @@ export function FreeUpSpaceModal({
 
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
 
-              Alert.alert(
-                'Space Reclaimed',
-                `Successfully freed up ${formatFileSize(result.freedBytes)} of device storage (${result.freedCount} files deleted locally).`
-              );
+              const message = result.blockedCount > 0
+                ? `Successfully freed up ${formatFileSize(result.freedBytes)} (${result.freedCount} files deleted locally).\n\n🛡️ Safety Shield protected ${result.blockedCount} file(s) whose Telegram cloud copy was deleted.`
+                : `Successfully freed up ${formatFileSize(result.freedBytes)} of device storage (${result.freedCount} files deleted locally).`;
+
+              Alert.alert('Space Reclaimed', message);
 
               if (onCleanComplete) {
                 onCleanComplete(result.freedBytes, result.freedCount);

@@ -258,6 +258,10 @@ export interface UploadedRecord {
   telegramMessageId?: number;
   /** Present only for files uploaded as multiple parts (>1.95 GB) */
   chunkManifest?: ChunkManifest;
+  /** Cloud verification state */
+  cloudStatus?: 'synced' | 'missing' | 'local_only';
+  /** Timestamp when existence in Telegram cloud was last confirmed */
+  lastVerifiedAt?: number;
 }
 
 export async function getUploadedIndex(): Promise<UploadedRecord[]> {
@@ -276,6 +280,28 @@ export async function markUploaded(record: UploadedRecord): Promise<void> {
   const filtered = index.filter(r => r.uri !== record.uri);
   filtered.push(record);
   await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filtered));
+}
+
+export async function saveUploadedIndex(records: UploadedRecord[]): Promise<void> {
+  await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(records));
+}
+
+export async function updateUploadedRecord(
+  uri: string,
+  patch: Partial<UploadedRecord>
+): Promise<UploadedRecord | null> {
+  const index = await getUploadedIndex();
+  const idx = index.findIndex((r) => r.uri === uri);
+  if (idx < 0) return null;
+  index[idx] = { ...index[idx], ...patch };
+  await saveUploadedIndex(index);
+  return index[idx];
+}
+
+export async function removeUploadedRecord(uri: string): Promise<void> {
+  const index = await getUploadedIndex();
+  const filtered = index.filter((r) => r.uri !== uri);
+  await saveUploadedIndex(filtered);
 }
 
 

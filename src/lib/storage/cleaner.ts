@@ -3,8 +3,10 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import {
   getUploadedIndex,
   recordActionHistory,
+  updateUploadedRecord,
 } from './queue';
 import { getFileCategory } from '../scanner/files';
+import { verifyCloudRecord } from './cloudSync';
 
 export interface CleanableItem {
   uri: string;
@@ -31,6 +33,8 @@ export interface CleanResult {
   freedCount: number;
   freedBytes: number;
   failedCount: number;
+  /** Files skipped by the Safety Shield because their cloud copy was deleted in Telegram */
+  blockedCount: number;
 }
 
 /**
@@ -88,6 +92,9 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
 /**
  * Safely deletes confirmed local files from device storage to free up space.
  * Telegram cloud backup records remain untouched.
+ *
+ * SAFETY SHIELD: Probes Telegram Cloud before deleting each file. If the remote
+ * message was deleted in Telegram, deletion is BLOCKED to prevent permanent data loss.
  */
 export async function executeCleanSpace(
   items: CleanableItem[],
@@ -96,10 +103,31 @@ export async function executeCleanSpace(
   let freedCount = 0;
   let freedBytes = 0;
   let failedCount = 0;
+  let blockedCount = 0;
+
+  const uploaded = await getUploadedIndex();
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     let deleted = false;
+
+    // ── SAFETY SHIELD CHECK ──────────────────────────────────────────────────
+    // Verify cloud copy actually exists before wiping local data
+    const rec = uploaded.find((u) => u.uri === item.uri);
+    if (rec && (rec.telegramMessageId || rec.chunkManifest)) {
+      try {
+        const { exists } = await verifyCloudRecord(rec);
+        if (!exists) {
+          console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — Telegram Cloud copy is missing!`);
+          await updateUploadedRecord(item.uri, { cloudStatus: 'missing' });
+          blockedCount += 1;
+          if (onProgress) onProgress(i + 1, items.length);
+          continue; // SKIP deletion — protect user's file!
+        }
+      } catch {
+        // If network probe fails, proceed cautiously or skip if strictly verified
+      }
+    }
 
     try {
       // Attempt 1: If it's a Media Library asset URI (ph:// or content://media)
@@ -145,5 +173,6 @@ export async function executeCleanSpace(
     freedCount,
     freedBytes,
     failedCount,
+    blockedCount,
   };
 }

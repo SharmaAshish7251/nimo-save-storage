@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Alert,
   useColorScheme,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -25,14 +26,22 @@ import {
   getConfig,
   AppConfig,
   formatFileSize,
+  addToQueue,
+  removeUploadedRecord,
 } from '@/lib/storage/queue';
 import { getFileCategory } from '@/lib/scanner/files';
+import {
+  reconcileCloudIndex,
+  deleteCloudRecord,
+  importFromTelegramHistory,
+  startRealtimeDeleteListener,
+} from '@/lib/storage/cloudSync';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
 const GRID_ITEM_SIZE = (SCREEN_WIDTH - 32 - (GRID_COLUMNS - 1) * 8) / GRID_COLUMNS;
 
-type CategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
+type CategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document' | 'missing';
 type SortOption = 'newest' | 'oldest' | 'largest' | 'name';
 
 interface CloudItem extends UploadedRecord {
@@ -53,6 +62,9 @@ export default function CloudExplorerScreen() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [selectedItem, setSelectedItem] = useState<CloudItem | null>(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isDeletingCloud, setIsDeletingCloud] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
   const loadCloudItems = useCallback(async () => {
     try {
@@ -95,15 +107,140 @@ export default function CloudExplorerScreen() {
     }, [loadCloudItems])
   );
 
+  // Attach live Telegram delete listener
+  useEffect(() => {
+    const unsub = startRealtimeDeleteListener(() => {
+      loadCloudItems();
+    });
+    return unsub;
+  }, [loadCloudItems]);
+
+  const handlePullToRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      const res = await reconcileCloudIndex({ forceAll: true });
+      await loadCloudItems();
+      if (res.missing > 0) {
+        Alert.alert(
+          'Reconciliation Complete',
+          `Checked ${res.total} file(s). Found ${res.missing} file(s) deleted in Telegram Cloud.`
+        );
+      }
+    } catch (err: any) {
+      console.warn('Refresh error:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleDeleteFromCloud = (item: CloudItem) => {
+    Alert.alert(
+      'Delete from Telegram Cloud?',
+      `Are you sure you want to permanently delete "${item.fileName}" from Telegram servers?\n\nThis cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete from Cloud',
+          style: 'destructive',
+          onPress: async () => {
+            setIsDeletingCloud(true);
+            try {
+              await deleteCloudRecord(item);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+              setSelectedItem(null);
+              await loadCloudItems();
+            } catch (err: any) {
+              Alert.alert('Delete Failed', err?.message || 'Could not delete from Telegram.');
+            } finally {
+              setIsDeletingCloud(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleReuploadMissing = async (item: CloudItem) => {
+    try {
+      if (!item.existsLocally) {
+        Alert.alert('Cannot Re-upload', 'The local file copy does not exist on this device.');
+        return;
+      }
+      await addToQueue({
+        uri: item.uri,
+        fileName: item.fileName,
+        size: item.size,
+      });
+      await removeUploadedRecord(item.uri);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      Alert.alert(
+        'Queued for Upload',
+        `"${item.fileName}" has been re-added to your upload queue.`,
+        [
+          { text: 'Go to Queue', onPress: () => router.push('/upload') },
+          { text: 'OK', style: 'default' },
+        ]
+      );
+      setSelectedItem(null);
+      await loadCloudItems();
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to re-queue file.');
+    }
+  };
+
+  const handleRemoveStaleRecord = async (item: CloudItem) => {
+    try {
+      await removeUploadedRecord(item.uri);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setSelectedItem(null);
+      await loadCloudItems();
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to remove record.');
+    }
+  };
+
+  const handleImportFromTelegram = () => {
+    Alert.alert(
+      'Sync Telegram Cloud History',
+      'Scan your backup destination in Telegram to discover and import existing files into Cloud Explorer?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Scan Cloud',
+          onPress: async () => {
+            setIsImporting(true);
+            try {
+              const res = await importFromTelegramHistory({ limit: 150 });
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+              await loadCloudItems();
+              Alert.alert(
+                'Sync Finished',
+                `Scanned ${res.totalFound} messages and imported ${res.imported} new cloud file(s) into your catalog.`
+              );
+            } catch (err: any) {
+              Alert.alert('Sync Error', err?.message || 'Failed to scan Telegram history.');
+            } finally {
+              setIsImporting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const totalCloudBytes = useMemo(() => {
     return items.reduce((acc, it) => acc + (it.size || 0), 0);
   }, [items]);
 
   const categoryCounts = useMemo(() => {
-    const counts = { all: items.length, image: 0, video: 0, audio: 0, document: 0 };
+    const counts = { all: items.length, image: 0, video: 0, audio: 0, document: 0, missing: 0 };
     for (const it of items) {
       if (it.category in counts) {
         counts[it.category as keyof typeof counts] += 1;
+      }
+      if (it.cloudStatus === 'missing') {
+        counts.missing += 1;
       }
     }
     return counts;
@@ -119,7 +256,9 @@ export default function CloudExplorerScreen() {
     }
 
     // 2. Category Filter
-    if (activeCategory !== 'all') {
+    if (activeCategory === 'missing') {
+      result = result.filter((it) => it.cloudStatus === 'missing');
+    } else if (activeCategory !== 'all') {
       result = result.filter((it) => it.category === activeCategory);
     }
 
@@ -225,9 +364,18 @@ export default function CloudExplorerScreen() {
           </View>
         ) : null}
 
-        {/* Telegram Cloud Icon Badge */}
-        <View style={styles.gridCloudBadge}>
-          <FontAwesome name="telegram" size={10} color="#FFFFFF" />
+        {/* Telegram Cloud Icon Badge / Missing Warning Badge */}
+        <View
+          style={[
+            styles.gridCloudBadge,
+            item.cloudStatus === 'missing' && { backgroundColor: '#EF4444' },
+          ]}
+        >
+          <FontAwesome
+            name={item.cloudStatus === 'missing' ? 'exclamation' : 'telegram'}
+            size={10}
+            color="#FFFFFF"
+          />
         </View>
       </TouchableOpacity>
     );
@@ -281,7 +429,14 @@ export default function CloudExplorerScreen() {
                 </View>
               </>
             ) : null}
-            {item.telegramMessageId && !item.chunkManifest ? (
+            {item.cloudStatus === 'missing' ? (
+              <>
+                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
+                <View style={[styles.msgBadge, { backgroundColor: '#EF4444' }]}>
+                  <Text style={styles.msgBadgeText}>Missing in TG</Text>
+                </View>
+              </>
+            ) : item.telegramMessageId && !item.chunkManifest ? (
               <>
                 <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
                 <View style={styles.msgBadge}>
@@ -313,6 +468,17 @@ export default function CloudExplorerScreen() {
           </Text>
         </View>
         <View style={styles.headerRightActions}>
+          <TouchableOpacity
+            style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
+            onPress={handleImportFromTelegram}
+            disabled={isImporting}
+          >
+            {isImporting ? (
+              <ActivityIndicator size="small" color="#10B981" />
+            ) : (
+              <FontAwesome name="cloud-download" size={14} color="#10B981" />
+            )}
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
             onPress={() => {
@@ -367,8 +533,10 @@ export default function CloudExplorerScreen() {
 
       {/* Category Filter Chips Carousel */}
       <View style={styles.categoryChipsBar}>
-        {(['all', 'image', 'video', 'audio', 'document'] as CategoryFilter[]).map((cat) => {
+        {(['all', 'image', 'video', 'audio', 'document', 'missing'] as CategoryFilter[]).map((cat) => {
+          if (cat === 'missing' && categoryCounts.missing === 0) return null;
           const isSelected = activeCategory === cat;
+          const isMissingCat = cat === 'missing';
           const count = categoryCounts[cat] || 0;
           return (
             <TouchableOpacity
@@ -380,8 +548,18 @@ export default function CloudExplorerScreen() {
               style={[
                 styles.categoryChip,
                 {
-                  backgroundColor: isSelected ? '#208AEF' : cardBg,
-                  borderColor: isSelected ? '#208AEF' : border,
+                  backgroundColor: isSelected
+                    ? isMissingCat
+                      ? '#EF4444'
+                      : '#208AEF'
+                    : cardBg,
+                  borderColor: isSelected
+                    ? isMissingCat
+                      ? '#EF4444'
+                      : '#208AEF'
+                    : isMissingCat
+                    ? '#EF4444'
+                    : border,
                 },
               ]}
               activeOpacity={0.7}
@@ -389,13 +567,22 @@ export default function CloudExplorerScreen() {
               <Text
                 style={[
                   styles.categoryChipText,
-                  { color: isSelected ? '#FFFFFF' : textColor },
+                  {
+                    color: isSelected
+                      ? '#FFFFFF'
+                      : isMissingCat
+                      ? '#EF4444'
+                      : textColor,
+                    fontWeight: isMissingCat ? '700' : '500',
+                  },
                 ]}
               >
                 {cat === 'all'
                   ? 'All'
                   : cat === 'image'
                   ? 'Photos'
+                  : cat === 'missing'
+                  ? '⚠️ Missing'
                   : cat.charAt(0).toUpperCase() + cat.slice(1)}{' '}
                 ({count})
               </Text>
@@ -443,6 +630,13 @@ export default function CloudExplorerScreen() {
           numColumns={viewMode === 'grid' ? GRID_COLUMNS : 1}
           contentContainerStyle={styles.listContent}
           renderItem={viewMode === 'grid' ? renderGridItem : renderListItem}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handlePullToRefresh}
+              tintColor="#208AEF"
+            />
+          }
         />
       )}
 
@@ -496,6 +690,19 @@ export default function CloudExplorerScreen() {
                 </View>
               )}
 
+              {/* Missing Warning Banner */}
+              {selectedItem.cloudStatus === 'missing' && (
+                <View style={styles.missingBanner}>
+                  <FontAwesome name="exclamation-triangle" size={16} color="#EF4444" />
+                  <Text style={styles.missingBannerText}>
+                    This file was deleted in Telegram. Its cloud copy is no longer reachable.
+                    {selectedItem.existsLocally
+                      ? ' Since you still have a local copy, tap "Re-upload to Cloud" to restore it.'
+                      : ' Tap "Remove from List" to clean this entry.'}
+                  </Text>
+                </View>
+              )}
+
               {/* Metadata Cards */}
               <View style={[styles.metadataCard, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC', borderColor: border }]}>
                 <View style={styles.metaRowBetween}>
@@ -537,32 +744,86 @@ export default function CloudExplorerScreen() {
                     </Text>
                   </View>
                 </View>
+                <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                <View style={styles.metaRowBetween}>
+                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Cloud Status</Text>
+                  <View style={styles.localCopyPill}>
+                    <FontAwesome
+                      name={selectedItem.cloudStatus === 'missing' ? 'exclamation-circle' : 'check-circle'}
+                      size={11}
+                      color={selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981'}
+                    />
+                    <Text
+                      style={[
+                        styles.localCopyText,
+                        { color: selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981' },
+                      ]}
+                    >
+                      {selectedItem.cloudStatus === 'missing' ? 'Deleted from Telegram' : 'Active in Telegram'}
+                    </Text>
+                  </View>
+                </View>
               </View>
 
               {/* Action Buttons */}
               <View style={styles.modalActionRow}>
-                {selectedItem.existsLocally ? (
-                  <TouchableOpacity
-                    style={[styles.primaryActionBtn, { opacity: isSharing ? 0.6 : 1 }]}
-                    onPress={() => handleShareFile(selectedItem)}
-                    disabled={isSharing}
-                  >
-                    <FontAwesome name="share" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionBtnText}>Share File</Text>
-                  </TouchableOpacity>
+                {selectedItem.cloudStatus === 'missing' ? (
+                  <>
+                    {selectedItem.existsLocally ? (
+                      <TouchableOpacity
+                        style={[styles.primaryActionBtn, { backgroundColor: '#208AEF' }]}
+                        onPress={() => handleReuploadMissing(selectedItem)}
+                      >
+                        <FontAwesome name="cloud-upload" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionBtnText}>Re-upload to Cloud</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={[styles.primaryActionBtn, { backgroundColor: '#64748B' }]}
+                        onPress={() => handleRemoveStaleRecord(selectedItem)}
+                      >
+                        <FontAwesome name="trash" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionBtnText}>Remove from List</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
                 ) : (
-                  <TouchableOpacity
-                    style={[styles.primaryActionBtn, { backgroundColor: '#10B981' }]}
-                    onPress={() => {
-                      Alert.alert(
-                        'Cloud File Secured',
-                        'This file is permanently stored in your Telegram Saved Messages / Channel cloud. You can also view or forward it directly via Telegram.'
-                      );
-                    }}
-                  >
-                    <FontAwesome name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionBtnText}>Cloud Backed Up</Text>
-                  </TouchableOpacity>
+                  <>
+                    {selectedItem.existsLocally ? (
+                      <TouchableOpacity
+                        style={[styles.primaryActionBtn, { opacity: isSharing ? 0.6 : 1 }]}
+                        onPress={() => handleShareFile(selectedItem)}
+                        disabled={isSharing}
+                      >
+                        <FontAwesome name="share" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionBtnText}>Share File</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={[styles.primaryActionBtn, { backgroundColor: '#10B981' }]}
+                        onPress={() => {
+                          Alert.alert(
+                            'Cloud File Secured',
+                            'This file is permanently stored in your Telegram Saved Messages / Channel cloud. You can also view or forward it directly via Telegram.'
+                          );
+                        }}
+                      >
+                        <FontAwesome name="check-circle" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.primaryActionBtnText}>Cloud Backed Up</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={[styles.dangerActionBtn, { opacity: isDeletingCloud ? 0.6 : 1 }]}
+                      onPress={() => handleDeleteFromCloud(selectedItem)}
+                      disabled={isDeletingCloud}
+                    >
+                      {isDeletingCloud ? (
+                        <ActivityIndicator size="small" color="#EF4444" />
+                      ) : (
+                        <FontAwesome name="trash-o" size={14} color="#EF4444" />
+                      )}
+                    </TouchableOpacity>
+                  </>
                 )}
                 <TouchableOpacity
                   style={[styles.secondaryActionBtn, { borderColor: border }]}
@@ -953,5 +1214,32 @@ const styles = StyleSheet.create({
   secondaryActionBtnText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  dangerActionBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  missingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+  missingBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#EF4444',
+    lineHeight: 16,
   },
 });

@@ -323,20 +323,7 @@ class TdLibClientService {
     // 1. Resolve to native absolute filesystem path
     const { path: localPath, isTemp } = await resolveToLocalPath(uri);
 
-    let targetChatId: number;
-    if (targetChat === 'me' || !targetChat) {
-      targetChatId = await this.getSavedMessagesChatId();
-    } else if (typeof targetChat === 'string' && targetChat.startsWith('@')) {
-      // Fix 1.2: Resolve @username to numeric chat ID via TDLib searchPublicChat
-      const rawChat = await TdLib.searchPublicChat(targetChat.replace(/^@/, ''));
-      const chat = typeof rawChat === 'string' ? JSON.parse(rawChat) : rawChat;
-      if (!chat?.id) throw new Error(`Could not resolve channel: ${targetChat}`);
-      targetChatId = chat.id;
-    } else {
-      const parsed = typeof targetChat === 'string' ? parseInt(targetChat, 10) : targetChat;
-      if (isNaN(parsed)) throw new Error(`Invalid chat ID: ${targetChat}`);
-      targetChatId = parsed;
-    }
+    const targetChatId = await this.resolveTargetChatId(targetChat);
 
     const normalizePath = (p?: string): string => {
       if (!p) return '';
@@ -569,6 +556,131 @@ class TdLibClientService {
     }
 
     return destinations;
+  }
+
+  /**
+   * Resolves a targetChat string ('me', '@channelname', or numeric ID) to a numeric chat ID.
+   */
+  public async resolveTargetChatId(targetChat: string = 'me'): Promise<number> {
+    await this.init();
+    if (targetChat === 'me' || !targetChat) {
+      return await this.getSavedMessagesChatId();
+    } else if (typeof targetChat === 'string' && targetChat.startsWith('@')) {
+      const rawChat = await TdLib.searchPublicChat(targetChat.replace(/^@/, ''));
+      const chat = typeof rawChat === 'string' ? JSON.parse(rawChat) : rawChat;
+      if (!chat?.id) throw new Error(`Could not resolve channel: ${targetChat}`);
+      return chat.id;
+    } else {
+      const parsed = typeof targetChat === 'string' ? parseInt(targetChat, 10) : targetChat;
+      if (isNaN(parsed)) throw new Error(`Invalid chat ID: ${targetChat}`);
+      return parsed;
+    }
+  }
+
+  /**
+   * Verifies whether a specific message exists in Telegram cloud.
+   * Returns true if message is active, false if deleted or not found.
+   */
+  public async checkMessageExists(chatId: number, messageId: number): Promise<boolean> {
+    await this.init();
+    try {
+      const result = await TdLib.getMessage(chatId, messageId);
+      if (!result) return false;
+      const raw = typeof result === 'string' ? result : (result as any).raw;
+      if (!raw) return true;
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (parsed?.['@type'] === 'error') return false;
+      return Boolean(parsed?.id);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Verifies a batch of message IDs in a single call or fast bounded parallel pool.
+   * Returns a Map<messageId, boolean> of existence status.
+   */
+  public async checkMessagesBatch(chatId: number, messageIds: number[]): Promise<Map<number, boolean>> {
+    await this.init();
+    const statusMap = new Map<number, boolean>();
+    if (!messageIds || messageIds.length === 0) return statusMap;
+
+    try {
+      const rawResult = await TdLib.getMessagesCompat(chatId, messageIds);
+      if (rawResult) {
+        const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+        const messages = Array.isArray(parsed) ? parsed : parsed?.messages;
+        if (Array.isArray(messages)) {
+          for (let i = 0; i < messageIds.length; i++) {
+            const mId = messageIds[i];
+            const msg = messages[i];
+            const exists = Boolean(msg && msg.id && msg['@type'] !== 'error');
+            statusMap.set(mId, exists);
+          }
+          return statusMap;
+        }
+      }
+    } catch {
+      // Fallback to bounded parallel checkMessageExists
+    }
+
+    // Parallel fallback in chunks of 10
+    const chunkSize = 10;
+    for (let i = 0; i < messageIds.length; i += chunkSize) {
+      const slice = messageIds.slice(i, i + chunkSize);
+      await Promise.all(
+        slice.map(async (mId) => {
+          const exists = await this.checkMessageExists(chatId, mId);
+          statusMap.set(mId, exists);
+        })
+      );
+    }
+
+    return statusMap;
+  }
+
+  /**
+   * Deletes one or more messages permanently from Telegram Cloud.
+   * With revoke=true, deletes for all chat participants / servers.
+   */
+  public async deleteCloudMessages(
+    chatId: number,
+    messageIds: number[],
+    revoke: boolean = true
+  ): Promise<boolean> {
+    await this.init();
+    try {
+      return await TdLib.deleteMessages(chatId, messageIds, revoke);
+    } catch (err) {
+      console.warn('[TdLib] deleteCloudMessages failed:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Fetches message history from a chat to discover/restore cloud files.
+   */
+  public async getChatHistory(
+    chatId: number,
+    fromMessageId: number = 0,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<any[]> {
+    await this.init();
+    try {
+      const items = await TdLib.getChatHistory(chatId, fromMessageId, limit, offset);
+      if (!Array.isArray(items)) return [];
+      return items
+        .map((it: any) => {
+          if (!it) return null;
+          const raw = it.raw_json || it.raw || it;
+          return typeof raw === 'string' ? JSON.parse(raw) : raw;
+        })
+        .filter(Boolean);
+    } catch (err) {
+      console.warn('[TdLib] getChatHistory failed:', err);
+      return [];
+    }
   }
 
   /**

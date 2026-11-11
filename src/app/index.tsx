@@ -424,8 +424,8 @@ export default function HomeScreen() {
           <Text style={[styles.sectionHeading, { color: textColor, marginBottom: 0 }]}>
             Recent Cloud Backups
           </Text>
-          <TouchableOpacity onPress={() => router.push('/upload')}>
-            <Text style={styles.seeAllText}>See all ({queueInfo.count})</Text>
+          <TouchableOpacity onPress={() => router.push('/explore')}>
+            <Text style={styles.seeAllText}>See all ({cloudStats.count})</Text>
           </TouchableOpacity>
         </View>
 

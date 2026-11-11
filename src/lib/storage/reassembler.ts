@@ -100,7 +100,7 @@ export async function reassembleChunks(
         });
       }
 
-      const decodedBytes = Math.floor(base64Buf.length * 0.75);
+      const decodedBytes = Math.floor((base64Buf.replace(/=/g, '').length * 3) / 4);
       partBytesRead += decodedBytes;
       bytesProcessed += decodedBytes;
 

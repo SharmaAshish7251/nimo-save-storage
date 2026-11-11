@@ -223,6 +223,7 @@ export async function addManyToQueue(
   );
 
   const now = Date.now();
+  let counter = 0;
   const newItems: QueueItem[] = [];
   let skipped = 0;
 
@@ -233,7 +234,7 @@ export async function addManyToQueue(
     }
     const newItem: QueueItem = {
       ...item,
-      id: `${now}_${Math.random().toString(36).substr(2, 9)}`,
+      id: `${now}_${counter++}_${Math.random().toString(36).substr(2, 9)}`,
       status: 'pending',
       progress: 0,
       retries: 0,

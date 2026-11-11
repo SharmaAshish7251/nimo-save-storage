@@ -244,6 +244,8 @@ export default function UploadScreen() {
           'Permission Required',
           'Media library permission is required to scan files. Please grant media permission when prompted or in system settings.'
         );
+        setScanning(false);
+        setScanStatusText('');
         return;
       }
 
@@ -449,7 +451,7 @@ export default function UploadScreen() {
           text: 'Discard All',
           style: 'destructive',
           onPress: async () => {
-            await clearAllQueue(false);
+            await clearAllQueue(true);
             loadData();
           },
         },

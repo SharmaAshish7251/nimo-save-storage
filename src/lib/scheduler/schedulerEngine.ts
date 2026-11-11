@@ -43,15 +43,23 @@ export interface SchedulerRunResult {
   error?: string;
 }
 
+function timeToMinutes(t: string): number {
+  const [h, m] = (t || '00:00').split(':').map((v) => parseInt(v, 10) || 0);
+  return h * 60 + m;
+}
+
 /**
  * Checks if current time is within a start-end time window (supports midnight-spanning windows).
  */
 export function isWithinTimeWindow(currentTime: string, start: string, end: string): boolean {
-  if (start <= end) {
-    return currentTime >= start && currentTime <= end;
+  const cur = timeToMinutes(currentTime);
+  const s = timeToMinutes(start);
+  const e = timeToMinutes(end);
+  if (s <= e) {
+    return cur >= s && cur <= e;
   }
   // Midnight-spanning, e.g. 22:00 to 06:00
-  return currentTime >= start || currentTime <= end;
+  return cur >= s || cur <= e;
 }
 
 /**
@@ -316,6 +324,7 @@ class SchedulerEngine {
       // 4. Process queue
       let uploadedCount = 0;
       let failedCount = 0;
+      let uploadedBytes = 0;
       let errorSummary: string | undefined;
 
       try {
@@ -324,6 +333,7 @@ class SchedulerEngine {
         });
         uploadedCount = processResult.uploaded;
         failedCount = processResult.failed;
+        uploadedBytes = processResult.uploadedBytes || 0;
         if (processResult.errors && processResult.errors.length > 0) {
           errorSummary = processResult.errors.join('; ');
         }
@@ -368,6 +378,7 @@ class SchedulerEngine {
         lastSkipReason: undefined,
         nextEstimatedRunAt: nextInfo.nextRunDate.getTime(),
         totalAutoUploadedCount: (currentState.totalAutoUploadedCount || 0) + uploadedCount,
+        totalAutoUploadedBytes: (currentState.totalAutoUploadedBytes || 0) + uploadedBytes,
       });
 
       this.notifyListeners(updatedState);

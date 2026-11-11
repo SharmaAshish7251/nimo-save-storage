@@ -26,6 +26,7 @@ export interface ProcessQueueResult {
   uploaded: number;
   failed: number;
   errors: string[];
+  uploadedBytes?: number;
 }
 
 const FREE_TIER_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Free Telegram limit
@@ -165,6 +166,7 @@ export class UploadManager {
         uploaded: uploadedCount,
         failed: failedCount,
         errors: errorMessages,
+        uploadedBytes: this.uploadedBatchBytes,
       };
     } finally {
       await uploadNotificationService.dismissProgress();

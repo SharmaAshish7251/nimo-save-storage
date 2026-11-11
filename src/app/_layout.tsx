@@ -33,12 +33,24 @@ export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
-        // Clean up orphaned temp upload files from previous sessions
+        // Clean up orphaned temp upload files older than 1 hour (preserve active/recent files)
         try {
           const uploadCacheDir = `${LegacyFileSystem.cacheDirectory}tdlib_upload/`;
-          const info = await LegacyFileSystem.getInfoAsync(uploadCacheDir);
-          if (info.exists) {
-            await LegacyFileSystem.deleteAsync(uploadCacheDir, { idempotent: true });
+          const dirInfo = await LegacyFileSystem.getInfoAsync(uploadCacheDir);
+          if (dirInfo.exists) {
+            const files = await LegacyFileSystem.readDirectoryAsync(uploadCacheDir).catch(() => []);
+            const ONE_HOUR = 60 * 60 * 1000;
+            const now = Date.now();
+            for (const file of files) {
+              const filePath = `${uploadCacheDir}${file}`;
+              const info = await LegacyFileSystem.getInfoAsync(filePath).catch(() => ({ exists: false } as any));
+              if (info.exists && (info as any).modificationTime) {
+                const modTime = (info as any).modificationTime * 1000;
+                if (now - modTime > ONE_HOUR) {
+                  await LegacyFileSystem.deleteAsync(filePath, { idempotent: true }).catch(() => {});
+                }
+              }
+            }
           }
         } catch {}
         await registerBackgroundUploadTask().catch((err) => {

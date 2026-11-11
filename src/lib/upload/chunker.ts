@@ -148,8 +148,8 @@ async function writeChunkStreaming(
       });
     }
 
-    // base64 decodes to 3/4 of its character count — compute actual bytes written
-    const decodedBytes = Math.floor(base64Chunk.length * 0.75);
+    // base64 decodes to 3/4 of its unpadded character count — compute actual bytes written
+    const decodedBytes = Math.floor((base64Chunk.replace(/=/g, '').length * 3) / 4);
     bytesWritten += decodedBytes;
 
     // Allow JS event loop to breathe between large buffer writes

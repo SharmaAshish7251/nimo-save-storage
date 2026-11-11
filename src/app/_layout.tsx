@@ -64,8 +64,8 @@ export default function RootLayout() {
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-        <Stack.Screen name="upload" />
-        <Stack.Screen name="explore" options={{ title: 'Explore' }} />
+        <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
+        <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
         <Stack.Screen name="logs" options={{ title: 'Logs' }} />
       </Stack>
       <BiometricLockOverlay />

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
+  ScrollView,
   Image,
   Modal,
   ActivityIndicator,
@@ -13,8 +14,9 @@ import {
   useColorScheme,
   Dimensions,
   RefreshControl,
+  Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
@@ -31,6 +33,7 @@ import {
   removeUploadedRecord,
 } from '@/lib/storage/queue';
 import { getFileCategory } from '@/lib/scanner/files';
+import { resolveLocalFileTarget } from '@/lib/storage/fileHelper';
 import {
   reconcileCloudIndex,
   deleteCloudRecord,
@@ -38,6 +41,7 @@ import {
   startRealtimeDeleteListener,
 } from '@/lib/storage/cloudSync';
 import { tdLibClient } from '@/lib/tdlib/client';
+import { ensureFileSchemeUri, getMimeTypeFromFileName } from '@/lib/tdlib/fileHelper';
 import { reassembleChunks } from '@/lib/storage/reassembler';
 import { MediaPlayerModal, MediaPreviewItem } from '@/components/MediaPlayerModal';
 import { vaultService } from '@/lib/crypto/vault';
@@ -52,6 +56,7 @@ type SortOption = 'newest' | 'oldest' | 'largest' | 'name';
 interface CloudItem extends UploadedRecord {
   category: 'image' | 'video' | 'audio' | 'document' | 'other';
   existsLocally?: boolean;
+  cachedLocalUri?: string;
 }
 
 function getRestoredCachePath(fileName: string, id: string | number): string {
@@ -59,6 +64,7 @@ function getRestoredCachePath(fileName: string, id: string | number): string {
 }
 
 export default function CloudExplorerScreen() {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -98,9 +104,20 @@ export default function CloudExplorerScreen() {
         uploaded.map(async (rec) => {
           const category = getFileCategory(rec.fileName);
           let existsLocally = false;
+          let resolvedLocalUri = rec.uri;
           try {
-            const info = await FileSystem.getInfoAsync(rec.uri);
-            existsLocally = info.exists;
+            const target = await resolveLocalFileTarget({
+              uri: rec.uri,
+              fileName: rec.fileName,
+              size: rec.size,
+              mediaAssetId: rec.mediaAssetId,
+              allowMediaMatch: true,
+              requestPermission: false,
+            });
+            existsLocally = target.exists;
+            if (target.exists && target.resolvedUri) {
+              resolvedLocalUri = target.resolvedUri;
+            }
           } catch {
             existsLocally = false;
           }
@@ -108,6 +125,9 @@ export default function CloudExplorerScreen() {
             ...rec,
             category,
             existsLocally,
+            ...(resolvedLocalUri !== rec.uri && resolvedLocalUri.startsWith('file://')
+              ? { cachedLocalUri: resolvedLocalUri }
+              : {}),
           };
         })
       );
@@ -355,6 +375,26 @@ export default function CloudExplorerScreen() {
     }
   };
 
+  const cacheResolvedUri = useCallback((recordUri: string, localFileUri: string) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.uri === recordUri
+          ? { ...it, cachedLocalUri: localFileUri, existsLocally: true }
+          : it
+      )
+    );
+    setSelectedItem((prev) =>
+      prev && prev.uri === recordUri
+        ? { ...prev, cachedLocalUri: localFileUri, existsLocally: true }
+        : prev
+    );
+    setMediaPlayerItem((prev) =>
+      prev && prev.uri === recordUri
+        ? { ...prev, cachedLocalUri: localFileUri, existsLocally: true }
+        : prev
+    );
+  }, []);
+
   const handleBulkDownload = async () => {
     if (selectedItemsList.length === 0) return;
     Alert.alert(
@@ -368,15 +408,23 @@ export default function CloudExplorerScreen() {
             setIsBulkOperating(true);
             let downloadedCount = 0;
             try {
+              const hasMediaItems = selectedItemsList.some(
+                (it) => it.category === 'image' || it.category === 'video'
+              );
+              let mediaPermGranted = false;
+              if (hasMediaItems) {
+                const perm = await MediaLibrary.requestPermissionsAsync(true).catch(() => ({
+                  status: MediaLibrary.PermissionStatus.DENIED,
+                }));
+                mediaPermGranted = perm.status === MediaLibrary.PermissionStatus.GRANTED;
+              }
+
               for (let i = 0; i < selectedItemsList.length; i++) {
                 const it = selectedItemsList[i];
-                setBulkStatusText(`Downloading ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
+                setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
                 const localUri = await downloadCloudItemToLocal(it);
-                if (it.category === 'image' || it.category === 'video') {
-                  const perm = await MediaLibrary.requestPermissionsAsync().catch(() => ({ status: 'denied' }));
-                  if (perm.status === 'granted') {
-                    await MediaLibrary.createAssetAsync(localUri).catch(() => {});
-                  }
+                if (mediaPermGranted && (it.category === 'image' || it.category === 'video')) {
+                  await MediaLibrary.saveToLibraryAsync(localUri).catch(() => {});
                 }
                 downloadedCount++;
               }
@@ -400,20 +448,26 @@ export default function CloudExplorerScreen() {
     setIsBulkOperating(true);
     setBulkStatusText('Preparing files for sharing...');
     try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        Alert.alert('Sharing Unavailable', 'File sharing is not supported on this device.');
+        return;
+      }
+
       if (selectedItemsList.length === 1) {
         await handleShareFile(selectedItemsList[0]);
         exitSelectMode();
         return;
       }
-      const localUris: string[] = [];
+
       for (let i = 0; i < selectedItemsList.length; i++) {
         const it = selectedItemsList[i];
-        setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}...`);
-        const uri = await downloadCloudItemToLocal(it);
-        localUris.push(uri);
-      }
-      if (localUris.length > 0) {
-        await Sharing.shareAsync(localUris[0]);
+        setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
+        const fileUri = await downloadCloudItemToLocal(it);
+        await Sharing.shareAsync(fileUri, {
+          mimeType: getMimeTypeFromFileName(it.fileName),
+          dialogTitle: `Share ${it.fileName}`,
+        });
       }
       exitSelectMode();
     } catch (err: any) {
@@ -456,10 +510,28 @@ export default function CloudExplorerScreen() {
     );
   };
 
-  const downloadCloudItemToLocal = async (item: CloudItem): Promise<string> => {
-    if (item.existsLocally) {
-      const info = await FileSystem.getInfoAsync(item.uri).catch(() => ({ exists: false }));
-      if (info.exists) return item.uri;
+  const downloadCloudItemToLocal = useCallback(async (item: CloudItem): Promise<string> => {
+    // Reuse verified cached file:// copy if available
+    if (item.cachedLocalUri) {
+      const cachedInfo = await FileSystem.getInfoAsync(item.cachedLocalUri).catch(() => ({ exists: false }));
+      if (cachedInfo.exists) return item.cachedLocalUri;
+    }
+
+    // If stored locally on device (including Android content:// URIs), normalize to a file:// URI
+    if (item.existsLocally && !item.uri.startsWith('tg://')) {
+      const target = await resolveLocalFileTarget({
+        uri: item.uri,
+        fileName: item.fileName,
+        size: item.size,
+        mediaAssetId: item.mediaAssetId,
+        allowMediaMatch: true,
+        requestPermission: false,
+      }).catch(() => null);
+      if (target?.exists && target.resolvedUri) {
+        const fileUri = await ensureFileSchemeUri(target.resolvedUri, item.fileName);
+        cacheResolvedUri(item.uri, fileUri);
+        return fileUri;
+      }
     }
 
     const chatId = await tdLibClient.resolveTargetChatId(config?.targetChatId || 'me');
@@ -483,7 +555,7 @@ export default function CloudExplorerScreen() {
             setDownloadProgress(overall);
           }
         );
-        downloadedPartUris.push(`file://${partLocalPath}`);
+        downloadedPartUris.push(partLocalPath.startsWith('file://') ? partLocalPath : `file://${partLocalPath}`);
       }
 
       setDownloadStatusText('Reassembling multi-part file...');
@@ -491,6 +563,7 @@ export default function CloudExplorerScreen() {
       await reassembleChunks(downloadedPartUris, reassembledDest, (pct) => {
         setDownloadProgress(pct / 100);
       });
+      cacheResolvedUri(item.uri, reassembledDest);
       return reassembledDest;
     }
 
@@ -511,59 +584,57 @@ export default function CloudExplorerScreen() {
       }
     );
 
-    const finalUri = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+    const rawFileUri = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
 
     // Transparently decrypt zero-knowledge vault files
-    const isEncrypted = await vaultService.isEncryptedFile(finalUri).catch(() => false);
+    const isEncrypted = await vaultService.isEncryptedFile(rawFileUri).catch(() => false);
     if (isEncrypted) {
       setDownloadStatusText('Decrypting zero-knowledge vault file...');
       const decryptedPath = getRestoredCachePath(`dec_${item.fileName}`, item.uploadedAt || 1);
-      await vaultService.decryptFile(finalUri, decryptedPath);
+      await vaultService.decryptFile(rawFileUri, decryptedPath);
+      cacheResolvedUri(item.uri, decryptedPath);
       return decryptedPath;
     }
 
-    return finalUri;
-  };
+    const ensuredUri = await ensureFileSchemeUri(rawFileUri, item.fileName);
+    cacheResolvedUri(item.uri, ensuredUri);
+    return ensuredUri;
+  }, [config?.targetChatId, cacheResolvedUri]);
 
   const handleDownloadToDevice = async (item: CloudItem) => {
     if (downloadingItemUri) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setDownloadingItemUri(item.uri);
     setDownloadProgress(0);
-    setDownloadStatusText('Connecting to Telegram cloud...');
+    setDownloadStatusText('Preparing file...');
 
     try {
       const localUri = await downloadCloudItemToLocal(item);
 
-      // Save to MediaLibrary if image or video
+      // Save directly into MediaLibrary gallery if image or video
       if (item.category === 'image' || item.category === 'video') {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
+        const { status } = await MediaLibrary.requestPermissionsAsync(true);
         if (status === MediaLibrary.PermissionStatus.GRANTED) {
-          await MediaLibrary.createAssetAsync(localUri);
+          await MediaLibrary.saveToLibraryAsync(localUri);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           Alert.alert(
-            'Saved to Device Gallery! 🎉',
-            `"${item.fileName}" has been downloaded and saved directly into your device Photos/Gallery.`
+            'Saved to Gallery',
+            `"${item.fileName}" has been saved to your device Photos & Gallery.`
           );
         } else {
-          await Sharing.shareAsync(localUri);
+          await Sharing.shareAsync(localUri, {
+            mimeType: getMimeTypeFromFileName(item.fileName),
+            dialogTitle: `Save ${item.fileName}`,
+          });
         }
       } else {
-        await Sharing.shareAsync(localUri);
-      }
-
-      // Mark locally exists in state and link the resolved local disk path
-      setItems((prev) =>
-        prev.map((it) => (it.uri === item.uri ? { ...it, uri: localUri, existsLocally: true } : it))
-      );
-      if (selectedItem?.uri === item.uri) {
-        setSelectedItem((prev) => (prev ? { ...prev, uri: localUri, existsLocally: true } : null));
-      }
-      if (mediaPlayerItem?.uri === item.uri) {
-        setMediaPlayerItem((prev) => (prev ? { ...prev, uri: localUri, existsLocally: true } : null));
+        await Sharing.shareAsync(localUri, {
+          mimeType: getMimeTypeFromFileName(item.fileName),
+          dialogTitle: `Save ${item.fileName}`,
+        });
       }
     } catch (err: any) {
-      Alert.alert('Download Failed', err?.message || 'Could not download file from Telegram.');
+      Alert.alert('Save Failed', err?.message || 'Could not save file to device.');
     } finally {
       setDownloadingItemUri(null);
       setDownloadProgress(0);
@@ -572,6 +643,7 @@ export default function CloudExplorerScreen() {
   };
 
   const handleShareFile = async (item: CloudItem) => {
+    if (isSharing || downloadingItemUri) return;
     setIsSharing(true);
     setDownloadingItemUri(item.uri);
     setDownloadProgress(0);
@@ -584,12 +656,11 @@ export default function CloudExplorerScreen() {
         return;
       }
 
-      let shareUri = item.uri;
-      if (!item.existsLocally) {
-        shareUri = await downloadCloudItemToLocal(item);
-      }
-
-      await Sharing.shareAsync(shareUri);
+      const shareUri = await downloadCloudItemToLocal(item);
+      await Sharing.shareAsync(shareUri, {
+        mimeType: getMimeTypeFromFileName(item.fileName),
+        dialogTitle: `Share ${item.fileName}`,
+      });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (err: any) {
       Alert.alert('Share Error', err?.message || 'Failed to share file.');
@@ -600,6 +671,11 @@ export default function CloudExplorerScreen() {
       setDownloadStatusText('');
     }
   };
+
+  const handleLoadPreviewForModal = useCallback(async (previewItem: MediaPreviewItem): Promise<string | null> => {
+    const matched = items.find((it) => it.uri === previewItem.uri) || (previewItem as CloudItem);
+    return await downloadCloudItemToLocal(matched);
+  }, [items, downloadCloudItemToLocal]);
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -979,7 +1055,10 @@ export default function CloudExplorerScreen() {
           data={filteredAndSortedItems}
           keyExtractor={(item) => item.uri}
           numColumns={viewMode === 'grid' ? GRID_COLUMNS : 1}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: Math.max(insets.bottom, 20) + (isSelectMode ? 96 : 16) },
+          ]}
           renderItem={viewMode === 'grid' ? renderGridItem : renderListItem}
           refreshControl={
             <RefreshControl
@@ -1000,6 +1079,11 @@ export default function CloudExplorerScreen() {
           onRequestClose={() => setSelectedItem(null)}
         >
           <View style={styles.modalBackdrop}>
+            <TouchableOpacity
+              style={StyleSheet.absoluteFill}
+              activeOpacity={1}
+              onPress={() => setSelectedItem(null)}
+            />
             <View style={[styles.modalCard, { backgroundColor: cardBg }]}>
               {/* Modal Header */}
               <View style={[styles.modalHeader, { borderBottomColor: border }]}>
@@ -1014,119 +1098,151 @@ export default function CloudExplorerScreen() {
                 <TouchableOpacity
                   style={[styles.modalCloseBtn, { borderColor: border }]}
                   onPress={() => setSelectedItem(null)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   <FontAwesome name="times" size={16} color={subtextColor} />
                 </TouchableOpacity>
               </View>
 
-              {/* Preview Box */}
-              {selectedItem.category === 'image' && selectedItem.existsLocally ? (
-                <View style={styles.lightboxImageWrap}>
-                  <Image
-                    source={{ uri: selectedItem.uri }}
-                    style={styles.lightboxImage}
-                    resizeMode="contain"
-                  />
-                </View>
-              ) : (
-                <View style={[styles.lightboxPlaceholder, { backgroundColor: isDark ? '#0F172A' : '#F1F5F9' }]}>
-                  <FontAwesome
-                    name={getCategoryIcon(selectedItem.category) as any}
-                    size={48}
-                    color="#208AEF"
-                  />
-                  <Text style={[styles.lightboxPlaceholderText, { color: subtextColor }]}>
-                    {selectedItem.existsLocally ? 'Ready on Device' : 'Preserved in Telegram Cloud'}
-                  </Text>
-                </View>
-              )}
-
-              {/* Missing Warning Banner */}
-              {selectedItem.cloudStatus === 'missing' && (
-                <View style={styles.missingBanner}>
-                  <FontAwesome name="exclamation-triangle" size={16} color="#EF4444" />
-                  <Text style={styles.missingBannerText}>
-                    This file was deleted in Telegram. Its cloud copy is no longer reachable.
-                    {selectedItem.existsLocally
-                      ? ' Since you still have a local copy, tap "Re-upload to Cloud" to restore it.'
-                      : ' Tap "Remove from List" to clean this entry.'}
-                  </Text>
-                </View>
-              )}
-
-              {/* Metadata Cards */}
-              <View style={[styles.metadataCard, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC', borderColor: border }]}>
-                <View style={styles.metaRowBetween}>
-                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Telegram Destination</Text>
-                  <Text style={[styles.metaVal, { color: textColor }]}>
-                    {config?.targetChatTitle || 'Saved Messages'}
-                  </Text>
-                </View>
-                <View style={[styles.metaDivider, { backgroundColor: border }]} />
-                <View style={styles.metaRowBetween}>
-                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Cloud Message ID</Text>
-                  <Text style={[styles.metaVal, { color: '#208AEF' }]}>
-                    #{selectedItem.telegramMessageId || 'Confirmed'}
-                  </Text>
-                </View>
-                <View style={[styles.metaDivider, { backgroundColor: border }]} />
-                <View style={styles.metaRowBetween}>
-                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Uploaded Date</Text>
-                  <Text style={[styles.metaVal, { color: textColor }]}>
-                    {new Date(selectedItem.uploadedAt).toLocaleString()}
-                  </Text>
-                </View>
-                <View style={[styles.metaDivider, { backgroundColor: border }]} />
-                <View style={styles.metaRowBetween}>
-                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Local Device Copy</Text>
-                  <View style={styles.localCopyPill}>
-                    <FontAwesome
-                      name={selectedItem.existsLocally ? 'check-circle' : 'cloud'}
-                      size={11}
-                      color={selectedItem.existsLocally ? '#10B981' : '#6366F1'}
-                    />
-                    <Text
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+                style={styles.modalScrollBody}
+              >
+                {/* Preview Box — tap to open full-screen View */}
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    const it = selectedItem;
+                    setSelectedItem(null);
+                    setMediaPlayerItem(it);
+                  }}
+                >
+                  {selectedItem.category === 'image' &&
+                  (selectedItem.cachedLocalUri ||
+                    (selectedItem.existsLocally && !selectedItem.uri.startsWith('tg://'))) ? (
+                    <View style={styles.lightboxImageWrap}>
+                      <Image
+                        source={{ uri: selectedItem.cachedLocalUri || selectedItem.uri }}
+                        style={styles.lightboxImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                  ) : (
+                    <View
                       style={[
-                        styles.localCopyText,
-                        { color: selectedItem.existsLocally ? '#10B981' : '#6366F1' },
+                        styles.lightboxPlaceholder,
+                        { backgroundColor: isDark ? '#0F172A' : '#F1F5F9' },
                       ]}
                     >
-                      {selectedItem.existsLocally ? 'Stored on Phone' : 'Freed from Phone (Cloud-only)'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={[styles.metaDivider, { backgroundColor: border }]} />
-                <View style={styles.metaRowBetween}>
-                  <Text style={[styles.metaLabel, { color: subtextColor }]}>Cloud Status</Text>
-                  <View style={styles.localCopyPill}>
-                    <FontAwesome
-                      name={selectedItem.cloudStatus === 'missing' ? 'exclamation-circle' : 'check-circle'}
-                      size={11}
-                      color={selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981'}
-                    />
-                    <Text
-                      style={[
-                        styles.localCopyText,
-                        { color: selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981' },
-                      ]}
-                    >
-                      {selectedItem.cloudStatus === 'missing' ? 'Deleted from Telegram' : 'Active in Telegram'}
-                    </Text>
-                  </View>
-                </View>
-              </View>
+                      <FontAwesome
+                        name={getCategoryIcon(selectedItem.category) as any}
+                        size={44}
+                        color="#208AEF"
+                      />
+                      <Text style={[styles.lightboxPlaceholderText, { color: subtextColor }]}>
+                        {selectedItem.existsLocally
+                          ? 'Ready on Device • Tap to View'
+                          : 'Preserved in Telegram Cloud • Tap to View'}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
 
-              {/* Action Buttons */}
-              <View style={styles.modalActionRow}>
-                {selectedItem.cloudStatus === 'missing' ? (
-                  <>
+                {/* Missing Warning Banner */}
+                {selectedItem.cloudStatus === 'missing' && (
+                  <View style={styles.missingBanner}>
+                    <FontAwesome name="exclamation-triangle" size={16} color="#EF4444" />
+                    <Text style={styles.missingBannerText}>
+                      This file was deleted in Telegram. Its cloud copy is no longer reachable.
+                      {selectedItem.existsLocally
+                        ? ' Since you still have a local copy, tap "Re-upload to Cloud" to restore it.'
+                        : ' Tap "Remove from List" to clean this entry.'}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Metadata Card */}
+                <View
+                  style={[
+                    styles.metadataCard,
+                    { backgroundColor: isDark ? '#0F172A' : '#F8FAFC', borderColor: border },
+                  ]}
+                >
+                  <View style={styles.metaRowBetween}>
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Telegram Destination</Text>
+                    <Text style={[styles.metaVal, { color: textColor }]} numberOfLines={1}>
+                      {config?.targetChatTitle || 'Saved Messages'}
+                    </Text>
+                  </View>
+                  <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                  <View style={styles.metaRowBetween}>
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Cloud Message ID</Text>
+                    <Text style={[styles.metaVal, { color: '#208AEF' }]} numberOfLines={1}>
+                      #{selectedItem.telegramMessageId || 'Confirmed'}
+                    </Text>
+                  </View>
+                  <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                  <View style={styles.metaRowBetween}>
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Uploaded Date</Text>
+                    <Text style={[styles.metaVal, { color: textColor }]} numberOfLines={1}>
+                      {new Date(selectedItem.uploadedAt).toLocaleString()}
+                    </Text>
+                  </View>
+                  <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                  <View style={styles.metaRowBetween}>
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Local Device Copy</Text>
+                    <View style={styles.localCopyPill}>
+                      <FontAwesome
+                        name={selectedItem.existsLocally ? 'check-circle' : 'cloud'}
+                        size={11}
+                        color={selectedItem.existsLocally ? '#10B981' : '#6366F1'}
+                      />
+                      <Text
+                        style={[
+                          styles.localCopyText,
+                          { color: selectedItem.existsLocally ? '#10B981' : '#6366F1' },
+                        ]}
+                      >
+                        {selectedItem.existsLocally ? 'Stored on Phone' : 'Cloud-only'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                  <View style={styles.metaRowBetween}>
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Cloud Status</Text>
+                    <View style={styles.localCopyPill}>
+                      <FontAwesome
+                        name={selectedItem.cloudStatus === 'missing' ? 'exclamation-circle' : 'check-circle'}
+                        size={11}
+                        color={selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981'}
+                      />
+                      <Text
+                        style={[
+                          styles.localCopyText,
+                          { color: selectedItem.cloudStatus === 'missing' ? '#EF4444' : '#10B981' },
+                        ]}
+                      >
+                        {selectedItem.cloudStatus === 'missing' ? 'Deleted from Telegram' : 'Active in Telegram'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </ScrollView>
+
+              {/* Spacious 2-Row Action Footer */}
+              {selectedItem.cloudStatus === 'missing' ? (
+                <View style={styles.modalActionContainer}>
+                  <View style={styles.modalActionRow}>
                     {selectedItem.existsLocally ? (
                       <TouchableOpacity
                         style={[styles.primaryActionBtn, { backgroundColor: '#208AEF' }]}
                         onPress={() => handleReuploadMissing(selectedItem)}
                       >
                         <FontAwesome name="cloud-upload" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                        <Text style={styles.primaryActionBtnText}>Re-upload to Cloud</Text>
+                        <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                          Re-upload to Cloud
+                        </Text>
                       </TouchableOpacity>
                     ) : (
                       <TouchableOpacity
@@ -1134,12 +1250,24 @@ export default function CloudExplorerScreen() {
                         onPress={() => handleRemoveStaleRecord(selectedItem)}
                       >
                         <FontAwesome name="trash" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
-                        <Text style={styles.primaryActionBtnText}>Remove from List</Text>
+                        <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                          Remove from List
+                        </Text>
                       </TouchableOpacity>
                     )}
-                  </>
-                ) : (
-                  <>
+                    <TouchableOpacity
+                      style={[styles.secondaryActionBtn, { borderColor: border }]}
+                      onPress={() => setSelectedItem(null)}
+                    >
+                      <Text style={[styles.secondaryActionBtnText, { color: textColor }]} numberOfLines={1}>
+                        Close
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.modalActionContainer}>
+                  <View style={styles.modalActionRow}>
                     <TouchableOpacity
                       style={[
                         styles.primaryActionBtn,
@@ -1148,21 +1276,29 @@ export default function CloudExplorerScreen() {
                       onPress={() => handleDownloadToDevice(selectedItem)}
                       disabled={downloadingItemUri !== null}
                     >
-                      {downloadingItemUri === selectedItem.uri ? (
+                      {downloadingItemUri === selectedItem.uri && !isSharing ? (
                         <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
                       ) : (
                         <FontAwesome
-                          name={selectedItem.existsLocally ? 'check-circle' : 'download'}
+                          name={
+                            selectedItem.category === 'image' || selectedItem.category === 'video'
+                              ? 'photo'
+                              : selectedItem.existsLocally
+                              ? 'folder-open'
+                              : 'download'
+                          }
                           size={14}
                           color="#FFFFFF"
-                          style={{ marginRight: 6 }}
+                          style={{ marginRight: 7 }}
                         />
                       )}
-                      <Text style={styles.primaryActionBtnText}>
-                        {downloadingItemUri === selectedItem.uri
+                      <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                        {downloadingItemUri === selectedItem.uri && !isSharing
                           ? `${Math.round(downloadProgress * 100)}%`
-                          : selectedItem.existsLocally
+                          : selectedItem.category === 'image' || selectedItem.category === 'video'
                           ? 'Save to Gallery'
+                          : selectedItem.existsLocally
+                          ? 'Save File'
                           : 'Download'}
                       </Text>
                     </TouchableOpacity>
@@ -1170,49 +1306,65 @@ export default function CloudExplorerScreen() {
                     <TouchableOpacity
                       style={[
                         styles.primaryActionBtn,
-                        { backgroundColor: '#208AEF', opacity: isSharing ? 0.6 : 1 },
+                        { backgroundColor: '#208AEF', opacity: isSharing || downloadingItemUri !== null ? 0.6 : 1 },
                       ]}
                       onPress={() => handleShareFile(selectedItem)}
                       disabled={isSharing || downloadingItemUri !== null}
                     >
-                      <FontAwesome name="share" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.primaryActionBtnText}>Share</Text>
+                      {isSharing && downloadingItemUri === selectedItem.uri ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
+                      ) : (
+                        <FontAwesome name="share" size={14} color="#FFFFFF" style={{ marginRight: 7 }} />
+                      )}
+                      <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                        Share
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.modalActionRow}>
+                    <TouchableOpacity
+                      style={[styles.primaryActionBtn, { backgroundColor: '#6366F1' }]}
+                      onPress={() => {
+                        const it = selectedItem;
+                        setSelectedItem(null);
+                        setMediaPlayerItem(it);
+                      }}
+                    >
+                      <FontAwesome
+                        name={
+                          selectedItem.category === 'video' || selectedItem.category === 'audio'
+                            ? 'play'
+                            : 'eye'
+                        }
+                        size={14}
+                        color="#FFFFFF"
+                        style={{ marginRight: 7 }}
+                      />
+                      <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                        View
+                      </Text>
                     </TouchableOpacity>
 
-                    {(selectedItem.category === 'image' || selectedItem.category === 'video' || selectedItem.category === 'audio') && (
-                      <TouchableOpacity
-                        style={[styles.primaryActionBtn, { backgroundColor: '#6366F1' }]}
-                        onPress={() => {
-                          const it = selectedItem;
-                          setSelectedItem(null);
-                          setMediaPlayerItem(it);
-                        }}
-                      >
-                        <FontAwesome name="play" size={12} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.primaryActionBtnText}>View</Text>
-                      </TouchableOpacity>
-                    )}
-
                     <TouchableOpacity
-                      style={[styles.dangerActionBtn, { opacity: isDeletingCloud ? 0.6 : 1 }]}
+                      style={[styles.dangerGridBtn, { opacity: isDeletingCloud ? 0.6 : 1 }]}
                       onPress={() => handleDeleteFromCloud(selectedItem)}
                       disabled={isDeletingCloud}
                     >
                       {isDeletingCloud ? (
                         <ActivityIndicator size="small" color="#EF4444" />
                       ) : (
-                        <FontAwesome name="trash-o" size={14} color="#EF4444" />
+                        <>
+                          <FontAwesome name="trash-o" size={14} color="#EF4444" style={{ marginRight: 7 }} />
+                          <Text style={styles.dangerGridBtnText} numberOfLines={1}>
+                            Delete
+                          </Text>
+                        </>
                       )}
                     </TouchableOpacity>
-                  </>
-                )}
-                <TouchableOpacity
-                  style={[styles.secondaryActionBtn, { borderColor: border }]}
-                  onPress={() => setSelectedItem(null)}
-                >
-                  <Text style={[styles.secondaryActionBtnText, { color: textColor }]}>Close</Text>
-                </TouchableOpacity>
-              </View>
+                  </View>
+                </View>
+              )}
             </View>
           </View>
         </Modal>
@@ -1225,6 +1377,8 @@ export default function CloudExplorerScreen() {
         onClose={() => setMediaPlayerItem(null)}
         onShare={(item) => handleShareFile(item as CloudItem)}
         onDownload={(item) => handleDownloadToDevice(item as CloudItem)}
+        onLoadPreview={handleLoadPreviewForModal}
+        onOpenExternal={(item) => handleShareFile(item as CloudItem)}
         isDownloading={downloadingItemUri !== null}
         downloadProgress={downloadProgress}
         downloadStatusText={downloadStatusText}
@@ -1232,14 +1386,25 @@ export default function CloudExplorerScreen() {
 
       {/* Floating Bulk Action Bar */}
       {isSelectMode && selectedUris.size > 0 && (
-        <View style={[styles.bulkActionBar, { backgroundColor: cardBg, borderColor: border }]}>
+        <View
+          style={[
+            styles.bulkActionBar,
+            {
+              backgroundColor: cardBg,
+              borderColor: border,
+              bottom: Math.max(insets.bottom, 16) + 12,
+            },
+          ]}
+        >
           <TouchableOpacity
             style={styles.bulkActionBtn}
             onPress={handleBulkDownload}
             disabled={isBulkOperating}
           >
             <FontAwesome name="download" size={16} color="#208AEF" />
-            <Text style={[styles.bulkActionText, { color: '#208AEF' }]}>Download ({selectedUris.size})</Text>
+            <Text style={[styles.bulkActionText, { color: '#208AEF' }]} numberOfLines={1}>
+              Download ({selectedUris.size})
+            </Text>
           </TouchableOpacity>
 
           <View style={[styles.bulkDivider, { backgroundColor: border }]} />
@@ -1250,7 +1415,9 @@ export default function CloudExplorerScreen() {
             disabled={isBulkOperating}
           >
             <FontAwesome name="share" size={16} color="#208AEF" />
-            <Text style={[styles.bulkActionText, { color: '#208AEF' }]}>Share</Text>
+            <Text style={[styles.bulkActionText, { color: '#208AEF' }]} numberOfLines={1}>
+              Share
+            </Text>
           </TouchableOpacity>
 
           <View style={[styles.bulkDivider, { backgroundColor: border }]} />
@@ -1261,7 +1428,9 @@ export default function CloudExplorerScreen() {
             disabled={isBulkOperating}
           >
             <FontAwesome name="trash" size={16} color="#EF4444" />
-            <Text style={[styles.bulkActionText, { color: '#EF4444' }]}>Delete</Text>
+            <Text style={[styles.bulkActionText, { color: '#EF4444' }]} numberOfLines={1}>
+              Delete
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -1536,7 +1705,10 @@ const styles = StyleSheet.create({
   modalCard: {
     borderRadius: 20,
     padding: 16,
-    maxHeight: '85%',
+    maxHeight: '88%',
+  },
+  modalScrollBody: {
+    flexShrink: 1,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1558,9 +1730,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   modalCloseBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1579,7 +1751,7 @@ const styles = StyleSheet.create({
   },
   lightboxPlaceholder: {
     width: '100%',
-    height: 160,
+    height: 150,
     marginVertical: 12,
     borderRadius: 12,
     alignItems: 'center',
@@ -1594,13 +1766,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     padding: 12,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   metaRowBetween: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 4,
+    paddingVertical: 5,
   },
   metaDivider: {
     height: 1,
@@ -1612,6 +1784,9 @@ const styles = StyleSheet.create({
   metaVal: {
     fontSize: 12,
     fontWeight: '600',
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 12,
   },
   localCopyPill: {
     flexDirection: 'row',
@@ -1622,45 +1797,60 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
+  modalActionContainer: {
+    gap: 10,
+    paddingTop: 4,
+  },
   modalActionRow: {
     flexDirection: 'row',
     gap: 10,
   },
   primaryActionBtn: {
     flex: 1,
+    minHeight: 46,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#208AEF',
+    paddingHorizontal: 12,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
   },
   primaryActionBtnText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
   secondaryActionBtn: {
+    minHeight: 46,
     paddingHorizontal: 20,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   secondaryActionBtnText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
-  dangerActionBtn: {
-    paddingHorizontal: 16,
+  dangerGridBtn: {
+    flex: 1,
+    minHeight: 46,
+    flexDirection: 'row',
+    paddingHorizontal: 12,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#FCA5A5',
+    borderColor: 'rgba(239, 68, 68, 0.45)',
     backgroundColor: 'rgba(239, 68, 68, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  dangerGridBtnText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: '700',
   },
   missingBanner: {
     flexDirection: 'row',

@@ -5,6 +5,7 @@ import * as Battery from 'expo-battery';
 import { tdLibClient } from '../tdlib/client';
 import { uploadManager } from '../upload/manager';
 import { scanForNewFiles } from '../scanner/files';
+import { scheduleCloudProfilePush } from '../storage/cloudProfileSync';
 import {
   getConfig,
   getSchedulerState,
@@ -316,6 +317,7 @@ class SchedulerEngine {
             fileName: file.fileName,
             size: file.size,
             mimeType: file.mimeType,
+            mediaAssetId: file.mediaAssetId,
           }))
         );
         queuedCount = queuedResult.added.length;
@@ -389,6 +391,10 @@ class SchedulerEngine {
           'Backup Completed',
           `Successfully backed up ${uploadedCount} file${uploadedCount === 1 ? '' : 's'} to Telegram.`
         );
+      }
+
+      if (uploadedCount > 0) {
+        scheduleCloudProfilePush();
       }
 
       return {

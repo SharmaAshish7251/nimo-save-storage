@@ -9,6 +9,7 @@ import {
   FlatList,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ScannedFile,
   MediaAlbum,
@@ -42,6 +43,7 @@ export function FolderBrowserModal({
   onWatchedFoldersUpdated,
   onScanFoldersRequested,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [step, setStep] = useState<'pick_folder' | 'select_files'>('pick_folder');
   const [loading, setLoading] = useState(false);
   const [folderName, setFolderName] = useState('');
@@ -303,6 +305,7 @@ export function FolderBrowserModal({
                 ]}
                 keyExtractor={(item) => `${item.type}_${item.id}`}
                 style={styles.albumsList}
+                contentContainerStyle={{ paddingBottom: 16 }}
                 renderItem={({ item }) => {
                   const isChecked = selectedFolderIds.has(item.id);
                   return (
@@ -339,11 +342,25 @@ export function FolderBrowserModal({
                           <FontAwesome name={item.isSaf ? "folder-open" : "folder"} size={18} color="#F59E0B" />
                         </View>
                         <View style={styles.albumInfo}>
-                          <Text style={styles.albumTitle} numberOfLines={1}>
-                            {item.title}
-                          </Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={styles.albumTitle} numberOfLines={1}>
+                              {item.title}
+                            </Text>
+                            {(item as any).needsPermission && (
+                              <TouchableOpacity
+                                style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 6 }}
+                                onPress={handleSelectSAFDirectory}
+                              >
+                                <Text style={{ fontSize: 10, color: '#D97706', fontWeight: '700' }}>Re-authorize</Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
                           <Text style={styles.albumCount}>
-                            {item.assetCount ? `${item.assetCount} items` : 'Custom folder'}
+                            {(item as any).needsPermission
+                              ? 'Re-authorization required after reinstall'
+                              : item.assetCount
+                              ? `${item.assetCount} items`
+                              : 'Custom folder'}
                           </Text>
                         </View>
                         {item.type === 'album' && (
@@ -359,7 +376,12 @@ export function FolderBrowserModal({
               />
 
               {/* Bottom Actions for Multi-Folder Selection */}
-              <View style={styles.folderBottomActions}>
+              <View
+                style={[
+                  styles.folderBottomActions,
+                  { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+                ]}
+              >
                 <TouchableOpacity
                   style={[
                     styles.primaryFolderBtn,
@@ -370,7 +392,9 @@ export function FolderBrowserModal({
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                     <FontAwesome name="bolt" size={14} color="#FFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.primaryFolderBtnText}>Scan Selected Folders ({selectedFoldersCount})</Text>
+                    <Text style={styles.primaryFolderBtnText} numberOfLines={1}>
+                      Scan Selected Folders ({selectedFoldersCount})
+                    </Text>
                   </View>
                 </TouchableOpacity>
 
@@ -380,7 +404,9 @@ export function FolderBrowserModal({
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                     <FontAwesome name="floppy-o" size={14} color="#208AEF" style={{ marginRight: 6 }} />
-                    <Text style={styles.secondaryFolderBtnText}>Save Folders Only ({selectedFoldersCount})</Text>
+                    <Text style={styles.secondaryFolderBtnText} numberOfLines={1}>
+                      Save Folders Only ({selectedFoldersCount})
+                    </Text>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -480,6 +506,7 @@ export function FolderBrowserModal({
                 data={filteredFiles}
                 keyExtractor={(item) => item.uri}
                 style={styles.filesList}
+                contentContainerStyle={{ paddingBottom: 16 }}
                 renderItem={({ item }) => {
                   const isSelected = selectedUris.has(item.uri);
                   const category = getFileCategory(item.fileName, item.mimeType);
@@ -525,7 +552,12 @@ export function FolderBrowserModal({
               />
 
               {/* Bottom Actions */}
-              <View style={styles.bottomBar}>
+              <View
+                style={[
+                  styles.bottomBar,
+                  { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+                ]}
+              >
                 <View style={styles.selectionSummary}>
                   <Text style={styles.summaryCount}>
                     {selectedFiles.length} files selected
@@ -542,7 +574,7 @@ export function FolderBrowserModal({
                   >
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                       <FontAwesome name="plus" size={13} color="#208AEF" style={{ marginRight: 6 }} />
-                      <Text style={styles.queueBtnText}>Add to Queue</Text>
+                      <Text style={styles.queueBtnText} numberOfLines={1}>Add to Queue</Text>
                     </View>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -552,7 +584,7 @@ export function FolderBrowserModal({
                   >
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                       <FontAwesome name="rocket" size={13} color="#FFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.uploadNowBtnText}>Upload Now</Text>
+                      <Text style={styles.uploadNowBtnText} numberOfLines={1}>Upload Now</Text>
                     </View>
                   </TouchableOpacity>
                 </View>

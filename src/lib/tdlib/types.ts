@@ -6,6 +6,7 @@ export type TdAuthState =
   | 'authorizationStateWaitCode'
   | 'authorizationStateWaitRegistration'
   | 'authorizationStateWaitPassword'
+  | 'authorizationStateWaitOtherDeviceConfirmation'
   | 'authorizationStateReady'
   | 'authorizationStateLoggingOut'
   | 'authorizationStateClosing'
@@ -75,5 +76,9 @@ export interface TelegramDestination {
   title: string;
   type: 'saved' | 'channel' | 'group' | 'chat';
   username?: string;
+  isCreator?: boolean;
+  isAdmin?: boolean;
+  canPost?: boolean;
+  memberRole?: 'owner' | 'admin' | 'member';
 }
 

@@ -6,9 +6,11 @@ export interface WatchedFolder {
   title: string;
   type: 'album' | 'saf';
   assetCount?: number;
+  needsPermission?: boolean;
 }
 
 export type ScheduleMode = 'interval' | 'window' | 'continuous';
+export type DuplicatePolicy = 'skip_if_cloud_match' | 'replace_cloud' | 'keep_both';
 
 export interface AppConfig {
   watchFolders: string[]; // folder paths/URIs
@@ -46,6 +48,8 @@ export interface AppConfig {
   documentChannelTitle?: string;
   // Zero-knowledge encrypted vault
   vaultEnabled?: boolean;
+  // Duplicate conflict policy when uploading
+  duplicatePolicy?: DuplicatePolicy;
 }
 
 export interface SchedulerState {
@@ -91,7 +95,18 @@ const DEFAULT_CONFIG: AppConfig = {
   syncOnPlug: false,
   multiChannelRouting: false,
   vaultEnabled: false,
+  duplicatePolicy: 'skip_if_cloud_match',
 };
+
+type ConfigSavedListener = (updated: AppConfig) => void;
+const configSavedListeners = new Set<ConfigSavedListener>();
+
+export function onConfigSaved(listener: ConfigSavedListener): () => void {
+  configSavedListeners.add(listener);
+  return () => {
+    configSavedListeners.delete(listener);
+  };
+}
 
 export async function getConfig(): Promise<AppConfig> {
   try {
@@ -103,10 +118,20 @@ export async function getConfig(): Promise<AppConfig> {
   }
 }
 
-export async function saveConfig(config: Partial<AppConfig>): Promise<AppConfig> {
+export async function saveConfig(
+  config: Partial<AppConfig>,
+  options: { skipSync?: boolean } = {}
+): Promise<AppConfig> {
   const current = await getConfig();
   const updated = { ...current, ...config };
   await AsyncStorage.setItem(CONFIG_KEY, JSON.stringify(updated));
+  if (!options.skipSync) {
+    configSavedListeners.forEach((cb) => {
+      try {
+        cb(updated);
+      } catch {}
+    });
+  }
   return updated;
 }
 
@@ -128,6 +153,8 @@ export interface QueueItem {
   fileName: string;
   size: number;
   mimeType?: string;
+  /** Optional MediaLibrary asset ID so Android MediaStore deleteAssetsAsync works reliably */
+  mediaAssetId?: string;
   status: 'pending' | 'uploading' | 'completed' | 'failed' | 'paused';
   progress: number;
   retries: number;
@@ -272,6 +299,8 @@ export interface UploadedRecord {
   hash?: string;
   uploadedAt: number;
   telegramMessageId?: number;
+  /** Optional MediaLibrary asset ID for reliable Android MediaStore deletion */
+  mediaAssetId?: string;
   /** Present only for files uploaded as multiple parts (>1.95 GB) */
   chunkManifest?: ChunkManifest;
   /** Cloud verification state */
@@ -331,7 +360,9 @@ export async function completeUploadAtomically(params: {
   uri: string;
   fileName: string;
   size: number;
+  hash?: string;
   telegramMessageId?: number;
+  mediaAssetId?: string;
   uploadedAt: number;
   uploadDurationMs: number;
   destination: string;
@@ -357,9 +388,13 @@ export async function completeUploadAtomically(params: {
     uri: params.uri,
     fileName: params.fileName,
     size: params.size,
+    ...(params.hash ? { hash: params.hash } : {}),
     uploadedAt: params.uploadedAt,
     telegramMessageId: params.telegramMessageId,
+    ...(params.mediaAssetId ? { mediaAssetId: params.mediaAssetId } : {}),
     ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
+    cloudStatus: 'synced',
+    lastVerifiedAt: Date.now(),
   });
 
   const newHistoryItem: ActionHistoryItem = {

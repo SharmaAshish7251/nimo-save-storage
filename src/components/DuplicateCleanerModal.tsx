@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   useColorScheme,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import { formatFileSize } from '@/lib/storage/queue';
@@ -33,6 +33,7 @@ export function DuplicateCleanerModal({
   onClose,
   onClean,
 }: DuplicateCleanerModalProps) {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -157,7 +158,16 @@ export function DuplicateCleanerModal({
             </ScrollView>
 
             {/* Footer Action Bar */}
-            <View style={[styles.footer, { backgroundColor: cardBg, borderTopColor: border }]}>
+            <View
+              style={[
+                styles.footer,
+                {
+                  backgroundColor: cardBg,
+                  borderTopColor: border,
+                  paddingBottom: Math.max(insets.bottom, 16) + 8,
+                },
+              ]}
+            >
               <TouchableOpacity
                 style={[styles.cleanBtn, isCleaning && styles.cleanBtnDisabled]}
                 onPress={handleClean}
@@ -168,7 +178,7 @@ export function DuplicateCleanerModal({
                 ) : (
                   <>
                     <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.cleanBtnText}>
+                    <Text style={styles.cleanBtnText} numberOfLines={1}>
                       Clean Duplicates (Free {formatFileSize(totalWastedBytes)})
                     </Text>
                   </>

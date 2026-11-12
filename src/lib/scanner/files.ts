@@ -3,9 +3,9 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { getUploadedIndex, getWatchedFolders, getQueue, getConfig, WatchedFolder } from '../storage/queue';
-import { getFileInfo } from '../storage/fileHelper';
+import { getFileInfo, getFileCategory, resolveLocalFileTarget } from '../storage/fileHelper';
 
-export { getFileInfo };
+export { getFileInfo, getFileCategory };
 
 export interface ScannedFile {
   uri: string;
@@ -15,6 +15,7 @@ export interface ScannedFile {
   modificationTime?: number;
   source: 'media' | 'document';
   folderName?: string;
+  mediaAssetId?: string;
 }
 
 export interface ScanOptions {
@@ -45,57 +46,6 @@ export async function requestMediaPermissions(): Promise<boolean> {
   }
 }
 
-export function getFileCategory(
-  fileName: string,
-  mimeType?: string
-): 'image' | 'video' | 'audio' | 'document' | 'other' {
-  const ext = fileName.split('.').pop()?.toLowerCase() || '';
-  const mime = (mimeType || '').toLowerCase();
-
-  if (
-    mime.startsWith('image/') ||
-    ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp', 'svg'].includes(ext)
-  ) {
-    return 'image';
-  }
-  if (
-    mime.startsWith('video/') ||
-    ['mp4', 'mkv', 'mov', '3gp', 'avi', 'webm', 'ts'].includes(ext)
-  ) {
-    return 'video';
-  }
-  if (
-    mime.startsWith('audio/') ||
-    ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus'].includes(ext)
-  ) {
-    return 'audio';
-  }
-  if (
-    mime.startsWith('application/pdf') ||
-    mime.startsWith('text/') ||
-    [
-      'pdf',
-      'doc',
-      'docx',
-      'xls',
-      'xlsx',
-      'ppt',
-      'pptx',
-      'txt',
-      'csv',
-      'zip',
-      'rar',
-      '7z',
-      'tar',
-      'gz',
-    ].includes(ext)
-  ) {
-    return 'document';
-  }
-
-  return 'other';
-}
-
 export async function pickSingleFile(): Promise<ScannedFile | null> {
   try {
     const result = await DocumentPicker.getDocumentAsync({
@@ -114,12 +64,31 @@ export async function pickSingleFile(): Promise<ScannedFile | null> {
       size = info.size;
     }
 
-    return {
+    const category = getFileCategory(asset.name, asset.mimeType);
+    const isMedia = category === 'image' || category === 'video' || category === 'audio';
+
+    // Resolve DocumentPicker content:// URIs into persistent local file:// URIs + MediaLibrary asset IDs
+    // so uploads survive restarts and Free Up Space can track/delete them properly.
+    const resolved = await resolveLocalFileTarget({
       uri: asset.uri,
       fileName: asset.name,
       size,
       mimeType: asset.mimeType,
-      source: 'document',
+      allowMediaMatch: true,
+      requestPermission: isMedia,
+    }).catch(() => null);
+
+    const finalUri =
+      resolved && resolved.exists && resolved.resolvedUri ? resolved.resolvedUri : asset.uri;
+    const finalSize = resolved && resolved.size > 0 ? resolved.size : size;
+
+    return {
+      uri: finalUri,
+      fileName: asset.name,
+      size: finalSize,
+      mimeType: asset.mimeType,
+      source: resolved?.mediaAssetId ? 'media' : 'document',
+      ...(resolved?.mediaAssetId ? { mediaAssetId: resolved.mediaAssetId } : {}),
     };
   } catch (error) {
     console.error('Error picking single file:', error);
@@ -183,6 +152,7 @@ export async function getFilesFromAlbum(
         modificationTime: asset.modificationTime || asset.creationTime,
         source: 'media',
         folderName: folderTitle,
+        mediaAssetId: asset.id,
       });
     }
 

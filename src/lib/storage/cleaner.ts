@@ -2,18 +2,31 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import {
   getUploadedIndex,
+  getQueue,
   recordActionHistory,
   updateUploadedRecord,
 } from './queue';
-import { getFileCategory } from '../scanner/files';
+import {
+  FileCategory,
+  getFileCategory,
+  resolveLocalFileTarget,
+  findMatchingMediaLibraryAsset,
+  extractMediaStoreAssetId,
+} from './fileHelper';
 import { verifyCloudRecord } from './cloudSync';
 
 export interface CleanableItem {
   uri: string;
+  /** Persistent file:// or ph:// URI when record.uri was a temporary content:// URI */
+  resolvedUri?: string;
+  /** MediaLibrary asset ID for reliable Android MediaStore deletion */
+  mediaAssetId?: string;
+  /** Whether Android/iOS permits programmatic deletion of this local copy */
+  canAutoDelete: boolean;
   fileName: string;
   size: number;
   uploadedAt: number;
-  category: 'image' | 'video' | 'audio' | 'document' | 'other';
+  category: FileCategory;
   telegramMessageId?: number;
 }
 
@@ -26,7 +39,13 @@ export interface CleanerAnalysis {
   candidates: CleanableItem[];
   totalBytes: number;
   totalCount: number;
-  categories: Record<'image' | 'video' | 'audio' | 'document' | 'other', CategorySummary>;
+  categories: Record<FileCategory, CategorySummary>;
+  /** Uploaded local content:// files whose deletion is restricted by Android Scoped Storage */
+  restrictedCandidates: CleanableItem[];
+  restrictedBytes: number;
+  restrictedCount: number;
+  /** Number of items still in queue that must finish uploading before appearing here */
+  pendingQueueCount: number;
 }
 
 export interface CleanResult {
@@ -42,9 +61,14 @@ export interface CleanResult {
  * consume physical space on the local device.
  */
 export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
-  const uploaded = await getUploadedIndex();
+  const [uploaded, queue] = await Promise.all([
+    getUploadedIndex(),
+    getQueue().catch(() => []),
+  ]);
 
-  const categories: Record<'image' | 'video' | 'audio' | 'document' | 'other', CategorySummary> = {
+  const pendingQueueCount = queue.filter((q) => q.status !== 'completed').length;
+
+  const categories: Record<FileCategory, CategorySummary> = {
     image: { count: 0, bytes: 0 },
     video: { count: 0, bytes: 0 },
     audio: { count: 0, bytes: 0 },
@@ -53,28 +77,48 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
   };
 
   const candidates: CleanableItem[] = [];
+  const restrictedCandidates: CleanableItem[] = [];
   let totalBytes = 0;
+  let restrictedBytes = 0;
 
   for (const record of uploaded) {
     try {
-      const info = await FileSystem.getInfoAsync(record.uri).catch(() => ({ exists: false }));
-      if (info.exists) {
-        const size = (info as any).size && (info as any).size > 0 ? (info as any).size : record.size || 0;
-        const category = getFileCategory(record.fileName);
+      const target = await resolveLocalFileTarget({
+        uri: record.uri,
+        fileName: record.fileName,
+        size: record.size,
+        mediaAssetId: record.mediaAssetId,
+        allowMediaMatch: true,
+        requestPermission: false,
+      });
 
-        const item: CleanableItem = {
-          uri: record.uri,
-          fileName: record.fileName,
-          size,
-          uploadedAt: record.uploadedAt,
-          category,
-          telegramMessageId: record.telegramMessageId,
-        };
+      if (!target.exists) continue;
 
+      const size = target.size > 0 ? target.size : record.size || 0;
+      const category = getFileCategory(record.fileName);
+
+      const item: CleanableItem = {
+        uri: record.uri,
+        ...(target.resolvedUri && target.resolvedUri !== record.uri
+          ? { resolvedUri: target.resolvedUri }
+          : {}),
+        ...(target.mediaAssetId ? { mediaAssetId: target.mediaAssetId } : {}),
+        canAutoDelete: target.canAutoDelete,
+        fileName: record.fileName,
+        size,
+        uploadedAt: record.uploadedAt,
+        category,
+        telegramMessageId: record.telegramMessageId,
+      };
+
+      if (target.canAutoDelete) {
         candidates.push(item);
         totalBytes += size;
         categories[category].count += 1;
         categories[category].bytes += size;
+      } else {
+        restrictedCandidates.push(item);
+        restrictedBytes += size;
       }
     } catch {
       // If unable to query local file, skip to be safe
@@ -86,6 +130,10 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
     totalBytes,
     totalCount: candidates.length,
     categories,
+    restrictedCandidates,
+    restrictedBytes,
+    restrictedCount: restrictedCandidates.length,
+    pendingQueueCount,
   };
 }
 
@@ -106,6 +154,23 @@ export async function executeCleanSpace(
   let blockedCount = 0;
 
   const uploaded = await getUploadedIndex();
+
+  const checkUriGone = async (
+    uriToVerify: string,
+    fileName: string,
+    size: number,
+    mediaAssetId?: string
+  ): Promise<boolean> => {
+    const check = await resolveLocalFileTarget({
+      uri: uriToVerify,
+      fileName,
+      size,
+      mediaAssetId,
+      allowMediaMatch: false,
+      requestPermission: false,
+    }).catch(() => ({ exists: true }));
+    return !check.exists;
+  };
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -129,21 +194,65 @@ export async function executeCleanSpace(
       }
     }
 
+    if (!item.canAutoDelete) {
+      failedCount += 1;
+      if (onProgress) onProgress(i + 1, items.length);
+      continue;
+    }
+
+    const targetUri = item.resolvedUri || item.uri;
+    const assetId =
+      item.mediaAssetId ||
+      extractMediaStoreAssetId(targetUri) ||
+      extractMediaStoreAssetId(item.uri) ||
+      (targetUri.startsWith('ph://') ? targetUri : undefined);
+
     try {
-      // Attempt 1: If it's a Media Library asset URI (ph:// or content://media)
-      if (item.uri.startsWith('ph://') || item.uri.includes('content://media')) {
+      // Attempt 1: Delete via MediaLibrary using valid asset ID (required for Android Scoped Storage media)
+      if (assetId) {
         try {
-          const res = await MediaLibrary.deleteAssetsAsync([item.uri]);
-          if (res) deleted = true;
+          const res = await MediaLibrary.deleteAssetsAsync([assetId]);
+          if (res) {
+            deleted = await checkUriGone(targetUri, item.fileName, item.size, assetId);
+          }
         } catch {
           // Fall back to FileSystem.deleteAsync
         }
       }
 
-      // Attempt 2: Direct FileSystem delete (works for SAF content:// and file://)
+      // Attempt 2: Direct FileSystem delete (works for SAF tree content:// and local file:// paths)
       if (!deleted) {
-        await FileSystem.deleteAsync(item.uri, { idempotent: true });
-        deleted = true;
+        try {
+          await FileSystem.deleteAsync(targetUri, { idempotent: false });
+          deleted = await checkUriGone(targetUri, item.fileName, item.size, assetId);
+        } catch {
+          deleted = false;
+        }
+      }
+
+      // Attempt 3: Lazy MediaLibrary asset lookup for legacy media records lacking mediaAssetId
+      if (
+        !deleted &&
+        !assetId &&
+        (item.category === 'image' || item.category === 'video' || item.category === 'audio')
+      ) {
+        try {
+          const matched = await findMatchingMediaLibraryAsset({
+            fileName: item.fileName,
+            size: item.size,
+            category: item.category,
+            contentUri: item.uri,
+            requestPermission: false,
+          });
+          if (matched) {
+            const res = await MediaLibrary.deleteAssetsAsync([matched.id]);
+            if (res) {
+              deleted = await checkUriGone(matched.uri, item.fileName, item.size, matched.id);
+            }
+          }
+        } catch {
+          // Unable to delete via MediaLibrary fallback
+        }
       }
 
       if (deleted) {

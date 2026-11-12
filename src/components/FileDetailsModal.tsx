@@ -37,6 +37,8 @@ interface Props {
   onDiscard?: (file: FileDetailData) => void;
   onRetry?: (file: FileDetailData) => void;
   onUploadNow?: (file: FileDetailData) => void;
+  onPause?: (file: FileDetailData) => void;
+  onResume?: (file: FileDetailData) => void;
 }
 
 export function FileDetailsModal({
@@ -46,6 +48,8 @@ export function FileDetailsModal({
   onDiscard,
   onRetry,
   onUploadNow,
+  onPause,
+  onResume,
 }: Props) {
   if (!file) return null;
 
@@ -66,6 +70,7 @@ export function FileDetailsModal({
       case 'completed':
       case 'uploaded': return '#4CAF50';
       case 'uploading': return '#FF9800';
+      case 'paused': return '#EAB308';
       case 'failed': return '#F44336';
       case 'pending': return '#208AEF';
       case 'dismissed': return '#888888';
@@ -254,6 +259,36 @@ export function FileDetailsModal({
                 <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                   <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 8 }} />
                   <Text style={styles.primaryBtnText}>Upload File</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
+            {!file.isHistory && (file.status === 'uploading' || file.status === 'pending') && onPause && (
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: '#D97706' }]}
+                onPress={() => {
+                  onClose();
+                  onPause(file);
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="pause" size={14} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.primaryBtnText}>Pause</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
+            {!file.isHistory && file.status === 'paused' && onResume && (
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: '#16A34A' }]}
+                onPress={() => {
+                  onClose();
+                  onResume(file);
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                  <FontAwesome name="play" size={14} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.primaryBtnText}>Resume</Text>
                 </View>
               </TouchableOpacity>
             )}
@@ -506,6 +541,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     padding: 14,
     gap: 8,
     borderTopWidth: 1,
@@ -514,10 +550,13 @@ const styles = StyleSheet.create({
   },
   primaryBtn: {
     flex: 1,
+    minWidth: 120,
     backgroundColor: '#7C3AED',
-    paddingVertical: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
     borderRadius: 8,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   primaryBtnText: {
     color: '#ffffff',

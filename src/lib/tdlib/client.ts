@@ -21,6 +21,10 @@ class TdLibClientService {
   private activeUploads: Map<number, (progress: TdUploadProgress) => void> = new Map();
   private myUserId: number | null = null;
   private hasWarnedMissing = false;
+  private authResetPromise: Promise<void> | null = null;
+  private latestQrLink: string | null = null;
+  private qrWaitCleanup: ((cancelled?: boolean) => void) | null = null;
+  private qrSessionGen = 0;
 
   constructor() {
     this.setupEventEmitter();
@@ -80,6 +84,13 @@ class TdLibClientService {
       const stateType = (stateObj?.['@type'] || stateObj) as TdAuthState;
       if (stateType) {
         this.currentAuthState = stateType;
+        if (stateType === 'authorizationStateWaitOtherDeviceConfirmation') {
+          if (typeof stateObj?.link === 'string' && stateObj.link.length > 0) {
+            this.latestQrLink = stateObj.link;
+          }
+        } else {
+          this.latestQrLink = null;
+        }
         if (stateType === 'authorizationStateClosed') {
           this.isInitialized = false;
         }
@@ -215,8 +226,149 @@ class TdLibClientService {
     };
   }
 
+  private async readRawAuthState(): Promise<TdAuthState | null> {
+    if (!this.isAvailable()) return null;
+    try {
+      const raw = await TdLib.getAuthorizationState();
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const state = (parsed?.['@type'] || parsed) as TdAuthState;
+      if (state) {
+        this.currentAuthState = state;
+        return state;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private waitForAuthState(targets: TdAuthState[], timeoutMs: number): Promise<TdAuthState | null> {
+    if (targets.includes(this.currentAuthState)) {
+      return Promise.resolve(this.currentAuthState);
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        unsub();
+        resolve(null);
+      }, timeoutMs);
+
+      const unsub = this.onAuthStateChange((state) => {
+        if (settled || !targets.includes(state)) return;
+        settled = true;
+        clearTimeout(timer);
+        unsub();
+        resolve(state);
+      });
+    });
+  }
+
+  private isPreAuthResetNeeded(state: TdAuthState): boolean {
+    return (
+      state === 'authorizationStateWaitOtherDeviceConfirmation' ||
+      state === 'authorizationStateLoggingOut' ||
+      state === 'authorizationStateClosing' ||
+      state === 'authorizationStateClosed' ||
+      state === 'authorizationStateWaitTdlibParameters' ||
+      state === 'unknown'
+    );
+  }
+
+  /**
+   * Cancels any active QR request/confirmation waiter (e.g., when switching tabs or unmounting).
+   */
+  public cancelQrWait(): void {
+    this.qrSessionGen += 1;
+    const cleanup = this.qrWaitCleanup;
+    this.qrWaitCleanup = null;
+    if (cleanup) {
+      cleanup(true);
+    }
+  }
+
+  /**
+   * Cleanly exits stuck pre-auth states (such as authorizationStateWaitOtherDeviceConfirmation)
+   * and re-initializes TDLib so SetAuthenticationPhoneNumber / RequestQrCodeAuthentication work reliably.
+   */
+  public async resetAuthToPhone(cancelPendingQr: boolean = true): Promise<void> {
+    if (cancelPendingQr) {
+      this.cancelQrWait();
+    }
+    if (this.authResetPromise) {
+      return this.authResetPromise;
+    }
+
+    this.authResetPromise = (async () => {
+      this.latestQrLink = null;
+      if (!this.isAvailable()) return;
+
+      const rawState = await this.readRawAuthState();
+      if (rawState === 'authorizationStateWaitPhoneNumber') {
+        this.isInitialized = true;
+        return;
+      }
+
+      if (
+        rawState &&
+        rawState !== 'authorizationStateClosed' &&
+        rawState !== 'authorizationStateWaitTdlibParameters'
+      ) {
+        const isClosingOrReady =
+          rawState === 'authorizationStateLoggingOut' ||
+          rawState === 'authorizationStateClosing' ||
+          rawState === 'authorizationStateReady';
+
+        if (isClosingOrReady) {
+          if (rawState === 'authorizationStateReady') {
+            await TdLib.logout().catch(() => {});
+          }
+          const closedState = await this.waitForAuthState(['authorizationStateClosed'], 3500);
+          if (!closedState) {
+            await TdLib.destroy().catch(() => {});
+            await this.waitForAuthState(['authorizationStateClosed'], 2000);
+          }
+        } else {
+          // Pre-auth states (QR confirmation, waitCode, waitPassword, etc.) can be
+          // destroyed locally without requiring network logout round-trips.
+          await TdLib.destroy().catch(() => {});
+          await this.waitForAuthState(['authorizationStateClosed'], 2000);
+        }
+      }
+
+      this.isInitialized = false;
+      this.initPromise = null;
+      this.currentAuthState = 'authorizationStateClosed';
+      this.myUserId = null;
+
+      await this.init(true);
+
+      // Ensure TDLib has transitioned past parameter setup before returning.
+      const settledState = await this.getAuthState();
+      if (settledState !== 'authorizationStateWaitPhoneNumber') {
+        await this.waitForAuthState(['authorizationStateWaitPhoneNumber'], 3000);
+      }
+    })().finally(() => {
+      this.authResetPromise = null;
+    });
+
+    return this.authResetPromise;
+  }
+
   public async loginWithPhone(phoneNumber: string): Promise<string> {
+    if (this.authResetPromise) {
+      await this.authResetPromise;
+    }
     await this.init();
+
+    const currentState = await this.getAuthState();
+    if (this.isPreAuthResetNeeded(currentState)) {
+      console.log(`[TdLibClientService] Resetting TDLib from ${currentState} before phone login...`);
+      await this.resetAuthToPhone();
+    }
+
     const clean = phoneNumber.replace(/[^\d+]/g, '');
     let countryCode = '';
     let number = clean;
@@ -232,6 +384,11 @@ class TdLibClientService {
       if (msg.includes('null object reference') || msg.includes('CLIENT_NOT_INITIALIZED')) {
         console.warn('[TdLibClientService] Native client null on login, re-initializing TDLib...');
         await this.init(true);
+        return await TdLib.login({ countrycode: countryCode, phoneNumber: number });
+      }
+      if (msg.includes('unexpected')) {
+        console.warn('[TdLibClientService] TDLib auth state rejected phone login, resetting session...');
+        await this.resetAuthToPhone();
         return await TdLib.login({ countrycode: countryCode, phoneNumber: number });
       }
       throw err;
@@ -268,63 +425,199 @@ class TdLibClientService {
     }
   }
 
-  public async requestQrLogin(): Promise<string> {
-    await this.init();
+  private dispatchQrLoginRequest(sessionGen: number): Promise<string> {
+    if (sessionGen !== this.qrSessionGen) {
+      return Promise.reject(new Error('QR_CANCELLED'));
+    }
+
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (cancelled?: boolean, fn?: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
         this.updateListeners.delete(listener);
-        reject(new Error('QR login request timed out. Please try again.'));
+        if (this.qrWaitCleanup === onCancel) {
+          this.qrWaitCleanup = null;
+        }
+        if (cancelled) {
+          reject(new Error('QR_CANCELLED'));
+          return;
+        }
+        fn?.();
+      };
+
+      const onCancel = (cancelled?: boolean) => finish(cancelled);
+
+      timeout = setTimeout(() => {
+        finish(false, () => reject(new Error('QR login request timed out. Please try again.')));
       }, 30000);
 
       const listener: UpdateListener = (type: string, raw: any) => {
+        if (settled) return;
         if (type === 'updateAuthorizationState') {
-          const state = raw?.authorization_state;
+          const state = raw?.authorization_state || raw?.authorizationState;
           const authType = state?.['@type'];
-          if (authType === 'authorizationStateWaitOtherDeviceConfirmation') {
-            clearTimeout(timeout);
-            this.updateListeners.delete(listener);
-            resolve(state.link as string);
+          if (authType === 'authorizationStateWaitOtherDeviceConfirmation' && state?.link) {
+            const link = state.link as string;
+            this.latestQrLink = link;
+            finish(false, () => resolve(link));
+          }
+        } else if (type === 'error') {
+          const errMsg = String(raw?.message || '');
+          if (errMsg.toLowerCase().includes('unexpected') || errMsg.toLowerCase().includes('qr')) {
+            finish(false, () => reject(new Error(errMsg || 'Failed to start QR login.')));
           }
         }
       };
 
+      this.qrWaitCleanup = onCancel;
       this.updateListeners.add(listener);
 
       TdLib.td_json_client_send({
         '@type': 'requestQrCodeAuthentication',
         other_user_ids: [],
+      }).catch((err: any) => {
+        finish(false, () => reject(err instanceof Error ? err : new Error(String(err))));
       });
     });
   }
 
-  public async listenForQrConfirmation(timeoutMs: number = 60000): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.updateListeners.delete(listener);
-        reject(new Error('QR scan expired. Tap to refresh.'));
-      }, timeoutMs);
+  public async requestQrLogin(forceRefresh: boolean = false): Promise<string> {
+    this.cancelQrWait();
+    const myGen = this.qrSessionGen;
 
-      const listener: UpdateListener = (type: string, raw: any) => {
-        if (type === 'updateAuthorizationState') {
-          const state = raw?.authorization_state;
-          const authType = state?.['@type'];
-          if (authType === 'authorizationStateReady') {
-            clearTimeout(timeout);
-            this.updateListeners.delete(listener);
-            resolve();
-          } else if (authType === 'authorizationStateWaitPassword') {
-            clearTimeout(timeout);
-            this.updateListeners.delete(listener);
-            reject(new Error('2FA_REQUIRED'));
-          } else if (authType === 'authorizationStateWaitPhoneNumber') {
-            clearTimeout(timeout);
-            this.updateListeners.delete(listener);
-            reject(new Error('QR code was cancelled or expired.'));
-          }
+    if (this.authResetPromise) {
+      await this.authResetPromise;
+      if (myGen !== this.qrSessionGen) {
+        throw new Error('QR_CANCELLED');
+      }
+    }
+    await this.init();
+    if (myGen !== this.qrSessionGen) {
+      throw new Error('QR_CANCELLED');
+    }
+
+    const currentState = await this.getAuthState();
+    if (myGen !== this.qrSessionGen) {
+      throw new Error('QR_CANCELLED');
+    }
+
+    if (!forceRefresh && currentState === 'authorizationStateWaitOtherDeviceConfirmation' && this.latestQrLink) {
+      return this.latestQrLink;
+    }
+
+    if (this.isPreAuthResetNeeded(currentState)) {
+      await this.resetAuthToPhone(false);
+      if (myGen !== this.qrSessionGen) {
+        throw new Error('QR_CANCELLED');
+      }
+    }
+
+    try {
+      return await this.dispatchQrLoginRequest(myGen);
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (msg === 'QR_CANCELLED' || myGen !== this.qrSessionGen) {
+        throw new Error('QR_CANCELLED');
+      }
+      if (msg.includes('unexpected') || msg.includes('CLIENT_NOT_INITIALIZED')) {
+        console.warn('[TdLibClientService] Resetting TDLib before retrying QR request...');
+        await this.resetAuthToPhone(false);
+        return await this.dispatchQrLoginRequest(myGen);
+      }
+      throw err;
+    }
+  }
+
+  public async listenForQrConfirmation(
+    optionsOrTimeout:
+      | number
+      | {
+          timeoutMs?: number;
+          onLinkUpdate?: (link: string) => void;
+        } = 90000
+  ): Promise<void> {
+    this.cancelQrWait();
+
+    const timeoutMs =
+      typeof optionsOrTimeout === 'number' ? optionsOrTimeout : (optionsOrTimeout?.timeoutMs ?? 90000);
+    const onLinkUpdate =
+      typeof optionsOrTimeout === 'number' ? undefined : optionsOrTimeout?.onLinkUpdate;
+
+    if (this.currentAuthState === 'authorizationStateReady') {
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = (cancelled?: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        this.updateListeners.delete(listener);
+        if (this.qrWaitCleanup === cleanup) {
+          this.qrWaitCleanup = null;
+        }
+        if (cancelled) {
+          reject(new Error('QR_CANCELLED'));
         }
       };
 
+      const armTimeout = () => {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(async () => {
+          if (settled) return;
+          // App may have been backgrounded while user confirmed in Telegram; verify actual state before failing.
+          const latestState =
+            this.currentAuthState === 'authorizationStateReady' ||
+            this.currentAuthState === 'authorizationStateWaitPassword'
+              ? this.currentAuthState
+              : await this.readRawAuthState();
+          if (settled) return;
+          if (latestState === 'authorizationStateReady') {
+            cleanup(false);
+            resolve();
+            return;
+          }
+          if (latestState === 'authorizationStateWaitPassword') {
+            cleanup(false);
+            reject(new Error('2FA_REQUIRED'));
+            return;
+          }
+          cleanup(false);
+          reject(new Error('QR scan expired. Tap to refresh.'));
+        }, timeoutMs);
+      };
+
+      const listener: UpdateListener = (type: string, raw: any) => {
+        if (settled || type !== 'updateAuthorizationState') return;
+        const state = raw?.authorization_state || raw?.authorizationState;
+        const authType = state?.['@type'];
+        if (authType === 'authorizationStateReady') {
+          cleanup(false);
+          resolve();
+        } else if (authType === 'authorizationStateWaitPassword') {
+          cleanup(false);
+          reject(new Error('2FA_REQUIRED'));
+        } else if (authType === 'authorizationStateWaitPhoneNumber') {
+          cleanup(false);
+          reject(new Error('QR code was cancelled or expired.'));
+        } else if (authType === 'authorizationStateWaitOtherDeviceConfirmation' && typeof state?.link === 'string') {
+          this.latestQrLink = state.link;
+          // TDLib refreshed the QR token automatically; extend the idle timeout.
+          armTimeout();
+          onLinkUpdate?.(state.link);
+        }
+      };
+
+      this.qrWaitCleanup = cleanup;
       this.updateListeners.add(listener);
+      armTimeout();
     });
   }
 
@@ -376,8 +669,12 @@ class TdLibClientService {
     fileName: string,
     targetChat: string = 'me',
     onProgress?: (progress: number) => void,
-    caption?: string
+    caption?: string,
+    abortSignal?: AbortSignal
   ): Promise<{ id: number }> {
+    if (abortSignal?.aborted) {
+      throw new Error('UPLOAD_PAUSED');
+    }
     await this.init();
 
     // 1. Resolve to native absolute filesystem path, preserving real filename & extension
@@ -409,8 +706,27 @@ class TdLibClientService {
       let timeoutId: any = null;
       let isDone = false;
 
+      const handleAbort = () => {
+        if (isDone) return;
+        console.log('[TdLib sendFile] Aborting upload due to pause signal', { fileId, sentMessageId });
+        if (sentMessageId !== null) {
+          TdLib.deleteMessages(targetChatId, [sentMessageId], true).catch(() => {});
+        }
+        if (fileId !== null) {
+          TdLib.td_json_client_send({
+            '@type': 'cancelPreliminaryUploadFile',
+            file_id: fileId,
+          }).catch(() => {});
+        }
+        cleanup();
+        reject(new Error('UPLOAD_PAUSED'));
+      };
+
       const cleanup = async () => {
         isDone = true;
+        if (abortSignal) {
+          abortSignal.removeEventListener('abort', handleAbort);
+        }
         if (fileId !== null) {
           this.activeUploads.delete(fileId);
         }
@@ -534,6 +850,14 @@ class TdLibClientService {
 
       this.updateListeners.add(updateHandler);
 
+      if (abortSignal) {
+        if (abortSignal.aborted) {
+          handleAbort();
+          return;
+        }
+        abortSignal.addEventListener('abort', handleAbort, { once: true });
+      }
+
       // Send the document directly using inputFileLocal!
       // TDLib C++ MTProto uploads and sends it in a single native pipeline.
       console.log('[TdLib sendFile] Dispatching sendMessage to targetChatId:', targetChatId, 'path:', localPath);
@@ -559,63 +883,306 @@ class TdLibClientService {
   }
 
   /**
-   * Fetches the user's Telegram chat list via TDLib.
-   * Returns Saved Messages first, then channels/groups/chats.
+   * Sends a raw TDLib function request via td_json_client_send and awaits a matching response event.
    */
-  public async getChats(limit: number = 50): Promise<TelegramDestination[]> {
+  private sendTdRequest<T = any>(
+    request: Record<string, any>,
+    match: (type: string, data: any) => boolean,
+    timeoutMs: number = 3500
+  ): Promise<T | null> {
+    return new Promise<T | null>((resolve) => {
+      let settled = false;
+      let handler: ((type: string, data: any) => void) | null = null;
+
+      const finish = (value: T | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (handler) {
+          this.updateListeners.delete(handler);
+          handler = null;
+        }
+        resolve(value);
+      };
+
+      const timer = setTimeout(() => finish(null), timeoutMs);
+
+      handler = (type: string, data: any) => {
+        const resolvedType = type || data?.['@type'] || '';
+        if (match(resolvedType, data)) {
+          finish(data as T);
+        }
+      };
+
+      this.updateListeners.add(handler);
+
+      TdLib.td_json_client_send(request).catch(() => {
+        finish(null);
+      });
+    });
+  }
+
+  private async fetchChatById(chatId: number): Promise<any | null> {
+    return await this.sendTdRequest<any>(
+      { '@type': 'getChat', chat_id: chatId },
+      (type, data) =>
+        (type === 'chat' || data?.['@type'] === 'chat') &&
+        Number(data?.id) === Number(chatId),
+      3500
+    );
+  }
+
+  private async buildDestinationFromChat(
+    chat: any,
+    createdChatIds: Set<number>
+  ): Promise<TelegramDestination | null> {
+    if (!chat || !chat.id) return null;
+
+    const chatIdNum = Number(chat.id);
+    const chatType = chat.type?.['@type'] || '';
+    const isCreated = createdChatIds.has(chatIdNum);
+    let type: TelegramDestination['type'] = 'chat';
+    let isCreator = isCreated;
+    let isAdmin = isCreated;
+    let canPost = isCreated;
+
+    if (chatType === 'chatTypeSupergroup') {
+      const supergroupId = Number(chat.type?.supergroup_id);
+      let isChannel = Boolean(chat.type?.is_channel);
+
+      if (!Number.isNaN(supergroupId) && supergroupId > 0) {
+        const sg = await this.sendTdRequest<any>(
+          { '@type': 'getSupergroup', supergroup_id: supergroupId },
+          (t, d) =>
+            (t === 'supergroup' || d?.['@type'] === 'supergroup') &&
+            Number(d?.id) === supergroupId,
+          2500
+        );
+        if (sg) {
+          if (typeof sg.is_channel === 'boolean') {
+            isChannel = sg.is_channel;
+          }
+          const statusType = sg.status?.['@type'];
+          if (statusType === 'chatMemberStatusCreator' && sg.status?.is_member !== false) {
+            isCreator = true;
+            isAdmin = true;
+            canPost = true;
+          } else if (statusType === 'chatMemberStatusAdministrator') {
+            isAdmin = true;
+            canPost = isChannel ? Boolean(sg.status?.rights?.can_post_messages) : true;
+          } else {
+            isCreator = isCreated;
+            isAdmin = isCreated;
+            canPost = isCreated
+              ? true
+              : !isChannel && !sg.is_broadcast_group && chat.permissions?.can_send_basic_messages !== false;
+          }
+        }
+      }
+
+      type = isChannel ? 'channel' : 'group';
+    } else if (chatType === 'chatTypeBasicGroup') {
+      const basicGroupId = Number(chat.type?.basic_group_id);
+      type = 'group';
+
+      if (!Number.isNaN(basicGroupId) && basicGroupId > 0) {
+        const bg = await this.sendTdRequest<any>(
+          { '@type': 'getBasicGroup', basic_group_id: basicGroupId },
+          (t, d) =>
+            (t === 'basicGroup' || d?.['@type'] === 'basicGroup') &&
+            Number(d?.id) === basicGroupId,
+          2500
+        );
+        if (bg) {
+          // Skip basic groups that have already migrated to a supergroup
+          if (bg.upgraded_to_supergroup_id && Number(bg.upgraded_to_supergroup_id) !== 0) {
+            return null;
+          }
+          const statusType = bg.status?.['@type'];
+          if (statusType === 'chatMemberStatusCreator' && bg.status?.is_member !== false) {
+            isCreator = true;
+            isAdmin = true;
+            canPost = true;
+          } else if (statusType === 'chatMemberStatusAdministrator') {
+            isAdmin = true;
+            canPost = true;
+          } else {
+            canPost = chat.permissions?.can_send_basic_messages !== false;
+          }
+        }
+      }
+    } else {
+      type = 'chat';
+      canPost = true;
+    }
+
+    return {
+      id: String(chat.id),
+      title: chat.title || `Chat ${chat.id}`,
+      type,
+      username: chat.usernames?.active_usernames?.[0],
+      isCreator,
+      isAdmin,
+      canPost,
+      memberRole: isCreator ? 'owner' : isAdmin ? 'admin' : 'member',
+    };
+  }
+
+  /**
+   * Fetches the user's Telegram chat list via TDLib.
+   * Returns Saved Messages first, then channels/groups/chats enriched with admin/owner privileges.
+   */
+  public async getChats(limit: number = 200): Promise<TelegramDestination[]> {
     await this.init();
 
     const me = await this.getMe().catch(() => null);
-    const destinations: TelegramDestination[] = [
-      {
-        id: 'me',
-        title: 'Saved Messages (Private Cloud)',
-        type: 'saved',
-      },
-    ];
+    const savedDest: TelegramDestination = {
+      id: 'me',
+      title: 'Saved Messages (Private Cloud)',
+      type: 'saved',
+      isCreator: true,
+      isAdmin: true,
+      canPost: true,
+      memberRole: 'owner',
+    };
+
+    const collected: TelegramDestination[] = [];
+    const chatMap = new Map<number, any>();
+    const createdChatIds = new Set<number>();
 
     try {
-      // 1. Ask TDLib to load chats from disk into memory
-      await TdLib.loadChats(limit).catch(() => {});
+      // 1. Load main chat list chunks into TDLib memory/cache
+      for (let i = 0; i < 3; i++) {
+        const msg = await TdLib.loadChats(100).catch(() => null);
+        if (typeof msg === 'string' && msg.toLowerCase().includes('no more chats')) {
+          break;
+        }
+      }
 
-      // 2. Fetch the detailed list of chats via dedicated getChats API
+      // 2. Also load archived chats so created/archived backup channels are discovered
+      await TdLib.td_json_client_send({
+        '@type': 'loadChats',
+        chat_list: { '@type': 'chatListArchive' },
+        limit: 100,
+      }).catch(() => {});
+
+      // 3. Fetch detailed main chat objects via dedicated getChats API
       const rawChats = await TdLib.getChats(limit);
-      let chats: any[] = [];
+      let mainChats: any[] = [];
       if (typeof rawChats === 'string' && (rawChats.trim().startsWith('[') || rawChats.trim().startsWith('{'))) {
         try {
           const parsed = JSON.parse(rawChats);
-          chats = Array.isArray(parsed) ? parsed : [];
+          mainChats = Array.isArray(parsed) ? parsed : [];
         } catch {
-          chats = [];
+          mainChats = [];
         }
       } else if (Array.isArray(rawChats)) {
-        chats = rawChats;
+        mainChats = rawChats;
       }
 
-      for (const chat of chats) {
-        if (!chat || !chat.id) continue;
-        if (me && chat.id === me.id) continue;
-
-        const chatType = chat.type?.['@type'] || '';
-        let type: TelegramDestination['type'] = 'chat';
-        if (chatType === 'chatTypeSupergroup') {
-          type = chat.type?.is_channel ? 'channel' : 'group';
-        } else if (chatType === 'chatTypeBasicGroup') {
-          type = 'group';
+      for (const chat of mainChats) {
+        if (chat?.id) {
+          chatMap.set(Number(chat.id), chat);
         }
-
-        destinations.push({
-          id: String(chat.id),
-          title: chat.title || `Chat ${chat.id}`,
-          type,
-          username: chat.usernames?.active_usernames?.[0],
-        });
       }
+
+      // 4. Fetch archived chat IDs so muted/archived channels still appear
+      const archiveChatsRes = await this.sendTdRequest<{ chat_ids?: number[] }>(
+        { '@type': 'getChats', chat_list: { '@type': 'chatListArchive' }, limit: 100 },
+        (t, d) => t === 'chats' || d?.['@type'] === 'chats',
+        2500
+      );
+      const archiveIds: number[] = Array.isArray(archiveChatsRes?.chat_ids) ? archiveChatsRes.chat_ids : [];
+
+      // 5. Explicitly fetch all public channels & supergroups created by this account
+      for (const publicType of ['publicChatTypeHasUsername', 'publicChatTypeIsLocationBased']) {
+        const createdRes = await this.sendTdRequest<{ chat_ids?: number[] }>(
+          { '@type': 'getCreatedPublicChats', type: { '@type': publicType } },
+          (t, d) => t === 'chats' || d?.['@type'] === 'chats',
+          3500
+        );
+        if (Array.isArray(createdRes?.chat_ids)) {
+          for (const cid of createdRes.chat_ids) {
+            createdChatIds.add(Number(cid));
+          }
+        }
+      }
+
+      const missingIds = new Set<number>([...archiveIds, ...createdChatIds]);
+      for (const cid of missingIds) {
+        if (!chatMap.has(cid)) {
+          const chatObj = await this.fetchChatById(cid);
+          if (chatObj?.id) {
+            chatMap.set(Number(chatObj.id), chatObj);
+          }
+        }
+      }
+
+      // 6. Enrich each chat with supergroup/basicGroup creator & admin rights
+      for (const chat of chatMap.values()) {
+        const chatIdNum = Number(chat?.id);
+        if (!chat || Number.isNaN(chatIdNum)) continue;
+        if (me && chatIdNum === Number(me.id)) continue;
+
+        const dest = await this.buildDestinationFromChat(chat, createdChatIds);
+        if (dest) {
+          collected.push(dest);
+        }
+      }
+
+      // Prioritize owner/admin channels & groups first, then others alphabetically
+      collected.sort((a, b) => {
+        const rank = (d: TelegramDestination) => {
+          if (d.isCreator && (d.type === 'channel' || d.type === 'group')) return 0;
+          if (d.isAdmin && (d.type === 'channel' || d.type === 'group')) return 1;
+          if (d.type === 'channel' || d.type === 'group') return 2;
+          return 3;
+        };
+        const rDiff = rank(a) - rank(b);
+        if (rDiff !== 0) return rDiff;
+        return a.title.localeCompare(b.title);
+      });
     } catch (error) {
       console.error('[TdLib] getChats error:', error);
     }
 
-    return destinations;
+    return [savedDest, ...collected];
+  }
+
+  /**
+   * Resolves a manual destination input ('me', '@channelname', or numeric chat ID)
+   * into a verified TelegramDestination with resolved title and admin/owner status.
+   */
+  public async resolveDestinationInput(input: string): Promise<TelegramDestination> {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      throw new Error('Destination cannot be empty.');
+    }
+    if (trimmed === 'me') {
+      return {
+        id: 'me',
+        title: 'Saved Messages (Private Cloud)',
+        type: 'saved',
+        isCreator: true,
+        isAdmin: true,
+        canPost: true,
+        memberRole: 'owner',
+      };
+    }
+
+    const numericChatId = await this.resolveTargetChatId(trimmed);
+    const chatObj = await this.fetchChatById(numericChatId);
+    if (chatObj) {
+      const dest = await this.buildDestinationFromChat(chatObj, new Set<number>());
+      if (dest) return dest;
+    }
+
+    return {
+      id: String(numericChatId),
+      title: trimmed.startsWith('@') ? trimmed : `Chat ${numericChatId}`,
+      type: 'channel',
+      username: trimmed.startsWith('@') ? trimmed.slice(1) : undefined,
+    };
   }
 
   /**
@@ -946,12 +1513,19 @@ class TdLibClientService {
   }
 
   public async logout(): Promise<void> {
+    this.cancelQrWait();
+    this.latestQrLink = null;
+    this.initPromise = null;
     this.isInitialized = false;
-    this.currentAuthState = 'authorizationStateClosed';
     this.myUserId = null;
     try {
-      await TdLib.logout();
+      const state = await this.readRawAuthState();
+      if (state && state !== 'authorizationStateClosed') {
+        await TdLib.logout().catch(() => {});
+        await this.waitForAuthState(['authorizationStateClosed'], 2500);
+      }
     } catch {}
+    this.currentAuthState = 'authorizationStateClosed';
   }
 }
 

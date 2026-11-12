@@ -1,6 +1,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import * as Crypto from 'expo-crypto';
+import { computeFastFileHash } from './fileHelper';
+
+export { computeFastFileHash };
 
 export interface DuplicateFile {
   uri: string;
@@ -20,33 +22,6 @@ export interface ScanDuplicatesProgress {
   scanned: number;
   total: number;
   duplicatesFound: number;
-}
-
-/**
- * Computes a fast signature hash for a file.
- * Reads a sample chunk (up to 256 KB) to avoid loading massive multi-gigabyte files into RAM.
- */
-async function computeFastFileHash(uri: string, size: number): Promise<string> {
-  try {
-    const sampleLength = Math.min(size, 256 * 1024);
-    const chunk = await FileSystem.readAsStringAsync(uri, {
-      encoding: 'base64',
-      length: sampleLength,
-      position: 0,
-    });
-    return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `${size}_${chunk}`);
-  } catch {
-    // Fallback if partial read isn't supported for URI
-    try {
-      if (size < 5 * 1024 * 1024) {
-        const full = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-        return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `${size}_${full}`);
-      }
-      return `${size}_${uri.split('/').pop()}`;
-    } catch {
-      return `${size}_unknown`;
-    }
-  }
 }
 
 /**

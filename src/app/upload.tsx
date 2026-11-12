@@ -49,7 +49,7 @@ import {
   View,
   useColorScheme,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type HistoryFilter = 'all' | 'uploaded' | 'failed' | 'dismissed';
 type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
@@ -57,6 +57,7 @@ type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
 const PAGE_SIZE = 20;
 
 export default function UploadScreen() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<'queue' | 'history'>('queue');
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [history, setHistory] = useState<ActionHistoryItem[]>([]);
@@ -184,6 +185,7 @@ export default function UploadScreen() {
         fileName: file.fileName,
         size: file.size,
         mimeType: file.mimeType,
+        mediaAssetId: file.mediaAssetId,
       });
       loadData();
 
@@ -201,7 +203,7 @@ export default function UploadScreen() {
       // Batch add all files in a single AsyncStorage read+write (not N separate writes)
       const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
       const { added, skipped } = await addManyToQueue(
-        files.map(f => ({ uri: f.uri, fileName: f.fileName, size: f.size, mimeType: f.mimeType }))
+        files.map(f => ({ uri: f.uri, fileName: f.fileName, size: f.size, mimeType: f.mimeType, mediaAssetId: f.mediaAssetId }))
       );
       loadData();
 
@@ -276,7 +278,7 @@ export default function UploadScreen() {
         .filter(() => !controller.signal.aborted)
         .map(file => {
           totalBytes += file.size || 0;
-          return { uri: file.uri, fileName: file.fileName, size: file.size, mimeType: file.mimeType };
+          return { uri: file.uri, fileName: file.fileName, size: file.size, mimeType: file.mimeType, mediaAssetId: file.mediaAssetId };
         });
 
       const { added, skipped } = await addManyToQueue(toAdd);
@@ -321,7 +323,13 @@ export default function UploadScreen() {
       await recoverInterruptedUploads().catch(() => {});
       const result = await uploadManager.processQueue({ forceManual: true });
       loadData();
-      if (result.failed === 0) {
+      if (result.paused && result.paused > 0 && result.failed === 0) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert(
+          'Upload Paused',
+          `Uploaded ${result.uploaded} file(s); ${result.paused} file(s) paused and saved in queue.`
+        );
+      } else if (result.failed === 0) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert('Success', `Successfully uploaded ${result.uploaded} file(s)!`);
       } else if (result.uploaded > 0) {
@@ -427,6 +435,44 @@ export default function UploadScreen() {
     } finally {
       setUploading(false);
     }
+  };
+
+  const handlePauseQueue = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await uploadManager.pauseQueue();
+    loadData();
+    setUploading(false);
+  };
+
+  const handleResumeQueue = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setUploading(true);
+    try {
+      const res = await uploadManager.resumeQueue();
+      loadData();
+      if (res && res.failed > 0) {
+        Alert.alert(
+          'Resume Finished with Warnings',
+          `${res.uploaded} uploaded, ${res.failed} failed:\n${res.errors[0] || 'Unknown error'}`
+        );
+      }
+    } catch (err: any) {
+      Alert.alert('Resume Error', err.message || 'Failed to resume queue');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handlePauseItem = async (item: { id: string }) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await uploadManager.pauseItem(item.id);
+    loadData();
+  };
+
+  const handleResumeItem = async (item: { id: string }) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await uploadManager.resumeItem(item.id);
+    loadData();
   };
 
   const clearCompleted = async () => {
@@ -628,6 +674,30 @@ export default function UploadScreen() {
               <FontAwesome name="rocket" size={13} color="#208AEF" />
             </TouchableOpacity>
           )}
+          {item.status === 'uploading' && uploading && (
+            <TouchableOpacity
+              style={[styles.itemUploadBtn, { backgroundColor: '#FEF3C7' }]}
+              onPress={(e) => {
+                e.stopPropagation();
+                handlePauseItem(item);
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <FontAwesome name="pause" size={12} color="#D97706" />
+            </TouchableOpacity>
+          )}
+          {item.status === 'paused' && (
+            <TouchableOpacity
+              style={[styles.itemUploadBtn, { backgroundColor: '#DCFCE7' }]}
+              onPress={(e) => {
+                e.stopPropagation();
+                handleResumeItem(item);
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <FontAwesome name="play" size={12} color="#16A34A" />
+            </TouchableOpacity>
+          )}
           {item.status === 'failed' && (
             <TouchableOpacity
               style={[styles.itemUploadBtn, { backgroundColor: '#FEE2E2' }]}
@@ -807,7 +877,10 @@ export default function UploadScreen() {
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.secondaryButton, watchedFolders.length === 0 ? { backgroundColor: '#3B82F6' } : null]}
+            style={[
+              styles.secondaryButton,
+              watchedFolders.length === 0 && { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+            ]}
             onPress={() => {
               if (watchedFolders.length === 0) { setFolderModalVisible(true); return; }
               scanAndQueueAll();
@@ -815,21 +888,52 @@ export default function UploadScreen() {
           >
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
               <FontAwesome name="bolt" size={14} color="#208AEF" style={{ marginRight: 6 }} />
-              <Text style={styles.secondaryButtonText}>Scan Folders ({watchedFolders.length})</Text>
+              <Text style={styles.secondaryButtonText} numberOfLines={1}>
+                Scan Folders ({watchedFolders.length})
+              </Text>
             </View>
           </TouchableOpacity>
         )}
 
-        <TouchableOpacity
-          style={[styles.uploadButton, (uploading || scanning) && styles.buttonDisabled]}
-          onPress={startUpload}
-          disabled={uploading || scanning}
-        >
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
-            <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 6 }} />
-            <Text style={styles.uploadButtonText}>{uploading ? "Uploading..." : "Upload Now"}</Text>
-          </View>
-        </TouchableOpacity>
+        {uploading ? (
+          <TouchableOpacity
+            style={[styles.uploadButton, { backgroundColor: '#D97706' }]}
+            onPress={handlePauseQueue}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="pause" size={14} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.uploadButtonText} numberOfLines={1}>
+                Pause Queue
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ) : queue.some((q) => q.status === 'paused') ? (
+          <TouchableOpacity
+            style={[styles.uploadButton, { backgroundColor: '#16A34A' }, scanning && styles.buttonDisabled]}
+            onPress={handleResumeQueue}
+            disabled={scanning}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="play" size={14} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.uploadButtonText} numberOfLines={1}>
+                Resume ({queue.filter((q) => q.status === 'paused').length})
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.uploadButton, (uploading || scanning) && styles.buttonDisabled]}
+            onPress={startUpload}
+            disabled={uploading || scanning}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+              <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.uploadButtonText} numberOfLines={1}>
+                Upload Now
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
       </View>
 
       {scanning && !!scanStatusText && (
@@ -1179,7 +1283,10 @@ export default function UploadScreen() {
       {/* Top-level FlatList: Eliminates nested VirtualizedList inside ScrollView error */}
       <FlatList
         style={styles.container}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: Math.max(insets.bottom, 20) + 28 },
+        ]}
         data={activeTab === 'queue' ? (displayedQueue as any) : (displayedHistory as any)}
         renderItem={activeTab === 'queue' ? (renderQueueItem as any) : (renderHistoryItem as any)}
         keyExtractor={(item) => item.id}
@@ -1224,6 +1331,16 @@ export default function UploadScreen() {
         }}
         onRetry={(file) => {
           handleRetryItem(file as any);
+        }}
+        onPause={(file) => {
+          if (file.id) {
+            handlePauseItem({ id: file.id });
+          }
+        }}
+        onResume={(file) => {
+          if (file.id) {
+            handleResumeItem({ id: file.id });
+          }
         }}
       />
 

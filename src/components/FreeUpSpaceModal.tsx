@@ -11,6 +11,7 @@ import {
   useColorScheme,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import {
   analyzeCleanableSpace,
@@ -32,6 +33,7 @@ export function FreeUpSpaceModal({
   onClose,
   onCleanComplete,
 }: FreeUpSpaceModalProps) {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -130,11 +132,29 @@ export function FreeUpSpaceModal({
 
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
 
-              const message = result.blockedCount > 0
-                ? `Successfully freed up ${formatFileSize(result.freedBytes)} (${result.freedCount} files deleted locally).\n\n🛡️ Safety Shield protected ${result.blockedCount} file(s) whose Telegram cloud copy was deleted.`
-                : `Successfully freed up ${formatFileSize(result.freedBytes)} of device storage (${result.freedCount} files deleted locally).`;
+              const parts: string[] = [];
+              if (result.freedCount > 0) {
+                parts.push(
+                  `Freed ${formatFileSize(result.freedBytes)} (${result.freedCount} file(s) deleted locally).`
+                );
+              } else {
+                parts.push('No local files were deleted.');
+              }
+              if (result.blockedCount > 0) {
+                parts.push(
+                  `Safety Shield protected ${result.blockedCount} file(s) whose Telegram cloud copy was deleted.`
+                );
+              }
+              if (result.failedCount > 0) {
+                parts.push(
+                  `${result.failedCount} file(s) could not be deleted automatically due to Android storage permissions.`
+                );
+              }
 
-              Alert.alert('Space Reclaimed', message);
+              Alert.alert(
+                result.freedCount > 0 ? 'Space Reclaimed' : 'Cleanup Incomplete',
+                parts.join('\n\n')
+              );
 
               if (onCleanComplete) {
                 onCleanComplete(result.freedBytes, result.freedCount);
@@ -230,12 +250,40 @@ export function FreeUpSpaceModal({
           ) : !analysis || analysis.candidates.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconBadge}>
-                <FontAwesome name="check-circle" size={42} color="#10B981" />
+                <FontAwesome
+                  name={analysis && (analysis.restrictedCount > 0 || analysis.pendingQueueCount > 0) ? 'info-circle' : 'check-circle'}
+                  size={42}
+                  color={analysis && (analysis.restrictedCount > 0 || analysis.pendingQueueCount > 0) ? '#F59E0B' : '#10B981'}
+                />
               </View>
-              <Text style={[styles.emptyTitle, { color: textColor }]}>Device Storage Clean</Text>
-              <Text style={[styles.emptySubtitle, { color: subtextColor }]}>
-                No local copies found that are already backed up to Telegram. All synced media is safely managed!
+              <Text style={[styles.emptyTitle, { color: textColor }]}>
+                {analysis && analysis.restrictedCount > 0
+                  ? 'Manual Cleanup Required'
+                  : analysis && analysis.pendingQueueCount > 0
+                    ? 'Uploads Pending First'
+                    : 'Device Storage Clean'}
               </Text>
+              <Text style={[styles.emptySubtitle, { color: subtextColor }]}>
+                {analysis && analysis.restrictedCount > 0
+                  ? `${analysis.restrictedCount} uploaded document-picker file(s) (${formatFileSize(analysis.restrictedBytes)}) were found on your device, but Android only grants read-only access for single-picked documents so they must be deleted from your system Files app.`
+                  : analysis && analysis.pendingQueueCount > 0
+                    ? `You have ${analysis.pendingQueueCount} file(s) waiting in the upload queue. Upload them to Telegram first before reclaiming local space.`
+                    : 'No local copies found that are already backed up to Telegram. All synced media is safely managed!'}
+              </Text>
+              {analysis && analysis.restrictedCount > 0 && (
+                <View style={[styles.noticeCard, { backgroundColor: cardBg, borderColor: border, marginTop: 16, width: '100%' }]}>
+                  {analysis.restrictedCandidates.slice(0, 5).map((item) => (
+                    <Text key={item.uri} style={[styles.noticeItemText, { color: textColor }]} numberOfLines={1}>
+                      • {item.fileName} ({formatFileSize(item.size)})
+                    </Text>
+                  ))}
+                  {analysis.restrictedCount > 5 && (
+                    <Text style={[styles.noticeSubtext, { color: subtextColor }]}>
+                      +{analysis.restrictedCount - 5} more document(s)
+                    </Text>
+                  )}
+                </View>
+              )}
             </View>
           ) : (
             <>
@@ -303,7 +351,26 @@ export function FreeUpSpaceModal({
               <FlatList
                 data={filteredCandidates}
                 keyExtractor={(item) => item.uri}
-                contentContainerStyle={styles.listContent}
+                contentContainerStyle={[
+                  styles.listContent,
+                  { paddingBottom: 100 + Math.max(insets.bottom, 16) },
+                ]}
+                ListFooterComponent={
+                  analysis.restrictedCount > 0 || analysis.pendingQueueCount > 0 ? (
+                    <View style={[styles.noticeCard, { backgroundColor: cardBg, borderColor: border, marginTop: 8 }]}>
+                      {analysis.pendingQueueCount > 0 && (
+                        <Text style={[styles.noticeSubtext, { color: subtextColor }]}>
+                          • {analysis.pendingQueueCount} file(s) still in the upload queue must finish uploading before appearing here.
+                        </Text>
+                      )}
+                      {analysis.restrictedCount > 0 && (
+                        <Text style={[styles.noticeSubtext, { color: subtextColor, marginTop: analysis.pendingQueueCount > 0 ? 6 : 0 }]}>
+                          • {analysis.restrictedCount} single-picked document(s) ({formatFileSize(analysis.restrictedBytes)}) cannot be auto-deleted due to Android read-only document picker restrictions — delete those manually from your Files app.
+                        </Text>
+                      )}
+                    </View>
+                  ) : undefined
+                }
                 renderItem={({ item }) => {
                   const isChecked = selectedUris.has(item.uri);
                   return (
@@ -342,10 +409,21 @@ export function FreeUpSpaceModal({
               />
 
               {/* Bottom Action Footer */}
-              <View style={[styles.footerBar, { backgroundColor: cardBg, borderTopColor: border }]}>
+              <View
+                style={[
+                  styles.footerBar,
+                  {
+                    backgroundColor: cardBg,
+                    borderTopColor: border,
+                    paddingBottom: Math.max(insets.bottom, 16) + 12,
+                  },
+                ]}
+              >
                 <View style={styles.footerStats}>
-                  <Text style={[styles.footerLabel, { color: subtextColor }]}>Selected for cleaning</Text>
-                  <Text style={[styles.footerValue, { color: textColor }]}>
+                  <Text style={[styles.footerLabel, { color: subtextColor }]} numberOfLines={1}>
+                    Selected for cleaning
+                  </Text>
+                  <Text style={[styles.footerValue, { color: textColor }]} numberOfLines={1}>
                     {selectedStats.count} files ({formatFileSize(selectedStats.bytes)})
                   </Text>
                 </View>
@@ -361,7 +439,7 @@ export function FreeUpSpaceModal({
                   ]}
                 >
                   <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.cleanBtnText}>
+                  <Text style={styles.cleanBtnText} numberOfLines={1}>
                     Free Up {formatFileSize(selectedStats.bytes)}
                   </Text>
                 </TouchableOpacity>
@@ -476,6 +554,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     lineHeight: 20,
+  },
+  noticeCard: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 4,
+  },
+  noticeItemText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  noticeSubtext: {
+    fontSize: 12,
+    lineHeight: 17,
   },
   bannerCard: {
     margin: 16,

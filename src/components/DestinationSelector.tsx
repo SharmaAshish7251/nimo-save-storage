@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,11 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
+  Alert,
+  useColorScheme,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { TelegramDestination } from '@/lib/tdlib/types';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
@@ -20,14 +23,22 @@ interface Props {
   onDestinationChanged?: (dest: TelegramDestination) => void;
 }
 
+type DestinationFilter = 'admin' | 'all';
+
 export const DestinationSelector = React.memo(function DestinationSelector({
   targetCategory = 'default',
   label,
   onDestinationChanged,
 }: Props) {
+  const insets = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resolvingCustom, setResolvingCustom] = useState(false);
   const [destinations, setDestinations] = useState<TelegramDestination[]>([]);
+  const [filterMode, setFilterMode] = useState<DestinationFilter>('admin');
   const [searchQuery, setSearchQuery] = useState('');
   const [customInput, setCustomInput] = useState('');
   const [currentConfig, setCurrentConfig] = useState<AppConfig | null>(null);
@@ -43,9 +54,8 @@ export const DestinationSelector = React.memo(function DestinationSelector({
 
   const openPicker = async () => {
     setModalVisible(true);
-    if (destinations.length <= 1) {
-      await fetchDialogs();
-    }
+    await loadCurrentConfig();
+    await fetchDialogs();
   };
 
   const fetchDialogs = async () => {
@@ -60,6 +70,14 @@ export const DestinationSelector = React.memo(function DestinationSelector({
   };
 
   const selectDestination = async (dest: TelegramDestination) => {
+    if ((dest.type === 'channel' || dest.type === 'group') && dest.canPost === false) {
+      Alert.alert(
+        'Posting Restricted',
+        `You are in "${dest.title}", but your account does not have permission to post files there. Please choose a channel/group where you are an admin with post rights, or create a private channel.`
+      );
+      return;
+    }
+
     try {
       const isSaved = dest.id === 'me';
       let patch: Partial<AppConfig> = {};
@@ -87,25 +105,54 @@ export const DestinationSelector = React.memo(function DestinationSelector({
     }
   };
 
+  const resetCategoryOverride = async () => {
+    if (targetCategory === 'default') return;
+    try {
+      let patch: Partial<AppConfig> = {};
+      if (targetCategory === 'photo') {
+        patch = { photoChannelId: undefined, photoChannelTitle: undefined };
+      } else if (targetCategory === 'video') {
+        patch = { videoChannelId: undefined, videoChannelTitle: undefined };
+      } else if (targetCategory === 'document') {
+        patch = { documentChannelId: undefined, documentChannelTitle: undefined };
+      }
+      const updated = await saveConfig(patch);
+      setCurrentConfig(updated);
+      setModalVisible(false);
+      if (onDestinationChanged) {
+        onDestinationChanged({
+          id: updated.targetChatId || 'me',
+          title: updated.targetChatTitle || 'Saved Messages (Private Cloud)',
+          type: updated.targetChatType || 'saved',
+        });
+      }
+    } catch {}
+  };
+
   const setManualDestination = async () => {
     const trimmed = customInput.trim();
-    if (!trimmed) {
+    if (!trimmed || resolvingCustom) {
       return;
     }
-    const dest: TelegramDestination = {
-      id: trimmed,
-      title: trimmed.startsWith('@') ? trimmed : `Chat ${trimmed}`,
-      type: 'channel',
-      username: trimmed.startsWith('@') ? trimmed.substring(1) : undefined,
-    };
-    await selectDestination(dest);
-    setCustomInput('');
+    setResolvingCustom(true);
+    try {
+      const resolved = await tdLibClient.resolveDestinationInput(trimmed);
+      await selectDestination(resolved);
+      setCustomInput('');
+    } catch (err: any) {
+      Alert.alert(
+        'Channel Not Found',
+        err?.message || `Could not resolve "${trimmed}". Make sure the @username or numeric Chat ID is valid and accessible.`
+      );
+    } finally {
+      setResolvingCustom(false);
+    }
   };
 
   const getDestinationIcon = (type?: string, size = 18) => {
     switch (type) {
       case 'saved':
-        return <FontAwesome name="comment" size={size} color="#208AEF" />;
+        return <FontAwesome name="bookmark" size={size} color="#208AEF" />;
       case 'channel':
         return <FontAwesome name="bullhorn" size={size} color="#208AEF" />;
       case 'group':
@@ -115,14 +162,43 @@ export const DestinationSelector = React.memo(function DestinationSelector({
     }
   };
 
-  const filtered = destinations.filter((d) => {
-    const q = searchQuery.toLowerCase();
-    return (
-      d.title.toLowerCase().includes(q) ||
-      (d.username && d.username.toLowerCase().includes(q)) ||
-      d.id.toLowerCase().includes(q)
-    );
-  });
+  const adminCount = useMemo(
+    () =>
+      destinations.filter(
+        (d) =>
+          d.id === 'me' ||
+          ((d.type === 'channel' || d.type === 'group') && (d.isAdmin || d.isCreator))
+      ).length,
+    [destinations]
+  );
+
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return destinations.filter((d) => {
+      if (filterMode === 'admin') {
+        const isEligibleAdminDest =
+          d.id === 'me' ||
+          ((d.type === 'channel' || d.type === 'group') && (d.isAdmin || d.isCreator));
+        if (!isEligibleAdminDest) return false;
+      }
+
+      if (!q) return true;
+      return (
+        d.title.toLowerCase().includes(q) ||
+        (d.username && d.username.toLowerCase().includes(q)) ||
+        d.id.toLowerCase().includes(q)
+      );
+    });
+  }, [destinations, filterMode, searchQuery]);
+
+  const activeCategoryChatId = useMemo(() => {
+    if (!currentConfig) return 'me';
+    if (targetCategory === 'photo') return currentConfig.photoChannelId || '';
+    if (targetCategory === 'video') return currentConfig.videoChannelId || '';
+    if (targetCategory === 'document') return currentConfig.documentChannelId || '';
+    if (currentConfig.uploadToSavedMessages || !currentConfig.targetChatId) return 'me';
+    return currentConfig.targetChatId;
+  }, [currentConfig, targetCategory]);
 
   let displayTitle =
     currentConfig?.uploadToSavedMessages || currentConfig?.targetChatId === 'me'
@@ -151,19 +227,30 @@ export const DestinationSelector = React.memo(function DestinationSelector({
       ? 'Upload Destination'
       : `${targetCategory.charAt(0).toUpperCase() + targetCategory.slice(1)} Channel`);
 
+  const cardBg = isDark ? '#1E293B' : '#FFFFFF';
+  const modalBg = isDark ? '#1E293B' : '#FFFFFF';
+  const inputBg = isDark ? '#0F172A' : '#F3F4F6';
+  const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
+  const textSecondary = isDark ? '#94A3B8' : '#64748B';
+  const borderColor = isDark ? '#334155' : '#E2E8F0';
+  const selectedBg = isDark ? 'rgba(32, 138, 239, 0.16)' : '#EBF4FE';
+
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: cardBg, borderColor, borderWidth: isDark ? 1 : 0 }]}>
       <View style={styles.headerRow}>
         <View style={styles.infoCol}>
-          <Text style={styles.caption}>{captionText}</Text>
+          <Text style={[styles.caption, { color: textSecondary }]}>{captionText}</Text>
           <View style={styles.currentRow}>
             <View style={styles.iconContainer}>{getDestinationIcon(displayType, 18)}</View>
-            <Text style={styles.title} numberOfLines={1}>
+            <Text style={[styles.title, { color: textPrimary }]} numberOfLines={1}>
               {displayTitle}
             </Text>
           </View>
         </View>
-        <TouchableOpacity style={styles.changeButton} onPress={openPicker}>
+        <TouchableOpacity
+          style={[styles.changeButton, { backgroundColor: isDark ? 'rgba(32, 138, 239, 0.18)' : '#EBF4FE' }]}
+          onPress={openPicker}
+        >
           <Text style={styles.changeButtonText}>Change</Text>
         </TouchableOpacity>
       </View>
@@ -175,22 +262,72 @@ export const DestinationSelector = React.memo(function DestinationSelector({
         onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
+          <View
+            style={[
+              styles.modalContainer,
+              {
+                backgroundColor: modalBg,
+                paddingBottom: Math.max(insets.bottom, 16) + 10,
+              },
+            ]}
+          >
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Telegram Destination</Text>
+              <View>
+                <Text style={[styles.modalTitle, { color: textPrimary }]}>Select Telegram Destination</Text>
+                <Text style={[styles.modalSubTitle, { color: textSecondary }]}>
+                  Showing channels & groups where you are owner or admin by default
+                </Text>
+              </View>
               <TouchableOpacity
                 style={styles.closeHeaderButton}
                 onPress={() => setModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <FontAwesome name="times" size={18} color="#6B7280" />
+                <FontAwesome name="times" size={18} color={textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Filter Pills */}
+            <View style={[styles.filterBar, { backgroundColor: inputBg }]}>
+              <TouchableOpacity
+                style={[
+                  styles.filterPill,
+                  filterMode === 'admin' && styles.filterPillActive,
+                ]}
+                onPress={() => setFilterMode('admin')}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    { color: filterMode === 'admin' ? '#FFFFFF' : textSecondary },
+                  ]}
+                >
+                  Admin & Created ({adminCount})
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.filterPill,
+                  filterMode === 'all' && styles.filterPillActive,
+                ]}
+                onPress={() => setFilterMode('all')}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    { color: filterMode === 'all' ? '#FFFFFF' : textSecondary },
+                  ]}
+                >
+                  All Chats ({destinations.length})
+                </Text>
               </TouchableOpacity>
             </View>
 
             {/* Search Input */}
             <TextInput
-              style={styles.searchInput}
+              style={[styles.searchInput, { backgroundColor: inputBg, color: textPrimary }]}
               placeholder="Search chats, channels, groups..."
-              placeholderTextColor="#999"
+              placeholderTextColor={textSecondary}
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
@@ -198,25 +335,45 @@ export const DestinationSelector = React.memo(function DestinationSelector({
             {/* Custom Input */}
             <View style={styles.customInputRow}>
               <TextInput
-                style={styles.customTextInput}
+                style={[styles.customTextInput, { backgroundColor: inputBg, color: textPrimary }]}
                 placeholder="Or enter @channel or Chat ID (-100...)"
-                placeholderTextColor="#999"
+                placeholderTextColor={textSecondary}
                 value={customInput}
                 onChangeText={setCustomInput}
+                autoCapitalize="none"
+                autoCorrect={false}
               />
               <TouchableOpacity
-                style={styles.applyButton}
+                style={[styles.applyButton, resolvingCustom && { opacity: 0.6 }]}
                 onPress={setManualDestination}
+                disabled={resolvingCustom}
               >
-                <Text style={styles.applyButtonText}>Set</Text>
+                {resolvingCustom ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.applyButtonText}>Set</Text>
+                )}
               </TouchableOpacity>
             </View>
 
+            {/* Category Override Reset Option */}
+            {targetCategory !== 'default' && Boolean(activeCategoryChatId) && (
+              <TouchableOpacity
+                style={[styles.resetDefaultBtn, { borderColor }]}
+                onPress={resetCategoryOverride}
+              >
+                <FontAwesome name="undo" size={12} color="#208AEF" style={{ marginRight: 6 }} />
+                <Text style={styles.resetDefaultText}>Use Main Upload Destination (Default)</Text>
+              </TouchableOpacity>
+            )}
+
             {/* List of dialogs */}
-            {loading ? (
+            {loading && destinations.length <= 1 ? (
               <View style={styles.centerContainer}>
                 <ActivityIndicator size="large" color="#208AEF" />
-                <Text style={styles.loadingText}>Loading Telegram chats...</Text>
+                <Text style={[styles.loadingText, { color: textSecondary }]}>
+                  Loading Telegram channels & groups...
+                </Text>
               </View>
             ) : (
               <FlatList
@@ -224,14 +381,17 @@ export const DestinationSelector = React.memo(function DestinationSelector({
                 keyExtractor={(item) => item.id}
                 style={styles.list}
                 renderItem={({ item }) => {
-                  const isSelected =
-                    currentConfig?.targetChatId === item.id ||
-                    (item.id === 'me' && currentConfig?.uploadToSavedMessages);
+                  const isSelected = activeCategoryChatId === item.id;
+                  const isAdminBadge = item.isCreator || item.isAdmin;
+                  const noPostRights =
+                    (item.type === 'channel' || item.type === 'group') && item.canPost === false;
+
                   return (
                     <TouchableOpacity
                       style={[
                         styles.dialogItem,
-                        isSelected && styles.dialogItemSelected,
+                        isSelected && { backgroundColor: selectedBg },
+                        noPostRights && { opacity: 0.6 },
                       ]}
                       onPress={() => selectDestination(item)}
                     >
@@ -239,12 +399,47 @@ export const DestinationSelector = React.memo(function DestinationSelector({
                         {getDestinationIcon(item.type, 18)}
                       </View>
                       <View style={styles.dialogTextContainer}>
-                        <Text style={styles.dialogTitle} numberOfLines={1}>
-                          {item.title}
-                        </Text>
-                        <Text style={styles.dialogSub}>
-                          {item.type.toUpperCase()}{' '}
-                          {item.username ? `• @${item.username}` : ''}
+                        <View style={styles.dialogTitleRow}>
+                          <Text style={[styles.dialogTitle, { color: textPrimary }]} numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          {item.id !== 'me' && isAdminBadge && (
+                            <View
+                              style={[
+                                styles.roleBadge,
+                                {
+                                  backgroundColor: item.isCreator
+                                    ? 'rgba(16, 185, 129, 0.14)'
+                                    : 'rgba(32, 138, 239, 0.14)',
+                                },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.roleBadgeText,
+                                  { color: item.isCreator ? '#10B981' : '#208AEF' },
+                                ]}
+                              >
+                                {item.isCreator ? 'OWNER' : 'ADMIN'}
+                              </Text>
+                            </View>
+                          )}
+                          {noPostRights && (
+                            <View
+                              style={[
+                                styles.roleBadge,
+                                { backgroundColor: 'rgba(239, 68, 68, 0.14)' },
+                              ]}
+                            >
+                              <Text style={[styles.roleBadgeText, { color: '#EF4444' }]}>
+                                NO POST
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={[styles.dialogSub, { color: textSecondary }]}>
+                          {item.type.toUpperCase()}
+                          {item.username ? ` • @${item.username}` : ''}
                         </Text>
                       </View>
                       {isSelected && (
@@ -254,19 +449,29 @@ export const DestinationSelector = React.memo(function DestinationSelector({
                   );
                 }}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No destinations found</Text>
+                  <Text style={[styles.emptyText, { color: textSecondary }]}>
+                    {filterMode === 'admin'
+                      ? 'No admin channels or groups found. Switch to "All Chats" or enter @channel / Chat ID above.'
+                      : 'No destinations found'}
+                  </Text>
                 }
               />
             )}
 
             <TouchableOpacity
-              style={styles.refreshButton}
+              style={[styles.refreshButton, loading && { opacity: 0.6 }]}
               onPress={fetchDialogs}
               disabled={loading}
             >
               <View style={styles.refreshBtnContent}>
-                <FontAwesome name="refresh" size={14} color="#208AEF" style={{ marginRight: 8 }} />
-                <Text style={styles.refreshButtonText}>Refresh Chats</Text>
+                {loading ? (
+                  <ActivityIndicator size="small" color="#208AEF" style={{ marginRight: 8 }} />
+                ) : (
+                  <FontAwesome name="refresh" size={14} color="#208AEF" style={{ marginRight: 8 }} />
+                )}
+                <Text style={styles.refreshButtonText}>
+                  {loading ? 'Refreshing...' : 'Refresh Chats'}
+                </Text>
               </View>
             </TouchableOpacity>
           </View>
@@ -347,7 +552,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.55)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
@@ -355,12 +560,12 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 16,
-    maxHeight: '80%',
+    maxHeight: '84%',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 12,
   },
   modalTitle: {
@@ -368,18 +573,39 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#222',
   },
+  modalSubTitle: {
+    fontSize: 11,
+    marginTop: 2,
+  },
   closeHeaderButton: {
     padding: 4,
   },
-  closeHeaderText: {
-    fontSize: 18,
-    color: '#888',
+  filterBar: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    padding: 3,
+    gap: 4,
+    marginBottom: 10,
+  },
+  filterPill: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterPillActive: {
+    backgroundColor: '#208AEF',
+  },
+  filterPillText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   searchInput: {
     backgroundColor: '#F3F4F6',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
     fontSize: 14,
     marginBottom: 8,
   },
@@ -393,7 +619,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3F4F6',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
     fontSize: 13,
   },
   applyButton: {
@@ -402,48 +628,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     justifyContent: 'center',
     alignItems: 'center',
+    minWidth: 54,
   },
   applyButtonText: {
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 13,
   },
+  resetDefaultBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  resetDefaultText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#208AEF',
+  },
   list: {
-    maxHeight: 340,
+    maxHeight: 320,
   },
   dialogItem: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
     marginBottom: 4,
-  },
-  dialogItemSelected: {
-    backgroundColor: '#EBF4FE',
-  },
-  dialogIcon: {
-    fontSize: 20,
-    marginRight: 10,
   },
   dialogTextContainer: {
     flex: 1,
+  },
+  dialogTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   dialogTitle: {
     fontSize: 14,
     fontWeight: '600',
     color: '#333',
+    flexShrink: 1,
+  },
+  roleBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
+  roleBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
   },
   dialogSub: {
     fontSize: 11,
     color: '#888',
     marginTop: 2,
-  },
-  checkmarkText: {
-    color: '#208AEF',
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginLeft: 6,
   },
   centerContainer: {
     padding: 30,
@@ -458,17 +701,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#999',
     marginVertical: 20,
+    paddingHorizontal: 12,
     fontSize: 13,
+    lineHeight: 19,
   },
   refreshButton: {
     marginTop: 10,
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 10,
   },
   refreshButtonText: {
     color: '#208AEF',
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: '600',
   },
 });
 

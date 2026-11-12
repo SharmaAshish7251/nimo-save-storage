@@ -40,6 +40,7 @@ import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
 import { analyzeCleanableSpace } from '@/lib/storage/cleaner';
 import { tdLibClient } from '@/lib/tdlib/client';
 import * as SecureStoreLib from '@/lib/storage/secure';
+import { pushCloudProfileSnapshot, restoreFromCloudProfile } from '@/lib/storage/cloudProfileSync';
 import {
   schedulerEngine,
   calculateNextEstimatedRun,
@@ -358,6 +359,59 @@ export default function SettingsScreen() {
     } else {
       Alert.alert('Permission Denied', 'Please enable media access in your device settings.');
     }
+  };
+
+  const [isSyncingProfile, setIsSyncingProfile] = useState(false);
+
+  const handleManualProfileBackup = async () => {
+    setIsSyncingProfile(true);
+    try {
+      const res = await pushCloudProfileSnapshot(true);
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        Alert.alert(
+          'Cloud Profile Backed Up',
+          'Your settings, watched folders, and upload index were saved to Telegram Saved Messages.'
+        );
+      } else {
+        Alert.alert('Backup Failed', res.error || 'Could not push cloud profile.');
+      }
+    } catch (err: any) {
+      Alert.alert('Backup Error', err?.message || 'Failed to backup profile');
+    } finally {
+      setIsSyncingProfile(false);
+    }
+  };
+
+  const handleManualProfileRestore = async () => {
+    Alert.alert(
+      'Restore Profile from Cloud',
+      'This will download your latest settings, watched folders, and upload index from Telegram Saved Messages and apply them to this device. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restore',
+          onPress: async () => {
+            setIsSyncingProfile(true);
+            try {
+              const res = await restoreFromCloudProfile({ force: true });
+              if (res.restored) {
+                const refreshed = await getConfig();
+                setConfig(refreshed);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+                Alert.alert('Profile Restored', 'Settings, folders, and cloud upload records have been successfully restored.');
+              } else {
+                Alert.alert('No Profile Found', res.reason || 'No existing profile snapshot was found in Saved Messages.');
+              }
+            } catch (err: any) {
+              Alert.alert('Restore Error', err?.message || 'Failed to restore profile');
+            } finally {
+              setIsSyncingProfile(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (loading || !config) {
@@ -1354,6 +1408,48 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* SECTION: CLOUD DUPLICATE POLICY */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#F0FDF4' }]}>
+              <FontAwesome name="clone" size={13} color="#16A34A" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Cloud Duplicate Handling</Text>
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>When file already exists in Telegram Cloud</Text>
+            <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+              Pre-upload hash check compares your local files with cloud backups
+            </Text>
+
+            <View style={styles.chipsContainer}>
+              {[
+                { label: 'Skip & Link to Cloud (Fast)', val: 'skip_if_cloud_match' as const },
+                { label: 'Replace Cloud Copy', val: 'replace_cloud' as const },
+                { label: 'Upload Duplicate Anyway', val: 'keep_both' as const },
+              ].map((item) => {
+                const isSelected = (config.duplicatePolicy || 'skip_if_cloud_match') === item.val;
+                return (
+                  <TouchableOpacity
+                    key={item.val}
+                    style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync().catch(() => {});
+                      updateConfig({ duplicatePolicy: item.val });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}>
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+
         {/* SECTION 5: PERMISSIONS */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeaderRow}>
@@ -1520,6 +1616,57 @@ export default function SettingsScreen() {
                 </Text>
               </TouchableOpacity>
             )}
+          </View>
+        </View>
+
+        {/* SECTION: CLOUD PROFILE BACKUP & RESTORE */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#EFF6FF' }]}>
+              <FontAwesome name="cloud-upload" size={14} color="#208AEF" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Cloud Profile & Settings Backup</Text>
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            <View style={styles.rowBetween}>
+              <View style={styles.rowTextCol}>
+                <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>Telegram Cloud Persistence</Text>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Saves your configuration, watched folders, and upload index in your Telegram Saved Messages so you never lose data on reinstall.
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={[styles.smallActionBtn, { flex: 1, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}
+                onPress={handleManualProfileBackup}
+                disabled={isSyncingProfile}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <FontAwesome name="upload" size={12} color="#208AEF" style={{ marginRight: 6 }} />
+                  <Text style={[styles.smallActionBtnText, { color: '#208AEF' }]}>
+                    {isSyncingProfile ? 'Backing Up...' : 'Backup to Cloud'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.smallActionBtn, { flex: 1, backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]}
+                onPress={handleManualProfileRestore}
+                disabled={isSyncingProfile}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                  <FontAwesome name="download" size={12} color="#16A34A" style={{ marginRight: 6 }} />
+                  <Text style={[styles.smallActionBtnText, { color: '#16A34A' }]}>
+                    {isSyncingProfile ? 'Restoring...' : 'Restore from Cloud'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 

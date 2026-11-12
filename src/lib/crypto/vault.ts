@@ -5,7 +5,14 @@ import aesjs from 'aes-js';
 
 const VAULT_KEY_STORE = 'nimo_vault_key';
 const VAULT_SALT_STORE = 'nimo_vault_salt';
+const VAULT_VERIFIER_STORE = 'nimo_vault_verifier';
 const ENC_MAGIC_HEADER = 'NIMO_ENC_V1:';
+
+export interface VaultSyncMetadata {
+  enabled: boolean;
+  salt?: string;
+  keyVerifier?: string;
+}
 
 export class VaultService {
   /**
@@ -26,17 +33,33 @@ export class VaultService {
       `${Date.now()}_${Math.random()}_vault_salt`
     );
     const key = await this.deriveKey(password, salt);
+    const verifier = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      `${key}_nimo_verifier`
+    );
     await SecureStore.setItemAsync(VAULT_KEY_STORE, key);
     await SecureStore.setItemAsync(VAULT_SALT_STORE, salt);
+    await SecureStore.setItemAsync(VAULT_VERIFIER_STORE, verifier);
   }
 
   async verifyMasterPassword(password: string): Promise<boolean> {
     const storedKey = await SecureStore.getItemAsync(VAULT_KEY_STORE).catch(() => null);
     const storedSalt = await SecureStore.getItemAsync(VAULT_SALT_STORE).catch(() => null);
-    if (!storedKey || !storedSalt) return false;
+    if (!storedSalt) return false;
 
     const candidateKey = await this.deriveKey(password, storedSalt);
-    return candidateKey === storedKey;
+    if (storedKey) {
+      return candidateKey === storedKey;
+    }
+    const verifier = await SecureStore.getItemAsync(VAULT_VERIFIER_STORE).catch(() => null);
+    if (verifier) {
+      const candidateVerifier = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        `${candidateKey}_nimo_verifier`
+      );
+      return candidateVerifier === verifier;
+    }
+    return false;
   }
 
   async hasVaultKey(): Promise<boolean> {
@@ -44,9 +67,74 @@ export class VaultService {
     return Boolean(key);
   }
 
+  async isVaultConfigured(): Promise<boolean> {
+    const hasKey = await this.hasVaultKey();
+    if (hasKey) return true;
+    const verifier = await SecureStore.getItemAsync(VAULT_VERIFIER_STORE).catch(() => null);
+    return Boolean(verifier);
+  }
+
   async clearVaultKey(): Promise<void> {
     await SecureStore.deleteItemAsync(VAULT_KEY_STORE).catch(() => {});
     await SecureStore.deleteItemAsync(VAULT_SALT_STORE).catch(() => {});
+    await SecureStore.deleteItemAsync(VAULT_VERIFIER_STORE).catch(() => {});
+  }
+
+  /**
+   * Exports non-secret vault metadata for Telegram Cloud backup.
+   * Does NOT export plaintext password or raw derived AES key.
+   */
+  async exportVaultSyncMetadata(vaultEnabled: boolean = false): Promise<VaultSyncMetadata> {
+    const salt = await SecureStore.getItemAsync(VAULT_SALT_STORE).catch(() => null);
+    let verifier = await SecureStore.getItemAsync(VAULT_VERIFIER_STORE).catch(() => null);
+    if (!verifier) {
+      const key = await SecureStore.getItemAsync(VAULT_KEY_STORE).catch(() => null);
+      if (key) {
+        verifier = await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          `${key}_nimo_verifier`
+        );
+        await SecureStore.setItemAsync(VAULT_VERIFIER_STORE, verifier);
+      }
+    }
+    return {
+      enabled: vaultEnabled,
+      ...(salt ? { salt } : {}),
+      ...(verifier ? { keyVerifier: verifier } : {}),
+    };
+  }
+
+  /**
+   * Imports non-secret vault metadata restored from Telegram Cloud.
+   */
+  async importVaultSyncMetadata(metadata: VaultSyncMetadata): Promise<void> {
+    if (metadata.salt) {
+      await SecureStore.setItemAsync(VAULT_SALT_STORE, metadata.salt);
+    }
+    if (metadata.keyVerifier) {
+      await SecureStore.setItemAsync(VAULT_VERIFIER_STORE, metadata.keyVerifier);
+    }
+  }
+
+  /**
+   * Unlocks vault after reinstall using the user's master password and restored salt/verifier.
+   */
+  async unlockWithMasterPassword(password: string): Promise<boolean> {
+    const salt = await SecureStore.getItemAsync(VAULT_SALT_STORE).catch(() => null);
+    const verifier = await SecureStore.getItemAsync(VAULT_VERIFIER_STORE).catch(() => null);
+    if (!salt || !verifier) return false;
+
+    const candidateKey = await this.deriveKey(password, salt);
+    const candidateVerifier = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      `${candidateKey}_nimo_verifier`
+    );
+
+    if (candidateVerifier === verifier) {
+      await SecureStore.setItemAsync(VAULT_KEY_STORE, candidateKey);
+      return true;
+    }
+    return false;
   }
 
   /**

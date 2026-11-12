@@ -16,7 +16,9 @@ import {
   getConfig,
   recordActionHistory,
   removeUploadedRecord,
+  updateUploadedRecord,
 } from './queue';
+import { computeFastFileHash } from './fileHelper';
 import { tdLibClient } from '../tdlib/client';
 
 export interface ReconciliationResult {
@@ -241,13 +243,14 @@ export async function deleteCloudRecord(record: UploadedRecord): Promise<boolean
  * Scans the Telegram destination chat history and imports existing files into Cloud Explorer.
  */
 export async function importFromTelegramHistory(options: {
+  chatId?: string | number;
   limit?: number;
   onProgress?: (found: number) => void;
 } = {}): Promise<{ imported: number; totalFound: number }> {
-  const [index, chatId] = await Promise.all([
-    getUploadedIndex(),
-    resolveCurrentChatId(),
-  ]);
+  const index = await getUploadedIndex();
+  const chatId = options.chatId !== undefined
+    ? await tdLibClient.resolveTargetChatId(String(options.chatId))
+    : await resolveCurrentChatId();
 
   const existingMsgIds = new Set<number>();
   for (const r of index) {
@@ -259,52 +262,164 @@ export async function importFromTelegramHistory(options: {
     }
   }
 
-  const rawMessages = await tdLibClient.getChatHistory(chatId, 0, options.limit || 100, 0);
+  const maxLimit = options.limit || 200;
+  const pageSize = 50;
+  let fromMessageId = 0;
+  let fetchedTotal = 0;
   const newRecords: UploadedRecord[] = [];
 
-  for (const msg of rawMessages) {
-    if (!msg || !msg.id || existingMsgIds.has(msg.id)) continue;
+  while (fetchedTotal < maxLimit) {
+    const batch = await tdLibClient.getChatHistory(chatId, fromMessageId, Math.min(pageSize, maxLimit - fetchedTotal), 0);
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    fetchedTotal += batch.length;
 
-    const content = msg.content;
-    if (!content) continue;
+    for (const msg of batch) {
+      if (!msg || !msg.id) continue;
+      if (existingMsgIds.has(msg.id)) continue;
 
-    let fileName = `cloud_file_${msg.id}`;
-    let size = 0;
-    let isDoc = false;
+      const content = msg.content;
+      if (!content) continue;
 
-    if (content['@type'] === 'messageDocument' && content.document) {
-      isDoc = true;
-      fileName = content.document.file_name || fileName;
-      size = content.document.document?.size || content.document.size || 0;
-    } else if (content['@type'] === 'messageVideo' && content.video) {
-      isDoc = true;
-      fileName = content.video.file_name || `video_${msg.id}.mp4`;
-      size = content.video.video?.size || content.video.size || 0;
-    } else if (content['@type'] === 'messageAudio' && content.audio) {
-      isDoc = true;
-      fileName = content.audio.file_name || `audio_${msg.id}.mp3`;
-      size = content.audio.audio?.size || content.audio.size || 0;
+      const captionText = content.caption?.text || '';
+      if (captionText.includes('[NIMO_CLOUD_PROFILE_V1]')) continue;
+
+      let fileName = `cloud_file_${msg.id}`;
+      let size = 0;
+      let isDoc = false;
+
+      if (content['@type'] === 'messageDocument' && content.document) {
+        isDoc = true;
+        fileName = content.document.file_name || fileName;
+        size = content.document.document?.size || content.document.size || 0;
+      } else if (content['@type'] === 'messageVideo' && content.video) {
+        isDoc = true;
+        fileName = content.video.file_name || `video_${msg.id}.mp4`;
+        size = content.video.video?.size || content.video.size || 0;
+      } else if (content['@type'] === 'messageAudio' && content.audio) {
+        isDoc = true;
+        fileName = content.audio.file_name || `audio_${msg.id}.mp3`;
+        size = content.audio.audio?.size || content.audio.size || 0;
+      }
+
+      if (fileName === 'nimo_cloud_profile_v1.json') continue;
+
+      if (isDoc) {
+        existingMsgIds.add(msg.id);
+        newRecords.push({
+          uri: `tg://${chatId}/${msg.id}`,
+          fileName,
+          size,
+          uploadedAt: (msg.date || Date.now() / 1000) * 1000,
+          telegramMessageId: msg.id,
+          cloudStatus: 'synced',
+          lastVerifiedAt: Date.now(),
+        });
+        options.onProgress?.(newRecords.length);
+      }
     }
 
-    if (isDoc) {
-      newRecords.push({
-        uri: `tg://${chatId}/${msg.id}`,
-        fileName,
-        size,
-        uploadedAt: (msg.date || Date.now() / 1000) * 1000,
-        telegramMessageId: msg.id,
-        cloudStatus: 'synced',
-        lastVerifiedAt: Date.now(),
-      });
-      options.onProgress?.(newRecords.length);
-    }
+    const lastMsg = batch[batch.length - 1];
+    if (!lastMsg?.id || lastMsg.id === fromMessageId) break;
+    fromMessageId = lastMsg.id;
+    if (batch.length < 20 && fetchedTotal >= pageSize) break;
   }
 
   if (newRecords.length > 0) {
     await saveUploadedIndex([...index, ...newRecords]);
   }
 
-  return { imported: newRecords.length, totalFound: rawMessages.length };
+  return { imported: newRecords.length, totalFound: fetchedTotal };
+}
+
+/**
+ * Runs a pre-upload sync on the destination Telegram chat:
+ * 1. Reconciles stale cloud records to purge missing/deleted messages
+ * 2. Imports new cloud files uploaded from other sessions/devices
+ */
+export async function syncDestinationBeforeUpload(
+  targetChat?: string,
+  onProgress?: (status: string) => void
+): Promise<{ importedCount: number; purgedCount: number }> {
+  try {
+    onProgress?.('Syncing with Telegram cloud...');
+    const chatId = targetChat
+      ? await tdLibClient.resolveTargetChatId(targetChat)
+      : await resolveCurrentChatId();
+
+    const recon = await reconcileCloudIndex({ forceAll: false });
+    const imported = await importFromTelegramHistory({ chatId, limit: 100 });
+    return {
+      importedCount: imported.imported,
+      purgedCount: recon.missing,
+    };
+  } catch (err) {
+    console.warn('[CloudSync] Pre-upload sync failed (non-fatal):', err);
+    return { importedCount: 0, purgedCount: 0 };
+  }
+}
+
+export interface CloudConflictMatch {
+  conflictType: 'exact_hash' | 'name_size_match';
+  record: UploadedRecord;
+}
+
+/**
+ * Detects whether an item about to be uploaded already exists in Telegram Cloud.
+ * Matches first by fast SHA-256 hash + exact size, then by fileName + exact size,
+ * and confirms the candidate message still exists live via TDLib.
+ */
+export async function findCloudConflict(
+  file: { uri: string; fileName: string; size: number; hash?: string },
+  targetChat?: string
+): Promise<CloudConflictMatch | null> {
+  try {
+    const hash = file.hash || (file.uri && file.size > 0 ? await computeFastFileHash(file.uri, file.size) : undefined);
+    const index = await getUploadedIndex();
+    const candidates: { conflictType: CloudConflictMatch['conflictType']; record: UploadedRecord }[] = [];
+
+    if (hash) {
+      const exactMatch = index.find(
+        (r) => r.cloudStatus !== 'missing' && r.size === file.size && r.hash === hash
+      );
+      if (exactMatch) {
+        candidates.push({ conflictType: 'exact_hash', record: exactMatch });
+      }
+    }
+
+    const lowerName = file.fileName.toLowerCase();
+    const nameSizeMatch = index.find(
+      (r) =>
+        r.cloudStatus !== 'missing' &&
+        r.fileName.toLowerCase() === lowerName &&
+        r.size === file.size &&
+        !candidates.some((c) => c.record.uri === r.uri)
+    );
+    if (nameSizeMatch) {
+      candidates.push({ conflictType: 'name_size_match', record: nameSizeMatch });
+    }
+
+    if (candidates.length === 0) return null;
+
+    const chatId = targetChat
+      ? await tdLibClient.resolveTargetChatId(targetChat)
+      : await resolveCurrentChatId();
+
+    for (const candidate of candidates) {
+      if (!candidate.record.telegramMessageId) continue;
+      const verified = await verifyCloudRecord(candidate.record, chatId);
+      if (verified.exists) {
+        // Backfill hash if missing on the existing record and matched by name+size
+        if (hash && !verified.record.hash) {
+          await updateUploadedRecord(verified.record.uri, { hash });
+          verified.record.hash = hash;
+        }
+        return { conflictType: candidate.conflictType, record: verified.record };
+      }
+    }
+  } catch (err) {
+    console.warn('[CloudSync] findCloudConflict check failed (non-fatal):', err);
+  }
+  return null;
 }
 
 /**

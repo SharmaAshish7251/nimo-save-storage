@@ -13,7 +13,9 @@ import {
   formatFileSize,
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
-import { getFileInfo } from '../storage/fileHelper';
+import { getFileInfo, computeFastFileHash } from '../storage/fileHelper';
+import { syncDestinationBeforeUpload, findCloudConflict, deleteCloudRecord } from '../storage/cloudSync';
+import { scheduleCloudProfilePush } from '../storage/cloudProfileSync';
 import * as FileSystem from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
 import { splitFileIntoChunks, needsChunking, cleanupChunks } from './chunker';
@@ -25,6 +27,7 @@ export interface ProcessQueueResult {
   total: number;
   uploaded: number;
   failed: number;
+  paused?: number;
   errors: string[];
   uploadedBytes?: number;
 }
@@ -35,6 +38,9 @@ const PREMIUM_TIER_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4GB - Telegram Premium
 export class UploadManager {
   private queue: any;
   private isRunning = false;
+  private isPaused = false;
+  private activeControllers: Map<string, AbortController> = new Map();
+  private pausedItemIds: Set<string> = new Set();
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
   // Fix 1.6: In-memory progress cache to avoid AsyncStorage thrashing
   private inMemoryProgress: Map<string, { progress: number; speedKbps: number }> = new Map();
@@ -58,6 +64,123 @@ export class UploadManager {
    */
   public get isActive(): boolean {
     return this.isRunning;
+  }
+
+  public get isQueuePaused(): boolean {
+    return this.isPaused;
+  }
+
+  /**
+   * Pause the entire active upload queue: aborts active TDLib transfers cleanly,
+   * clears unstarted queued tasks, and marks uploading/pending items as 'paused'.
+   */
+  public async pauseQueue(): Promise<void> {
+    this.isPaused = true;
+    try {
+      if (this.queue && typeof this.queue.clear === 'function') {
+        this.queue.clear();
+      }
+    } catch {}
+
+    for (const [itemId, controller] of this.activeControllers.entries()) {
+      this.pausedItemIds.add(itemId);
+      try {
+        controller.abort();
+      } catch {}
+    }
+
+    const queue = await getQueue();
+    let changed = false;
+    const updated = queue.map((item) => {
+      if (item.status === 'uploading' || item.status === 'pending') {
+        changed = true;
+        const live = this.inMemoryProgress.get(item.id)?.progress;
+        return {
+          ...item,
+          status: 'paused' as const,
+          progress: live ?? item.progress ?? 0,
+          speedKbps: undefined,
+        };
+      }
+      return item;
+    });
+    if (changed) {
+      await saveQueue(updated);
+    }
+  }
+
+  /**
+   * Resume all paused items in the queue and trigger processing if idle.
+   */
+  public async resumeQueue(): Promise<ProcessQueueResult | null> {
+    this.isPaused = false;
+    this.pausedItemIds.clear();
+
+    const queue = await getQueue();
+    let changed = false;
+    const updated = queue.map((item) => {
+      if (item.status === 'paused') {
+        changed = true;
+        return {
+          ...item,
+          status: 'pending' as const,
+          error: undefined,
+        };
+      }
+      return item;
+    });
+    if (changed) {
+      await saveQueue(updated);
+    }
+
+    if (!this.isRunning) {
+      return await this.processQueue({ forceManual: true });
+    }
+    return null;
+  }
+
+  /**
+   * Pause a single queue item (aborts active TDLib transfer if currently uploading).
+   */
+  public async pauseItem(id: string): Promise<void> {
+    this.pausedItemIds.add(id);
+    const controller = this.activeControllers.get(id);
+    if (controller) {
+      try {
+        controller.abort();
+      } catch {}
+    }
+    const queue = await getQueue();
+    const target = queue.find((item) => item.id === id);
+    if (target && (target.status === 'uploading' || target.status === 'pending')) {
+      const live = this.inMemoryProgress.get(id)?.progress;
+      await this.updateItemStatus(id, 'paused', live ?? target.progress ?? 0);
+    }
+  }
+
+  /**
+   * Resume a single paused queue item.
+   */
+  public async resumeItem(id: string): Promise<void> {
+    this.pausedItemIds.delete(id);
+    const queue = await getQueue();
+    const idx = queue.findIndex((item) => item.id === id);
+    if (idx < 0) return;
+
+    const item = {
+      ...queue[idx],
+      status: 'pending' as const,
+      error: undefined,
+    };
+    queue[idx] = item;
+    await saveQueue(queue);
+
+    if (this.isRunning && !this.isPaused) {
+      this.queue.add(() => this.uploadItem(item).catch(() => {}));
+    } else if (!this.isRunning) {
+      this.isPaused = false;
+      await this.uploadSingleItem(item);
+    }
   }
   
   constructor(concurrency: number = 3) {
@@ -89,6 +212,8 @@ export class UploadManager {
       throw new Error('Upload is already in progress.');
     }
     this.isRunning = true;
+    this.isPaused = false;
+    this.pausedItemIds.clear();
     
     try {
       // 1. Verify Telegram authentication first
@@ -123,31 +248,50 @@ export class UploadManager {
       this.totalBatchBytes = pendingItems.reduce((acc: number, it: QueueItem) => acc + (it.size || 0), 0);
       this.uploadedBatchBytes = 0;
 
+      // Pre-upload Cloud Sync: ensure destination chat history and local index are fresh
+      try {
+        await syncDestinationBeforeUpload(config.targetChatId);
+      } catch (syncErr) {
+        console.warn('[UploadManager] Pre-upload cloud sync skipped:', syncErr);
+      }
+
       // Start initial progress notification
       uploadNotificationService.showUploadProgress(0, this.totalBatchItems, 0, 0, 0).catch(() => {});
 
       let uploadedCount = 0;
       let failedCount = 0;
+      let pausedCount = 0;
       const errorMessages: string[] = [];
 
       for (const item of pendingItems) {
         this.queue.add(async () => {
+          if (this.isPaused || this.pausedItemIds.has(item.id)) {
+            pausedCount++;
+            await this.updateItemStatus(item.id, 'paused', item.progress ?? 0);
+            return;
+          }
           try {
             await this.uploadItem(item);
-            uploadedCount++;
-            this.completedBatchItems++;
-            this.uploadedBatchBytes += (item.size || 0);
-            const batchPercent = this.totalBatchBytes > 0
-              ? Math.round((this.uploadedBatchBytes / this.totalBatchBytes) * 100)
-              : Math.round((this.completedBatchItems / this.totalBatchItems) * 100);
-            uploadNotificationService.showUploadProgress(
-              this.completedBatchItems,
-              this.totalBatchItems,
-              batchPercent,
-              0,
-              0
-            ).catch(() => {});
+            if (!this.pausedItemIds.has(item.id) && !this.isPaused) {
+              uploadedCount++;
+              this.completedBatchItems++;
+              this.uploadedBatchBytes += (item.size || 0);
+              const batchPercent = this.totalBatchBytes > 0
+                ? Math.round((this.uploadedBatchBytes / this.totalBatchBytes) * 100)
+                : Math.round((this.completedBatchItems / this.totalBatchItems) * 100);
+              uploadNotificationService.showUploadProgress(
+                this.completedBatchItems,
+                this.totalBatchItems,
+                batchPercent,
+                0,
+                0
+              ).catch(() => {});
+            }
           } catch (err: any) {
+            if (err?.message === 'UPLOAD_PAUSED') {
+              pausedCount++;
+              return;
+            }
             failedCount++;
             const msg = err.message || 'Upload failed';
             if (!errorMessages.includes(msg)) {
@@ -159,12 +303,19 @@ export class UploadManager {
       
       await this.queue.onIdle();
 
-      await uploadNotificationService.showUploadComplete(uploadedCount, this.uploadedBatchBytes);
+      if (!this.isPaused) {
+        await uploadNotificationService.showUploadComplete(uploadedCount, this.uploadedBatchBytes);
+      }
+
+      if (uploadedCount > 0) {
+        scheduleCloudProfilePush();
+      }
 
       return {
         total: pendingItems.length,
         uploaded: uploadedCount,
         failed: failedCount,
+        paused: pausedCount,
         errors: errorMessages,
         uploadedBytes: this.uploadedBatchBytes,
       };
@@ -185,7 +336,9 @@ export class UploadManager {
       throw new Error(netCheck.reason || 'No internet connection.');
     }
 
-    await this.uploadItem(item);
+    await this.uploadItem(item).catch((err) => {
+      if (err?.message !== 'UPLOAD_PAUSED') throw err;
+    });
   }
 
   async retryItem(id: string): Promise<void> {
@@ -198,8 +351,14 @@ export class UploadManager {
   
   private async uploadItem(item: QueueItem): Promise<void> {
     const startTime = Date.now();
+    if (this.isPaused || this.pausedItemIds.has(item.id)) {
+      await this.updateItemStatus(item.id, 'paused', item.progress ?? 0);
+      throw new Error('UPLOAD_PAUSED');
+    }
+    const abortController = new AbortController();
+    this.activeControllers.set(item.id, abortController);
     try {
-      await this.updateItemStatus(item.id, 'uploading', 0, undefined, startTime);
+      await this.updateItemStatus(item.id, 'uploading', item.progress ?? 0, undefined, startTime);
       
       const fileInfo = await getFileInfo(item.uri);
       if (!fileInfo.exists && !item.uri.startsWith('content://')) {
@@ -237,10 +396,53 @@ export class UploadManager {
         }
       }
 
+      // Pre-upload Duplicate Conflict Check
+      const fastHash = await computeFastFileHash(item.uri, actualSize).catch(() => undefined);
+      const conflict = await findCloudConflict(
+        {
+          uri: item.uri,
+          fileName: item.fileName,
+          size: actualSize,
+          hash: fastHash,
+        },
+        targetChat
+      );
+
+      if (conflict) {
+        const policy = config.duplicatePolicy || 'skip_if_cloud_match';
+        if (policy === 'skip_if_cloud_match') {
+          console.log(`[UploadManager] Cloud match found for ${item.fileName} (${conflict.conflictType}). Linking local copy to existing Telegram message ${conflict.record.telegramMessageId}`);
+          const destName =
+            config.targetChatTitle ||
+            (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+
+          await completeUploadAtomically({
+            queueId: item.id,
+            uri: item.uri,
+            fileName: item.fileName,
+            size: actualSize,
+            hash: fastHash || conflict.record.hash,
+            telegramMessageId: conflict.record.telegramMessageId,
+            mediaAssetId: item.mediaAssetId,
+            uploadedAt: Date.now(),
+            uploadDurationMs: 0,
+            destination: destName,
+            chunkManifest: conflict.record.chunkManifest,
+          });
+
+          this.inMemoryProgress.delete(item.id);
+          delete this.progressTrack[item.id];
+          return;
+        } else if (policy === 'replace_cloud') {
+          console.log(`[UploadManager] Cloud match found for ${item.fileName}. Replacing cloud message ${conflict.record.telegramMessageId}`);
+          await deleteCloudRecord(conflict.record).catch(() => {});
+        }
+      }
+
       // ── Multi-part chunking for free-tier accounts with large files ──────
       // Triggered when file > 1.95 GB on a free Telegram account.
       if (!isPremium && actualSize && needsChunking(actualSize)) {
-        await this.uploadItemAsChunks(item, actualSize, targetChat, config, startTime);
+        await this.uploadItemAsChunks(item, actualSize, targetChat, config, startTime, abortController.signal, fastHash);
         return;
       }
 
@@ -317,7 +519,14 @@ export class UploadManager {
 
       console.log('[UploadManager] Uploading via native TDLib MTProto engine');
       try {
-        result = await tdLibClient.sendFile(uploadUri, uploadFileName, targetChat, onUploadProgress);
+        result = await tdLibClient.sendFile(
+          uploadUri,
+          uploadFileName,
+          targetChat,
+          onUploadProgress,
+          undefined,
+          abortController.signal,
+        );
       } finally {
         if (tempVaultPath) {
           await FileSystem.deleteAsync(tempVaultPath, { idempotent: true }).catch(() => {});
@@ -337,7 +546,9 @@ export class UploadManager {
         uri: item.uri,
         fileName: item.fileName,
         size: actualSize ?? item.size,
+        hash: fastHash,
         telegramMessageId: result?.id,
+        mediaAssetId: item.mediaAssetId,
         uploadedAt: Date.now(),
         uploadDurationMs: durationMs,
         destination: destName,
@@ -349,6 +560,19 @@ export class UploadManager {
 
       console.log(`Uploaded ${item.fileName} successfully in ${(durationMs / 1000).toFixed(1)}s`);
     } catch (error: any) {
+      if (
+        error?.message === 'UPLOAD_PAUSED' ||
+        abortController.signal.aborted ||
+        this.isPaused ||
+        this.pausedItemIds.has(item.id)
+      ) {
+        const liveProgress = this.inMemoryProgress.get(item.id)?.progress;
+        this.inMemoryProgress.delete(item.id);
+        delete this.progressTrack[item.id];
+        await this.updateItemStatus(item.id, 'paused', liveProgress ?? item.progress ?? 0);
+        throw new Error('UPLOAD_PAUSED');
+      }
+
       const durationMs = Date.now() - startTime;
       console.error(`Failed to upload ${item.fileName}:`, error);
       uploadNotificationService.showUploadError(item.fileName, error.message || 'Upload failed').catch(() => {});
@@ -376,6 +600,8 @@ export class UploadManager {
       } catch {}
 
       throw error;
+    } finally {
+      this.activeControllers.delete(item.id);
     }
   }
 
@@ -391,6 +617,8 @@ export class UploadManager {
     targetChat: string,
     config: Awaited<ReturnType<typeof getConfig>>,
     startTime: number,
+    abortSignal?: AbortSignal,
+    fastHash?: string,
   ): Promise<void> {
     let chunkPaths: string[] = [];
     try {
@@ -409,6 +637,9 @@ export class UploadManager {
 
       // 2. Upload each chunk sequentially
       for (let i = 0; i < chunkPaths.length; i++) {
+        if (abortSignal?.aborted || this.isPaused || this.pausedItemIds.has(item.id)) {
+          throw new Error('UPLOAD_PAUSED');
+        }
         const partNumber = i + 1;
         const chunkPath = chunkPaths[i];
 
@@ -446,6 +677,7 @@ export class UploadManager {
           targetChat,
           onChunkProgress,
           caption,
+          abortSignal,
         );
 
         manifestParts.push({
@@ -473,8 +705,10 @@ export class UploadManager {
         uri: item.uri,
         fileName: item.fileName,
         size: actualSize,
+        hash: fastHash,
         // Use the first part's message ID as the representative ID
         telegramMessageId: manifestParts[0]?.telegramMessageId,
+        mediaAssetId: item.mediaAssetId,
         uploadedAt: Date.now(),
         uploadDurationMs: durationMs,
         destination: destName,

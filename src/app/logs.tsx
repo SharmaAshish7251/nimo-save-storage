@@ -9,7 +9,7 @@ import {
   ScrollView,
   useColorScheme,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
@@ -123,6 +123,7 @@ function LogRow({ item, isDark }: LogRowProps) {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function LogsScreen() {
+  const insets = useSafeAreaInsets();
   const scheme = useColorScheme();
   const isDark = scheme === 'dark';
 
@@ -286,7 +287,11 @@ export default function LogsScreen() {
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         style={styles.list}
-        contentContainerStyle={filteredLogs.length === 0 ? styles.emptyContainer : undefined}
+        contentContainerStyle={
+          filteredLogs.length === 0
+            ? styles.emptyContainer
+            : { paddingBottom: Math.max(insets.bottom, 16) + 20 }
+        }
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollToIndexFailed={() => {}}
         removeClippedSubviews
@@ -304,7 +309,14 @@ export default function LogsScreen() {
       {/* ── Scroll-to-bottom FAB (shown when auto-scroll is off) ── */}
       {!autoScroll && filteredLogs.length > 0 && (
         <TouchableOpacity
-          style={[styles.fab, { backgroundColor: headerBg, borderColor: borderC }]}
+          style={[
+            styles.fab,
+            {
+              backgroundColor: headerBg,
+              borderColor: borderC,
+              bottom: Math.max(insets.bottom, 16) + 12,
+            },
+          ]}
           onPress={handleScrollToBottom}
         >
           <FontAwesome name="arrow-down" size={14} color="#208AEF" />

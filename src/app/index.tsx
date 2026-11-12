@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   Image,
   ScrollView,
@@ -11,7 +12,7 @@ import {
   View,
   useColorScheme,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
@@ -33,10 +34,12 @@ import { tdLibClient } from '@/lib/tdlib/client';
 import { schedulerEngine, calculateNextEstimatedRun } from '@/lib/scheduler/schedulerEngine';
 import { analyzeCleanableSpace } from '@/lib/storage/cleaner';
 import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
+import { restoreFromCloudProfile, PROFILE_RESTORED_FLAG } from '@/lib/storage/cloudProfileSync';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -63,10 +66,10 @@ export default function HomeScreen() {
     try {
       const [
         loginStatus,
-        appConfig,
-        queueItems,
-        uploadedItems,
-        schedState,
+        initialConfig,
+        initialQueue,
+        initialUploaded,
+        initialSched,
         history,
       ] = await Promise.all([
         tdLibClient.isLoggedIn().catch(() => false),
@@ -76,6 +79,35 @@ export default function HomeScreen() {
         getSchedulerState().catch(() => ({})),
         getActionHistory().catch(() => []),
       ]);
+
+      let appConfig = initialConfig;
+      let queueItems = initialQueue;
+      let uploadedItems = initialUploaded;
+      let schedState = initialSched;
+
+      if (loginStatus) {
+        const alreadyRestored = await AsyncStorage.getItem(PROFILE_RESTORED_FLAG);
+        if (!alreadyRestored) {
+          const restoreRes = await restoreFromCloudProfile().catch(() => null);
+          if (restoreRes?.restored) {
+            console.log('[Home] Auto-restored profile from Telegram Saved Messages');
+            const [freshConfig, freshQueue, freshUploaded, freshSched] = await Promise.all([
+              getConfig(),
+              getQueue().catch(() => []),
+              getUploadedIndex().catch(() => []),
+              getSchedulerState().catch(() => ({})),
+            ]);
+            appConfig = freshConfig;
+            schedState = freshSched;
+            queueItems = freshQueue;
+            uploadedItems = freshUploaded;
+            Alert.alert(
+              'Profile Restored from Telegram',
+              'Your previous settings, watched folders, and upload history were successfully restored from Telegram Cloud.'
+            );
+          }
+        }
+      }
 
       setLoggedIn(loginStatus);
       setConfig(appConfig);
@@ -465,7 +497,7 @@ export default function HomeScreen() {
           </View>
         )}
 
-        <View style={{ height: 32 }} />
+        <View style={{ height: Math.max(insets.bottom, 20) + 24 }} />
       </ScrollView>
 
       {/* Free Up Space Modal */}

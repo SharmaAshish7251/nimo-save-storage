@@ -1,17 +1,18 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Animated,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { useAppTheme } from '@/context/ThemeContext';
 
 const TOTAL_STEPS = 4;
 
@@ -140,10 +141,13 @@ const STEPS: StepConfig[] = [
 ];
 
 export default function OnboardingScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
 
   // Animation values for smooth cross-fade & micro-slide
   const [fadeAnim] = useState(() => new Animated.Value(1));

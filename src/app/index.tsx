@@ -15,7 +15,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
-import { router, useFocusEffect } from 'expo-router';
+import { Redirect, router, useFocusEffect } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import { useAppTheme } from '@/context/ThemeContext';
 import {
   formatFileSize,
@@ -42,8 +43,8 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { isDark, toggleTheme } = useAppTheme();
 
+  const [onboardingStatus, setOnboardingStatus] = useState<'checking' | 'needed' | 'done'>('checking');
   const [loggedIn, setLoggedIn] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [schedulerState, setSchedulerState] = useState<SchedulerState | null>(null);
   const [queueInfo, setQueueInfo] = useState<{ count: number; totalBytes: number }>({
@@ -151,31 +152,45 @@ export default function HomeScreen() {
         .catch(() => {});
     } catch (error) {
       console.error('Home load error:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
-  // One-time guard: redirect to onboarding only on first mount if not yet completed.
+  // Guard: check onboarding completion status
   useEffect(() => {
-    AsyncStorage.getItem('nimo_onboarding_done').then((done) => {
-      if (!done) {
-        router.replace('/onboarding' as never);
+    let active = true;
+    AsyncStorage.getItem('nimo_onboarding_done').then((val) => {
+      if (!active) return;
+      const isDone = val === '1' || val === 'true';
+      if (!isDone) {
+        setOnboardingStatus('needed');
+      } else {
+        setOnboardingStatus('done');
       }
     });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // Re-fetch data every time the screen comes into focus.
+  useEffect(() => {
+    if (onboardingStatus === 'done') {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [onboardingStatus]);
+
+  // Re-fetch data when the screen comes into focus.
   useFocusEffect(
     useCallback(() => {
-      checkStatus();
+      if (onboardingStatus === 'done') {
+        checkStatus();
+      }
       const unsub = tdLibClient.onAuthStateChange((state) => {
         setLoggedIn(state === 'authorizationStateReady');
       });
       return () => {
         unsub();
       };
-    }, [])
+    }, [onboardingStatus])
   );
 
   const handleSyncNow = async () => {
@@ -197,21 +212,12 @@ export default function HomeScreen() {
     }
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={[styles.loadingContainer, isDark && styles.containerDark]}>
-        <Image
-          style={styles.loadingLogo}
-          source={require('@/assets/images/app-logo.png')}
-          resizeMode="contain"
-        />
-        <ActivityIndicator size="large" color="#208AEF" style={{ marginTop: 24 }} />
-        <Text style={[styles.loadingTitle, isDark && styles.textDarkPrimary]}>Nimo Save Storage</Text>
-        <Text style={[styles.loadingSubtitle, isDark && styles.textDarkSecondary]}>
-          Connecting to Telegram MTProto...
-        </Text>
-      </SafeAreaView>
-    );
+  if (onboardingStatus === 'checking') {
+    return null;
+  }
+
+  if (onboardingStatus === 'needed') {
+    return <Redirect href={'/onboarding' as any} />;
   }
 
   const bg = isDark ? '#0F172A' : '#F8FAFC';
@@ -531,37 +537,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  containerDark: {
-    backgroundColor: '#0F172A',
-  },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     padding: 16,
     paddingBottom: 24,
-  },
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F8FAFC',
-    padding: 32,
-  },
-  loadingLogo: {
-    width: 90,
-    height: 90,
-  },
-  loadingTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginTop: 18,
-  },
-  loadingSubtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 6,
   },
   topBarRow: {
     flexDirection: 'row',
@@ -832,11 +813,5 @@ const styles = StyleSheet.create({
   recentTime: {
     fontSize: 11,
     fontWeight: '500',
-  },
-  textDarkPrimary: {
-    color: '#F8FAFC',
-  },
-  textDarkSecondary: {
-    color: '#94A3B8',
   },
 });

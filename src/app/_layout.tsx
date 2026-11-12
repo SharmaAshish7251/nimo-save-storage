@@ -5,7 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 
 import { ThemeProvider as AppThemeProvider, useAppTheme } from '@/context/ThemeContext';
@@ -50,6 +50,8 @@ function RootLayoutNav() {
 }
 
 export default function RootLayout() {
+  const [appIsReady, setAppIsReady] = useState(false);
+
   useEffect(() => {
     async function prepare() {
       try {
@@ -83,7 +85,7 @@ export default function RootLayout() {
       } catch (err) {
         console.warn('App initialization error:', err);
       } finally {
-        await SplashScreen.hideAsync().catch(() => {});
+        setAppIsReady(true);
       }
     }
 
@@ -93,6 +95,10 @@ export default function RootLayout() {
       schedulerEngine.stopActiveRunner();
     };
   }, []);
+
+  if (!appIsReady) {
+    return null;
+  }
 
   return (
     <AppThemeProvider>

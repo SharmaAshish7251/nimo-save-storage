@@ -419,6 +419,30 @@ export async function resolveLocalFileTarget(params: {
     }
   }
 
+  // 4b. Common Android public storage directories for single DocumentPicker files
+  if (uri.startsWith('content://') && fileName) {
+    const candidateDirs = [
+      'file:///storage/emulated/0/Download/',
+      'file:///storage/emulated/0/Documents/',
+      'file:///storage/emulated/0/DCIM/',
+      'file:///storage/emulated/0/Pictures/',
+    ];
+    for (const dir of candidateDirs) {
+      const candidateUri = `${dir}${fileName}`;
+      const stat = await statLocalFileUri(candidateUri);
+      if (stat.exists && (size <= 0 || stat.size <= 0 || stat.size === size)) {
+        return {
+          exists: true,
+          size: stat.size > 0 ? stat.size : size,
+          resolvedUri: candidateUri,
+          mediaAssetId: params.mediaAssetId,
+          canAutoDelete: true,
+          isContentOnly: false,
+        };
+      }
+    }
+  }
+
   // 5. Fallback: inspect the content:// URI directly without blindly assuming existence
   let contentExists = false;
   let contentSize = 0;

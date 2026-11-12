@@ -50,6 +50,8 @@ export interface AppConfig {
   vaultEnabled?: boolean;
   // Duplicate conflict policy when uploading
   duplicatePolicy?: DuplicatePolicy;
+  // Appearance / Theme mode ('system' follows OS, 'light', or 'dark')
+  themeMode?: 'system' | 'light' | 'dark';
 }
 
 export interface SchedulerState {
@@ -96,6 +98,7 @@ const DEFAULT_CONFIG: AppConfig = {
   multiChannelRouting: false,
   vaultEnabled: false,
   duplicatePolicy: 'skip_if_cloud_match',
+  themeMode: 'system',
 };
 
 type ConfigSavedListener = (updated: AppConfig) => void;

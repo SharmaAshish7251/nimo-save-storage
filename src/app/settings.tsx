@@ -10,7 +10,6 @@ import {
   Image,
   ActivityIndicator,
   Alert,
-  useColorScheme,
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +18,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { useAppTheme } from '@/context/ThemeContext';
 import { vaultService } from '@/lib/crypto/vault';
 import {
   getConfig,
@@ -150,8 +150,7 @@ function formatTime12(timeStr: string): { time: string; period: string; military
 }
 
 export default function SettingsScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { themeMode, isDark, setThemeMode } = useAppTheme();
 
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [schedulerState, setSchedulerState] = useState<SchedulerState | null>(null);
@@ -1670,6 +1669,115 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* SECTION: APPEARANCE & THEME */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeaderRow}>
+            <View style={[styles.sectionIconBadge, { backgroundColor: '#FEF3C7' }]}>
+              <FontAwesome name="paint-brush" size={14} color="#D97706" />
+            </View>
+            <Text style={[styles.sectionHeading, isDark && styles.textDarkPrimary]}>Appearance & Theme</Text>
+          </View>
+
+          <View style={[styles.card, isDark && styles.cardDark]}>
+            <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary, { marginBottom: 4 }]}>
+              Theme Preference
+            </Text>
+            <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary, { marginBottom: 14 }]}>
+              Choose how Nimo Save Storage appears on your device.
+            </Text>
+
+            <View style={styles.themeGrid}>
+              {/* Option 1: Light */}
+              <TouchableOpacity
+                style={[
+                  styles.themeOptionCard,
+                  themeMode === 'light' && styles.themeOptionCardActive,
+                  { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' },
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setThemeMode('light');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.themeIconCircle, { backgroundColor: '#FEF3C7' }]}>
+                  <FontAwesome name="sun-o" size={18} color="#D97706" />
+                </View>
+                <Text style={[styles.themeOptionTitle, isDark && styles.textDarkPrimary]}>Light</Text>
+                <Text style={[styles.themeOptionSub, isDark && styles.textDarkSecondary]}>Crisp & bright</Text>
+                {themeMode === 'light' && (
+                  <View style={styles.themeActiveBadge}>
+                    <FontAwesome name="check" size={10} color="#FFFFFF" />
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Option 2: Dark */}
+              <TouchableOpacity
+                style={[
+                  styles.themeOptionCard,
+                  themeMode === 'dark' && styles.themeOptionCardActive,
+                  { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' },
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setThemeMode('dark');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.themeIconCircle, { backgroundColor: '#312E81' }]}>
+                  <FontAwesome name="moon-o" size={18} color="#818CF8" />
+                </View>
+                <Text style={[styles.themeOptionTitle, isDark && styles.textDarkPrimary]}>Dark</Text>
+                <Text style={[styles.themeOptionSub, isDark && styles.textDarkSecondary]}>Easy on eyes</Text>
+                {themeMode === 'dark' && (
+                  <View style={styles.themeActiveBadge}>
+                    <FontAwesome name="check" size={10} color="#FFFFFF" />
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Option 3: System */}
+              <TouchableOpacity
+                style={[
+                  styles.themeOptionCard,
+                  themeMode === 'system' && styles.themeOptionCardActive,
+                  { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' },
+                ]}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setThemeMode('system');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.themeIconCircle, { backgroundColor: '#E2E8F0' }]}>
+                  <FontAwesome name="desktop" size={16} color="#475569" />
+                </View>
+                <Text style={[styles.themeOptionTitle, isDark && styles.textDarkPrimary]}>System</Text>
+                <Text style={[styles.themeOptionSub, isDark && styles.textDarkSecondary]}>Follows OS</Text>
+                {themeMode === 'system' && (
+                  <View style={styles.themeActiveBadge}>
+                    <FontAwesome name="check" size={10} color="#FFFFFF" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.themeStatusRow, { backgroundColor: isDark ? '#0F172A' : '#F1F5F9' }]}>
+              <FontAwesome
+                name={isDark ? 'moon-o' : 'sun-o'}
+                size={13}
+                color={isDark ? '#818CF8' : '#D97706'}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={[styles.themeStatusText, isDark && styles.textDarkSecondary]}>
+                Active: <Text style={{ fontWeight: '700', color: isDark ? '#F8FAFC' : '#0F172A' }}>{isDark ? 'Dark Mode' : 'Light Mode'}</Text>
+                {themeMode === 'system' ? ' (Automatic via Device System)' : ''}
+              </Text>
+            </View>
+          </View>
+        </View>
+
         {/* SECTION 7: DIAGNOSTICS & ACCOUNT ACTIONS */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeaderRow}>
@@ -2855,5 +2963,66 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  /* Theme Preference Styles */
+  themeGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  themeOptionCard: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    position: 'relative',
+  },
+  themeOptionCardActive: {
+    borderColor: '#208AEF',
+    backgroundColor: '#EFF6FF',
+  },
+  themeIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  themeOptionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 2,
+  },
+  themeOptionSub: {
+    fontSize: 10,
+    color: '#64748B',
+  },
+  themeActiveBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#208AEF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  themeStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  themeStatusText: {
+    fontSize: 12,
+    color: '#475569',
   },
 });

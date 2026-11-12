@@ -10,13 +10,13 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
 import { router, useFocusEffect } from 'expo-router';
+import { useAppTheme } from '@/context/ThemeContext';
 import {
   formatFileSize,
   getConfig,
@@ -40,8 +40,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark, toggleTheme } = useAppTheme();
 
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -259,6 +258,22 @@ export default function HomeScreen() {
                 </Text>
               </View>
             )}
+
+            {/* Quick Theme Toggle Button */}
+            <TouchableOpacity
+              style={[styles.settingsIconBtn, { backgroundColor: cardBg, borderColor: border }]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                toggleTheme();
+              }}
+              accessibilityLabel="Toggle Light / Dark mode"
+            >
+              <FontAwesome
+                name={isDark ? 'sun-o' : 'moon-o'}
+                size={16}
+                color={isDark ? '#F59E0B' : '#6366F1'}
+              />
+            </TouchableOpacity>
 
             <TouchableOpacity
               style={[styles.settingsIconBtn, { backgroundColor: cardBg, borderColor: border }]}

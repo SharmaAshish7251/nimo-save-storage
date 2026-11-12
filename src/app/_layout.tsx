@@ -3,10 +3,12 @@ import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { useColorScheme, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect } from 'react';
+import { StatusBar } from 'expo-status-bar';
 
+import { ThemeProvider as AppThemeProvider, useAppTheme } from '@/context/ThemeContext';
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
@@ -27,9 +29,27 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => voi
   );
 }
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
+function RootLayoutNav() {
+  const { isDark } = useAppTheme();
 
+  return (
+    <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Stack>
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+        <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
+        <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
+        <Stack.Screen name="logs" options={{ title: 'Logs' }} />
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+      </Stack>
+      <BiometricLockOverlay />
+    </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
@@ -75,18 +95,9 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
-        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-        <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
-        <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
-        <Stack.Screen name="logs" options={{ title: 'Logs' }} />
-        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      </Stack>
-      <BiometricLockOverlay />
-    </ThemeProvider>
+    <AppThemeProvider>
+      <RootLayoutNav />
+    </AppThemeProvider>
   );
 }
 

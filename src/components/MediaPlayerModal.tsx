@@ -10,6 +10,7 @@ import {
   useColorScheme,
   ActivityIndicator,
   ScrollView,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -111,8 +112,8 @@ export function MediaPlayerModal({
     }
 
     const initialUri =
-      item.cachedLocalUri ||
-      (item.existsLocally && !item.uri.startsWith('tg://') ? item.uri : null);
+      (item.cachedLocalUri && item.cachedLocalUri.startsWith('file://') ? item.cachedLocalUri : null) ||
+      (item.existsLocally && !item.uri.startsWith('tg://') && item.uri.startsWith('file://') ? item.uri : null);
     setResolvedUri(initialUri);
 
     if (!initialUri && (isImage || isTextDoc) && onLoadPreview && item.cloudStatus !== 'missing') {
@@ -334,7 +335,10 @@ export function MediaPlayerModal({
         <View
           style={[
             styles.bottomBar,
-            { backgroundColor: cardBg, paddingBottom: Math.max(insets.bottom, 16) + 8 },
+            {
+              backgroundColor: cardBg,
+              paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 16) + 12,
+            },
           ]}
         >
           <TouchableOpacity

@@ -969,7 +969,10 @@ class TdLibClientService {
             canPost = true;
           } else if (statusType === 'chatMemberStatusAdministrator') {
             isAdmin = true;
-            canPost = isChannel ? Boolean(sg.status?.rights?.can_post_messages) : true;
+            // Default user can post/select channels/groups where they are an administrator
+            canPost = isChannel
+              ? sg.status?.rights?.can_post_messages !== false
+              : true;
           } else {
             isCreator = isCreated;
             isAdmin = isCreated;
@@ -1052,7 +1055,7 @@ class TdLibClientService {
 
     try {
       // 1. Load main chat list chunks into TDLib memory/cache
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 6; i++) {
         const msg = await TdLib.loadChats(100).catch(() => null);
         if (typeof msg === 'string' && msg.toLowerCase().includes('no more chats')) {
           break;

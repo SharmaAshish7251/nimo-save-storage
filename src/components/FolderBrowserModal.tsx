@@ -8,6 +8,7 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -379,7 +380,7 @@ export function FolderBrowserModal({
               <View
                 style={[
                   styles.folderBottomActions,
-                  { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+                  { paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 34 : 16) + 14 },
                 ]}
               >
                 <TouchableOpacity
@@ -555,7 +556,7 @@ export function FolderBrowserModal({
               <View
                 style={[
                   styles.bottomBar,
-                  { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+                  { paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 34 : 16) + 14 },
                 ]}
               >
                 <View style={styles.selectionSummary}>

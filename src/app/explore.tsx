@@ -463,7 +463,13 @@ export default function CloudExplorerScreen() {
       for (let i = 0; i < selectedItemsList.length; i++) {
         const it = selectedItemsList[i];
         setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
-        const fileUri = await downloadCloudItemToLocal(it);
+        let fileUri = await downloadCloudItemToLocal(it);
+        if (!fileUri.startsWith('file://')) {
+          fileUri = await ensureFileSchemeUri(fileUri, it.fileName);
+        }
+        if (!fileUri.startsWith('file://')) {
+          fileUri = `file://${fileUri}`;
+        }
         await Sharing.shareAsync(fileUri, {
           mimeType: getMimeTypeFromFileName(it.fileName),
           dialogTitle: `Share ${it.fileName}`,
@@ -512,25 +518,30 @@ export default function CloudExplorerScreen() {
 
   const downloadCloudItemToLocal = useCallback(async (item: CloudItem): Promise<string> => {
     // Reuse verified cached file:// copy if available
-    if (item.cachedLocalUri) {
+    if (item.cachedLocalUri && item.cachedLocalUri.startsWith('file://')) {
       const cachedInfo = await FileSystem.getInfoAsync(item.cachedLocalUri).catch(() => ({ exists: false }));
       if (cachedInfo.exists) return item.cachedLocalUri;
     }
 
     // If stored locally on device (including Android content:// URIs), normalize to a file:// URI
     if (item.existsLocally && !item.uri.startsWith('tg://')) {
-      const target = await resolveLocalFileTarget({
-        uri: item.uri,
-        fileName: item.fileName,
-        size: item.size,
-        mediaAssetId: item.mediaAssetId,
-        allowMediaMatch: true,
-        requestPermission: false,
-      }).catch(() => null);
-      if (target?.exists && target.resolvedUri) {
-        const fileUri = await ensureFileSchemeUri(target.resolvedUri, item.fileName);
-        cacheResolvedUri(item.uri, fileUri);
-        return fileUri;
+      try {
+        const target = await resolveLocalFileTarget({
+          uri: item.uri,
+          fileName: item.fileName,
+          size: item.size,
+          mediaAssetId: item.mediaAssetId,
+          allowMediaMatch: true,
+          requestPermission: false,
+        });
+        if (target?.exists && target.resolvedUri) {
+          const fileUri = await ensureFileSchemeUri(target.resolvedUri, item.fileName);
+          const safeFileUri = fileUri.startsWith('file://') ? fileUri : `file://${fileUri}`;
+          cacheResolvedUri(item.uri, safeFileUri);
+          return safeFileUri;
+        }
+      } catch {
+        // Fall back to Telegram cloud download if local resolution fails
       }
     }
 
@@ -563,8 +574,9 @@ export default function CloudExplorerScreen() {
       await reassembleChunks(downloadedPartUris, reassembledDest, (pct) => {
         setDownloadProgress(pct / 100);
       });
-      cacheResolvedUri(item.uri, reassembledDest);
-      return reassembledDest;
+      const safeReassembled = reassembledDest.startsWith('file://') ? reassembledDest : `file://${reassembledDest}`;
+      cacheResolvedUri(item.uri, safeReassembled);
+      return safeReassembled;
     }
 
     // Case B: Single file
@@ -592,13 +604,15 @@ export default function CloudExplorerScreen() {
       setDownloadStatusText('Decrypting zero-knowledge vault file...');
       const decryptedPath = getRestoredCachePath(`dec_${item.fileName}`, item.uploadedAt || 1);
       await vaultService.decryptFile(rawFileUri, decryptedPath);
-      cacheResolvedUri(item.uri, decryptedPath);
-      return decryptedPath;
+      const safeDecrypted = decryptedPath.startsWith('file://') ? decryptedPath : `file://${decryptedPath}`;
+      cacheResolvedUri(item.uri, safeDecrypted);
+      return safeDecrypted;
     }
 
     const ensuredUri = await ensureFileSchemeUri(rawFileUri, item.fileName);
-    cacheResolvedUri(item.uri, ensuredUri);
-    return ensuredUri;
+    const safeEnsuredUri = ensuredUri.startsWith('file://') ? ensuredUri : `file://${ensuredUri}`;
+    cacheResolvedUri(item.uri, safeEnsuredUri);
+    return safeEnsuredUri;
   }, [config?.targetChatId, cacheResolvedUri]);
 
   const handleDownloadToDevice = async (item: CloudItem) => {
@@ -609,7 +623,13 @@ export default function CloudExplorerScreen() {
     setDownloadStatusText('Preparing file...');
 
     try {
-      const localUri = await downloadCloudItemToLocal(item);
+      let localUri = await downloadCloudItemToLocal(item);
+      if (!localUri.startsWith('file://')) {
+        localUri = await ensureFileSchemeUri(localUri, item.fileName);
+      }
+      if (!localUri.startsWith('file://')) {
+        localUri = `file://${localUri}`;
+      }
 
       // Save directly into MediaLibrary gallery if image or video
       if (item.category === 'image' || item.category === 'video') {
@@ -656,7 +676,14 @@ export default function CloudExplorerScreen() {
         return;
       }
 
-      const shareUri = await downloadCloudItemToLocal(item);
+      let shareUri = await downloadCloudItemToLocal(item);
+      if (!shareUri.startsWith('file://')) {
+        shareUri = await ensureFileSchemeUri(shareUri, item.fileName);
+      }
+      if (!shareUri.startsWith('file://')) {
+        shareUri = `file://${shareUri}`;
+      }
+
       await Sharing.shareAsync(shareUri, {
         mimeType: getMimeTypeFromFileName(item.fileName),
         dialogTitle: `Share ${item.fileName}`,
@@ -1363,6 +1390,15 @@ export default function CloudExplorerScreen() {
                       )}
                     </TouchableOpacity>
                   </View>
+
+                  <TouchableOpacity
+                    style={[styles.secondaryActionBtn, { borderColor: border, marginTop: 4 }]}
+                    onPress={() => setSelectedItem(null)}
+                  >
+                    <Text style={[styles.secondaryActionBtnText, { color: textColor }]} numberOfLines={1}>
+                      Close
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -1392,7 +1428,7 @@ export default function CloudExplorerScreen() {
             {
               backgroundColor: cardBg,
               borderColor: border,
-              bottom: Math.max(insets.bottom, 16) + 12,
+              bottom: Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 16) + 12,
             },
           ]}
         >

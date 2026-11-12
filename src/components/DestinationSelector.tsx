@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   useColorScheme,
+  Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -70,10 +71,15 @@ export const DestinationSelector = React.memo(function DestinationSelector({
   };
 
   const selectDestination = async (dest: TelegramDestination) => {
-    if ((dest.type === 'channel' || dest.type === 'group') && dest.canPost === false) {
+    const isOwnerOrAdmin =
+      dest.isCreator ||
+      dest.isAdmin ||
+      dest.memberRole === 'owner' ||
+      dest.memberRole === 'admin';
+    if ((dest.type === 'channel' || dest.type === 'group') && !isOwnerOrAdmin && dest.canPost === false) {
       Alert.alert(
         'Posting Restricted',
-        `You are in "${dest.title}", but your account does not have permission to post files there. Please choose a channel/group where you are an admin with post rights, or create a private channel.`
+        `You are a member in "${dest.title}", but your account does not have admin or posting rights there. Please choose a channel or group where you are an admin or owner, or select Saved Messages.`
       );
       return;
     }
@@ -267,7 +273,7 @@ export const DestinationSelector = React.memo(function DestinationSelector({
               styles.modalContainer,
               {
                 backgroundColor: modalBg,
-                paddingBottom: Math.max(insets.bottom, 16) + 10,
+                paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 32 : 16) + 12,
               },
             ]}
           >
@@ -382,9 +388,13 @@ export const DestinationSelector = React.memo(function DestinationSelector({
                 style={styles.list}
                 renderItem={({ item }) => {
                   const isSelected = activeCategoryChatId === item.id;
-                  const isAdminBadge = item.isCreator || item.isAdmin;
+                  const isAdminBadge =
+                    item.isCreator ||
+                    item.isAdmin ||
+                    item.memberRole === 'owner' ||
+                    item.memberRole === 'admin';
                   const noPostRights =
-                    (item.type === 'channel' || item.type === 'group') && item.canPost === false;
+                    (item.type === 'channel' || item.type === 'group') && !isAdminBadge && item.canPost === false;
 
                   return (
                     <TouchableOpacity

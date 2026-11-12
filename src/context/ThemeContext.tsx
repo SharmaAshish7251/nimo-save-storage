@@ -20,9 +20,28 @@ const ThemeContext = createContext<ThemeContextValue>({
   toggleTheme: async () => {},
 });
 
+function applyAppearance(mode: ThemeMode) {
+  try {
+    Appearance.setColorScheme(mode === 'system' ? 'unspecified' : mode);
+  } catch (e) {
+    console.warn('[ThemeContext] Appearance.setColorScheme error:', e);
+  }
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useRNColorScheme();
+  const [deviceScheme, setDeviceScheme] = useState(Appearance.getColorScheme());
   const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
+
+  // Actively listen to device OS theme changes (Android/iOS quick settings, sunset/sunrise)
+  useEffect(() => {
+    const sub = Appearance.addChangeListener(({ colorScheme }) => {
+      setDeviceScheme(colorScheme);
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   // Load saved theme from config on startup
   useEffect(() => {
@@ -41,18 +60,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const applyAppearance = (mode: ThemeMode) => {
-    try {
-      if (mode === 'system') {
-        Appearance.setColorScheme(null);
-      } else {
-        Appearance.setColorScheme(mode);
-      }
-    } catch (e) {
-      console.warn('[ThemeContext] Appearance.setColorScheme error:', e);
-    }
-  };
-
   const setThemeMode = useCallback(async (mode: ThemeMode) => {
     setThemeModeState(mode);
     applyAppearance(mode);
@@ -68,8 +75,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const resolvedTheme: 'light' | 'dark' = useMemo(() => {
     if (themeMode === 'light') return 'light';
     if (themeMode === 'dark') return 'dark';
-    return systemScheme === 'dark' ? 'dark' : 'light';
-  }, [themeMode, systemScheme]);
+    const effectiveSystem = systemScheme || deviceScheme;
+    return effectiveSystem === 'dark' ? 'dark' : 'light';
+  }, [themeMode, systemScheme, deviceScheme]);
 
   const isDark = resolvedTheme === 'dark';
 

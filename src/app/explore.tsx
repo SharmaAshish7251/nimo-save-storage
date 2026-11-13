@@ -22,7 +22,7 @@ import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, Stack } from 'expo-router';
 import {
   getUploadedIndex,
   UploadedRecord,
@@ -92,7 +92,7 @@ export default function CloudExplorerScreen() {
   const [bulkStatusText, setBulkStatusText] = useState('');
 
   // Stream View Scope: 'current' (current device backup) vs 'all' (all cloud files in stream channels)
-  const [streamScope, setStreamScope] = useState<'current' | 'all'>('current');
+  const [streamScope, setStreamScope] = useState<'current' | 'all'>('all');
   // Pagination display limit for FlatList windowing (loads 60 at a time)
   const [displayLimit, setDisplayLimit] = useState(60);
 
@@ -1062,12 +1062,6 @@ export default function CloudExplorerScreen() {
         </View>
       ) : (
         <View style={[styles.header, { borderBottomColor: border }]}>
-          <View>
-            <Text style={[styles.headerTitle, { color: textColor }]}>Cloud Explorer</Text>
-            <Text style={[styles.headerSub, { color: subtextColor }]}>
-              {items.length} files • {formatFileSize(totalCloudBytes)} in Telegram
-            </Text>
-          </View>
           <View style={styles.headerRightActions}>
             <TouchableOpacity
               style={[styles.viewModeBtn, { backgroundColor: cardBg, borderColor: border }]}
@@ -1114,112 +1108,67 @@ export default function CloudExplorerScreen() {
         </View>
       )}
 
-      {/* Total Stream / Cloud Backup Hero Card */}
+      {/* Compact Cloud Overview Card */}
       <View
         style={[
           styles.heroSummaryCard,
           {
-            backgroundColor: isDark ? '#1E293B' : '#0F172A',
-            borderColor: isDark ? '#334155' : '#1E293B',
+            backgroundColor: isDark ? '#141E2E' : '#0F172A',
+            borderColor: isDark ? '#1E2D42' : '#1E293B',
           },
         ]}
       >
+        {/* Top row: total size + file count badge */}
         <View style={styles.heroSummaryTopRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.heroSummarySubhead}>
-              {config?.multiChannelRouting ? 'TOTAL STREAM BACKUP' : 'TOTAL CLOUD BACKUP'}
+              {config?.multiChannelRouting ? 'MULTI-STREAM CLOUD' : 'CLOUD BACKUP'}
+              {config?.multiChannelRouting ? (
+                <Text style={styles.heroStreamTag}>  ✦ 3 channels</Text>
+              ) : null}
             </Text>
             <Text style={styles.heroSummaryHeadline}>
               {formatFileSize(activeCategory === 'all' && !searchQuery ? totalScopeBytes : filteredBytes)}
             </Text>
           </View>
           <View style={styles.heroSummaryBadge}>
-            <FontAwesome name="cloud" size={12} color="#208AEF" />
+            <FontAwesome name="cloud" size={11} color="#60A5FA" />
             <Text style={styles.heroSummaryBadgeText}>
               {filteredAndSortedItems.length} {filteredAndSortedItems.length === 1 ? 'file' : 'files'}
             </Text>
           </View>
         </View>
 
+        {/* Scope toggle — only shown in multi-stream mode */}
         {config?.multiChannelRouting && (
-          <>
-            <View style={[styles.heroSummaryDivider, { backgroundColor: isDark ? '#334155' : '#1E293B' }]} />
-            <View style={styles.heroSummaryBottomRow}>
-              {/* Scope Switcher: Current Backup vs All Stream Cloud */}
-              <View style={[styles.scopeSwitcherContainer, { backgroundColor: isDark ? '#0F172A' : '#1E293B' }]}>
-                <TouchableOpacity
-                  style={[
-                    styles.scopeSwitchBtn,
-                    streamScope === 'current' && styles.scopeSwitchBtnActive,
-                  ]}
-                  onPress={() => {
-                    Haptics.selectionAsync().catch(() => {});
-                    setStreamScope('current');
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <FontAwesome
-                    name="mobile"
-                    size={13}
-                    color={streamScope === 'current' ? '#FFFFFF' : '#94A3B8'}
-                    style={{ marginRight: 5 }}
-                  />
-                  <Text
-                    style={[
-                      styles.scopeSwitchBtnText,
-                      streamScope === 'current' && styles.scopeSwitchBtnTextActive,
-                    ]}
-                  >
-                    Current Backup
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.scopeSwitchBtn,
-                    streamScope === 'all' && styles.scopeSwitchBtnActive,
-                  ]}
-                  onPress={() => {
-                    Haptics.selectionAsync().catch(() => {});
-                    setStreamScope('all');
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <FontAwesome
-                    name="cloud"
-                    size={11}
-                    color={streamScope === 'all' ? '#FFFFFF' : '#94A3B8'}
-                    style={{ marginRight: 5 }}
-                  />
-                  <Text
-                    style={[
-                      styles.scopeSwitchBtnText,
-                      streamScope === 'all' && styles.scopeSwitchBtnTextActive,
-                    ]}
-                  >
-                    All Stream Cloud
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Sync Streams Quick Action */}
-              <TouchableOpacity
-                style={styles.heroSyncBtn}
-                onPress={handleImportFromTelegram}
-                disabled={isImporting}
-                activeOpacity={0.8}
-              >
-                {isImporting ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 5 }} />
-                ) : (
-                  <FontAwesome name="refresh" size={11} color="#FFFFFF" style={{ marginRight: 5 }} />
-                )}
-                <Text style={styles.heroSyncBtnText}>
-                  {isImporting ? 'Syncing...' : 'Sync Streams'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </>
+          <View style={[styles.scopeSwitcherContainer, { backgroundColor: 'rgba(255,255,255,0.06)', marginTop: 10 }]}>
+            <TouchableOpacity
+              style={[
+                styles.scopeSwitchBtn,
+                streamScope === 'all' && styles.scopeSwitchBtnActive,
+              ]}
+              onPress={() => { Haptics.selectionAsync().catch(() => {}); setStreamScope('all'); }}
+              activeOpacity={0.8}
+            >
+              <FontAwesome name="cloud" size={11} color={streamScope === 'all' ? '#FFFFFF' : '#94A3B8'} style={{ marginRight: 5 }} />
+              <Text style={[styles.scopeSwitchBtnText, streamScope === 'all' && styles.scopeSwitchBtnTextActive]}>
+                All Cloud ({items.length})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.scopeSwitchBtn,
+                streamScope === 'current' && styles.scopeSwitchBtnActive,
+              ]}
+              onPress={() => { Haptics.selectionAsync().catch(() => {}); setStreamScope('current'); }}
+              activeOpacity={0.8}
+            >
+              <FontAwesome name="mobile" size={13} color={streamScope === 'current' ? '#FFFFFF' : '#94A3B8'} style={{ marginRight: 5 }} />
+              <Text style={[styles.scopeSwitchBtnText, streamScope === 'current' && styles.scopeSwitchBtnTextActive]}>
+                On Device ({items.filter((it) => it.existsLocally).length})
+              </Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -1242,190 +1191,91 @@ export default function CloudExplorerScreen() {
         </View>
       </View>
 
-      {/* Multi-Stream Channels Quick-Selector Bar */}
-      {config?.multiChannelRouting && (
-        <View
-          style={[
-            styles.multiStreamHeaderBar,
-            {
-              backgroundColor: isDark ? '#1E293B' : '#EFF6FF',
-              borderColor: isDark ? '#334155' : '#DBEAFE',
-            },
-          ]}
-        >
-          <View style={styles.multiStreamTopRow}>
-            <View style={styles.multiStreamBadge}>
-              <FontAwesome name="random" size={11} color="#2563EB" />
-              <Text style={styles.multiStreamBadgeText}>MULTI-STREAM ACTIVE</Text>
-            </View>
-            <Text style={[styles.multiStreamNote, { color: subtextColor }]}>
-              3 Channels • Saved Messages hidden
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.multiStreamChipsScroll}
-          >
-            <TouchableOpacity
-              style={[
-                styles.streamChip,
-                activeCategory === 'image' && styles.streamChipActive,
-                {
-                  backgroundColor:
-                    activeCategory === 'image' ? '#10B981' : isDark ? '#0F172A' : '#FFFFFF',
-                  borderColor: activeCategory === 'image' ? '#10B981' : border,
-                },
-              ]}
-              onPress={() => {
-                Haptics.selectionAsync().catch(() => {});
-                setActiveCategory(activeCategory === 'image' ? 'all' : 'image');
-              }}
-            >
-              <FontAwesome
-                name="photo"
-                size={11}
-                color={activeCategory === 'image' ? '#FFFFFF' : '#10B981'}
-              />
-              <Text
-                style={[
-                  styles.streamChipText,
-                  { color: activeCategory === 'image' ? '#FFFFFF' : textColor },
-                ]}
-                numberOfLines={1}
-              >
-                Photos: {config.photoChannelTitle || 'Configured'}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.streamChip,
-                activeCategory === 'video' && styles.streamChipActive,
-                {
-                  backgroundColor:
-                    activeCategory === 'video' ? '#8B5CF6' : isDark ? '#0F172A' : '#FFFFFF',
-                  borderColor: activeCategory === 'video' ? '#8B5CF6' : border,
-                },
-              ]}
-              onPress={() => {
-                Haptics.selectionAsync().catch(() => {});
-                setActiveCategory(activeCategory === 'video' ? 'all' : 'video');
-              }}
-            >
-              <FontAwesome
-                name="video-camera"
-                size={11}
-                color={activeCategory === 'video' ? '#FFFFFF' : '#8B5CF6'}
-              />
-              <Text
-                style={[
-                  styles.streamChipText,
-                  { color: activeCategory === 'video' ? '#FFFFFF' : textColor },
-                ]}
-                numberOfLines={1}
-              >
-                Videos: {config.videoChannelTitle || 'Configured'}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.streamChip,
-                activeCategory === 'document' && styles.streamChipActive,
-                {
-                  backgroundColor:
-                    activeCategory === 'document' ? '#3B82F6' : isDark ? '#0F172A' : '#FFFFFF',
-                  borderColor: activeCategory === 'document' ? '#3B82F6' : border,
-                },
-              ]}
-              onPress={() => {
-                Haptics.selectionAsync().catch(() => {});
-                setActiveCategory(activeCategory === 'document' ? 'all' : 'document');
-              }}
-            >
-              <FontAwesome
-                name="file-text"
-                size={11}
-                color={activeCategory === 'document' ? '#FFFFFF' : '#3B82F6'}
-              />
-              <Text
-                style={[
-                  styles.streamChipText,
-                  { color: activeCategory === 'document' ? '#FFFFFF' : textColor },
-                ]}
-                numberOfLines={1}
-              >
-                Docs: {config.documentChannelTitle || 'Configured'}
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-      )}
 
       {/* Category Filter Chips Horizontal ScrollView */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.categoryChipsScroll}
-      >
-        {(['all', 'image', 'video', 'audio', 'document', 'missing'] as CategoryFilter[]).map((cat) => {
-          if (cat === 'missing' && categoryCounts.missing === 0) return null;
-          const isSelected = activeCategory === cat;
-          const isMissingCat = cat === 'missing';
-          const count = categoryCounts[cat] || 0;
-          return (
-            <TouchableOpacity
-              key={cat}
-              onPress={() => {
-                Haptics.selectionAsync().catch(() => {});
-                setActiveCategory(cat);
-              }}
-              style={[
-                styles.categoryChip,
-                {
-                  backgroundColor: isSelected
-                    ? isMissingCat
-                      ? '#EF4444'
-                      : '#208AEF'
-                    : cardBg,
-                  borderColor: isSelected
-                    ? isMissingCat
-                      ? '#EF4444'
-                      : '#208AEF'
-                    : isMissingCat
-                    ? '#EF4444'
-                    : border,
-                },
-              ]}
-              activeOpacity={0.7}
-            >
-              <Text
+      <View style={styles.categoryChipsWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryChipsScroll}
+        >
+          {(['all', 'image', 'video', 'audio', 'document', 'missing'] as CategoryFilter[]).map((cat) => {
+            if (cat === 'missing' && categoryCounts.missing === 0) return null;
+            const isSelected = activeCategory === cat;
+            const isMissingCat = cat === 'missing';
+            const count = categoryCounts[cat] || 0;
+            const catIcon =
+              cat === 'all' ? 'th-large' :
+              cat === 'image' ? 'photo' :
+              cat === 'video' ? 'video-camera' :
+              cat === 'audio' ? 'music' :
+              cat === 'document' ? 'file-text' :
+              'exclamation-triangle';
+            return (
+              <TouchableOpacity
+                key={cat}
+                onPress={() => {
+                  Haptics.selectionAsync().catch(() => {});
+                  setActiveCategory(cat);
+                }}
                 style={[
-                  styles.categoryChipText,
+                  styles.categoryChip,
                   {
-                    color: isSelected
-                      ? '#FFFFFF'
+                    backgroundColor: isSelected
+                      ? isMissingCat
+                        ? '#EF4444'
+                        : '#208AEF'
+                      : cardBg,
+                    borderColor: isSelected
+                      ? isMissingCat
+                        ? '#EF4444'
+                        : '#208AEF'
                       : isMissingCat
                       ? '#EF4444'
-                      : textColor,
-                    fontWeight: isMissingCat ? '700' : '500',
+                      : border,
                   },
                 ]}
+                activeOpacity={0.7}
               >
-                {cat === 'all'
-                  ? 'All'
-                  : cat === 'image'
-                  ? 'Photos'
-                  : cat === 'missing'
-                  ? '⚠️ Missing'
-                  : cat.charAt(0).toUpperCase() + cat.slice(1)}{' '}
-                ({count})
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+                <FontAwesome
+                  name={catIcon as any}
+                  size={11}
+                  color={isSelected ? '#FFFFFF' : isMissingCat ? '#EF4444' : subtextColor}
+                  style={{ marginRight: 5 }}
+                />
+                <Text
+                  style={[
+                    styles.categoryChipText,
+                    {
+                      color: isSelected
+                        ? '#FFFFFF'
+                        : isMissingCat
+                        ? '#EF4444'
+                        : textColor,
+                      fontWeight: isMissingCat ? '700' : '500',
+                    },
+                  ]}
+                >
+                  {cat === 'all'
+                    ? 'All'
+                    : cat === 'image'
+                    ? 'Photos'
+                    : cat === 'missing'
+                    ? 'Missing'
+                    : cat.charAt(0).toUpperCase() + cat.slice(1)}
+                </Text>
+                <View style={[styles.categoryChipBadge, {
+                  backgroundColor: isSelected ? 'rgba(255,255,255,0.25)' : isDark ? '#334155' : '#E2E8F0',
+                }]}>
+                  <Text style={[styles.categoryChipBadgeText, {
+                    color: isSelected ? '#FFFFFF' : subtextColor,
+                  }]}>{count}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
 
       {/* Main Content Area */}
       {loading ? (
@@ -2001,10 +1851,10 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   headerTitle: {
     fontSize: 20,
@@ -2028,8 +1878,8 @@ const styles = StyleSheet.create({
   },
   searchBarWrap: {
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
   searchBox: {
     flexDirection: 'row',
@@ -2050,21 +1900,43 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     gap: 8,
   },
+  categoryChipsWrapper: {
+    maxHeight: 52,
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingBottom: 8,
+  },
   categoryChipsScroll: {
     flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 16,
-    paddingBottom: 10,
+    paddingVertical: 4,
     gap: 8,
   },
   categoryChip: {
-    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 14,
+    borderRadius: 20,
     borderWidth: 1,
   },
   categoryChipText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
+    marginRight: 4,
+  },
+  categoryChipBadge: {
+    minWidth: 18,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryChipBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   listContent: {
     padding: 16,
@@ -2643,16 +2515,16 @@ const styles = StyleSheet.create({
   },
   heroSummaryCard: {
     marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 8,
-    borderRadius: 16,
-    padding: 16,
+    marginTop: 10,
+    marginBottom: 6,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 3,
   },
   heroSummaryTopRow: {
     flexDirection: 'row',
@@ -2660,14 +2532,21 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   heroSummarySubhead: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 0.8,
-    marginBottom: 4,
+    color: '#64748B',
+    letterSpacing: 1,
+    marginBottom: 3,
+    textTransform: 'uppercase',
+  },
+  heroStreamTag: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#3B82F6',
+    letterSpacing: 0,
   },
   heroSummaryHeadline: {
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '900',
     color: '#FFFFFF',
     letterSpacing: -0.5,
@@ -2675,23 +2554,23 @@ const styles = StyleSheet.create({
   heroSummaryBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
-    backgroundColor: 'rgba(32, 138, 239, 0.15)',
+    backgroundColor: 'rgba(96, 165, 250, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(32, 138, 239, 0.3)',
+    borderColor: 'rgba(96, 165, 250, 0.25)',
   },
   heroSummaryBadgeText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#208AEF',
+    color: '#60A5FA',
   },
   heroSummaryDivider: {
     height: 1,
-    marginVertical: 12,
-    opacity: 0.5,
+    marginVertical: 10,
+    opacity: 0.4,
   },
   heroSummaryBottomRow: {
     flexDirection: 'row',

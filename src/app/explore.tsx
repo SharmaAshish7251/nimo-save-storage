@@ -31,7 +31,7 @@ import {
   formatFileSize,
   addToQueue,
   removeUploadedRecord,
-  resolveFileDestination,
+  isRecordInMultiStream,
 } from '@/lib/storage/queue';
 import { getFileCategory } from '@/lib/scanner/files';
 import { resolveLocalFileTarget } from '@/lib/storage/fileHelper';
@@ -91,34 +91,67 @@ export default function CloudExplorerScreen() {
   const [isBulkOperating, setIsBulkOperating] = useState(false);
   const [bulkStatusText, setBulkStatusText] = useState('');
 
+  // Stream View Scope: 'current' (current device backup) vs 'all' (all cloud files in stream channels)
+  const [streamScope, setStreamScope] = useState<'current' | 'all'>('current');
+
   const loadCloudItems = useCallback(async () => {
     try {
-      const [uploaded, appConfig, savedChatId] = await Promise.all([
+      const [uploaded, appConfig] = await Promise.all([
         getUploadedIndex(),
         getConfig(),
-        tdLibClient.getSavedMessagesChatId().catch(() => null),
       ]);
       setConfig(appConfig);
 
-      // If multi-channel routing is enabled, exclude Saved Messages records completely
-      const relevantRecords = appConfig?.multiChannelRouting
-        ? uploaded.filter((rec) => {
-            const isSaved =
-              rec.destinationTitle === 'Saved Messages' ||
-              (savedChatId && (rec.chatId === savedChatId || rec.uri.startsWith(`tg://${savedChatId}/`)));
-            return !isSaved;
-          })
-        : uploaded;
+      let relevantRecords: UploadedRecord[] = [];
+      const streamChannelIds = new Set<string>();
+
+      if (appConfig?.multiChannelRouting) {
+        const [resolvedPhotoId, resolvedVideoId, resolvedDocId] = await Promise.all([
+          appConfig.photoChannelId ? tdLibClient.resolveTargetChatId(appConfig.photoChannelId).catch(() => null) : null,
+          appConfig.videoChannelId ? tdLibClient.resolveTargetChatId(appConfig.videoChannelId).catch(() => null) : null,
+          appConfig.documentChannelId ? tdLibClient.resolveTargetChatId(appConfig.documentChannelId).catch(() => null) : null,
+        ]);
+        if (resolvedPhotoId) streamChannelIds.add(String(resolvedPhotoId));
+        if (resolvedVideoId) streamChannelIds.add(String(resolvedVideoId));
+        if (resolvedDocId) streamChannelIds.add(String(resolvedDocId));
+
+        // Strict multi-stream filtering: completely excludes Saved Messages records
+        relevantRecords = uploaded.filter((rec) =>
+          isRecordInMultiStream(rec, appConfig, streamChannelIds)
+        );
+      } else {
+        relevantRecords = uploaded;
+      }
 
       // Verify local availability concurrently
       const mapped: CloudItem[] = await Promise.all(
         relevantRecords.map(async (rec) => {
           const category = getFileCategory(rec.fileName);
-          const resolvedDest = resolveFileDestination(rec.fileName, undefined, appConfig);
-          const destinationTitle =
-            rec.destinationTitle && rec.destinationTitle !== 'Saved Messages'
-              ? rec.destinationTitle
-              : resolvedDest.destinationTitle;
+          let destinationTitle = rec.destinationTitle;
+
+          if (appConfig?.multiChannelRouting) {
+            const streamTitles = new Set([
+              (appConfig.photoChannelTitle || '').toLowerCase().trim(),
+              (appConfig.videoChannelTitle || '').toLowerCase().trim(),
+              (appConfig.documentChannelTitle || '').toLowerCase().trim(),
+            ]);
+            if (!destinationTitle || !streamTitles.has(destinationTitle.toLowerCase().trim())) {
+              if (category === 'image') {
+                destinationTitle = appConfig.photoChannelTitle || 'Photos Channel';
+              } else if (category === 'video') {
+                destinationTitle = appConfig.videoChannelTitle || 'Videos Channel';
+              } else {
+                destinationTitle = appConfig.documentChannelTitle || 'Documents Channel';
+              }
+            }
+          } else {
+            if (!destinationTitle) {
+              destinationTitle =
+                appConfig?.uploadToSavedMessages || !appConfig?.targetChatId
+                  ? 'Saved Messages'
+                  : appConfig.targetChatTitle || 'Target Channel';
+            }
+          }
 
           let existsLocally = false;
           let resolvedLocalUri = rec.uri;
@@ -286,13 +319,27 @@ export default function CloudExplorerScreen() {
     );
   };
 
+  const itemsInScope = useMemo(() => {
+    if (!config?.multiChannelRouting || streamScope === 'all') {
+      return items;
+    }
+    // 'current': files that exist locally or originated as local backup file
+    return items.filter(
+      (it) => it.existsLocally || !it.uri.startsWith('tg://') || (it as any).sourceType !== 'remote_cloud'
+    );
+  }, [items, streamScope, config]);
+
+  const totalScopeBytes = useMemo(() => {
+    return itemsInScope.reduce((acc, it) => acc + (it.size || 0), 0);
+  }, [itemsInScope]);
+
   const totalCloudBytes = useMemo(() => {
     return items.reduce((acc, it) => acc + (it.size || 0), 0);
   }, [items]);
 
   const categoryCounts = useMemo(() => {
-    const counts = { all: items.length, image: 0, video: 0, audio: 0, document: 0, missing: 0 };
-    for (const it of items) {
+    const counts = { all: itemsInScope.length, image: 0, video: 0, audio: 0, document: 0, missing: 0 };
+    for (const it of itemsInScope) {
       if (it.category in counts) {
         counts[it.category as keyof typeof counts] += 1;
       }
@@ -301,10 +348,10 @@ export default function CloudExplorerScreen() {
       }
     }
     return counts;
-  }, [items]);
+  }, [itemsInScope]);
 
   const filteredAndSortedItems = useMemo(() => {
-    let result = items;
+    let result = itemsInScope;
 
     // 1. Search Query Filter
     if (searchQuery.trim()) {
@@ -334,7 +381,11 @@ export default function CloudExplorerScreen() {
           return 0;
       }
     });
-  }, [items, searchQuery, activeCategory, sortOption]);
+  }, [itemsInScope, searchQuery, activeCategory, sortOption]);
+
+  const filteredBytes = useMemo(() => {
+    return filteredAndSortedItems.reduce((acc, it) => acc + (it.size || 0), 0);
+  }, [filteredAndSortedItems]);
 
   const resolvedItemDest = useMemo(() => {
     if (!selectedItem) {
@@ -345,23 +396,31 @@ export default function CloudExplorerScreen() {
         streamCategory: 'Cloud Storage',
       };
     }
-    const dest = resolveFileDestination(selectedItem.fileName, undefined, config);
-    const title =
-      selectedItem.destinationTitle && selectedItem.destinationTitle !== 'Saved Messages'
-        ? selectedItem.destinationTitle
-        : dest.destinationTitle;
-
+    let title = selectedItem.destinationTitle || '';
     let icon: any = 'cloud';
     let streamCategory = 'Cloud Storage';
-    if (selectedItem.category === 'image') {
-      icon = 'photo';
-      streamCategory = 'Photos Stream';
-    } else if (selectedItem.category === 'video') {
-      icon = 'video-camera';
-      streamCategory = 'Videos Stream';
-    } else if (selectedItem.category === 'document') {
-      icon = 'file-text';
-      streamCategory = 'Documents Stream';
+
+    if (config?.multiChannelRouting) {
+      if (selectedItem.category === 'image') {
+        icon = 'photo';
+        streamCategory = 'Photos Stream';
+        if (!title) title = config.photoChannelTitle || 'Photos Channel';
+      } else if (selectedItem.category === 'video') {
+        icon = 'video-camera';
+        streamCategory = 'Videos Stream';
+        if (!title) title = config.videoChannelTitle || 'Videos Channel';
+      } else {
+        icon = 'file-text';
+        streamCategory = 'Documents Stream';
+        if (!title) title = config.documentChannelTitle || 'Documents Channel';
+      }
+    } else {
+      if (!title) {
+        title =
+          config?.uploadToSavedMessages || !config?.targetChatId
+            ? 'Saved Messages'
+            : config?.targetChatTitle || 'Target Channel';
+      }
     }
 
     return {
@@ -907,6 +966,16 @@ export default function CloudExplorerScreen() {
                 day: 'numeric',
               })}
             </Text>
+            {item.destinationTitle ? (
+              <>
+                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
+                <View style={[styles.destBadge, { backgroundColor: isDark ? '#1E293B' : '#EEF2FF', borderColor: border }]}>
+                  <Text style={[styles.destBadgeText, { color: '#2563EB' }]} numberOfLines={1}>
+                    {item.destinationTitle}
+                  </Text>
+                </View>
+              </>
+            ) : null}
             {item.chunkManifest ? (
               <>
                 <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
@@ -1020,6 +1089,115 @@ export default function CloudExplorerScreen() {
           </View>
         </View>
       )}
+
+      {/* Total Stream / Cloud Backup Hero Card */}
+      <View
+        style={[
+          styles.heroSummaryCard,
+          {
+            backgroundColor: isDark ? '#1E293B' : '#0F172A',
+            borderColor: isDark ? '#334155' : '#1E293B',
+          },
+        ]}
+      >
+        <View style={styles.heroSummaryTopRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.heroSummarySubhead}>
+              {config?.multiChannelRouting ? 'TOTAL STREAM BACKUP' : 'TOTAL CLOUD BACKUP'}
+            </Text>
+            <Text style={styles.heroSummaryHeadline}>
+              {formatFileSize(activeCategory === 'all' && !searchQuery ? totalScopeBytes : filteredBytes)}
+            </Text>
+          </View>
+          <View style={styles.heroSummaryBadge}>
+            <FontAwesome name="cloud" size={12} color="#208AEF" />
+            <Text style={styles.heroSummaryBadgeText}>
+              {filteredAndSortedItems.length} {filteredAndSortedItems.length === 1 ? 'file' : 'files'}
+            </Text>
+          </View>
+        </View>
+
+        {config?.multiChannelRouting && (
+          <>
+            <View style={[styles.heroSummaryDivider, { backgroundColor: isDark ? '#334155' : '#1E293B' }]} />
+            <View style={styles.heroSummaryBottomRow}>
+              {/* Scope Switcher: Current Backup vs All Stream Cloud */}
+              <View style={[styles.scopeSwitcherContainer, { backgroundColor: isDark ? '#0F172A' : '#1E293B' }]}>
+                <TouchableOpacity
+                  style={[
+                    styles.scopeSwitchBtn,
+                    streamScope === 'current' && styles.scopeSwitchBtnActive,
+                  ]}
+                  onPress={() => {
+                    Haptics.selectionAsync().catch(() => {});
+                    setStreamScope('current');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <FontAwesome
+                    name="mobile"
+                    size={13}
+                    color={streamScope === 'current' ? '#FFFFFF' : '#94A3B8'}
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text
+                    style={[
+                      styles.scopeSwitchBtnText,
+                      streamScope === 'current' && styles.scopeSwitchBtnTextActive,
+                    ]}
+                  >
+                    Current Backup
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.scopeSwitchBtn,
+                    streamScope === 'all' && styles.scopeSwitchBtnActive,
+                  ]}
+                  onPress={() => {
+                    Haptics.selectionAsync().catch(() => {});
+                    setStreamScope('all');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <FontAwesome
+                    name="cloud"
+                    size={11}
+                    color={streamScope === 'all' ? '#FFFFFF' : '#94A3B8'}
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text
+                    style={[
+                      styles.scopeSwitchBtnText,
+                      streamScope === 'all' && styles.scopeSwitchBtnTextActive,
+                    ]}
+                  >
+                    All Stream Cloud
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Sync Streams Quick Action */}
+              <TouchableOpacity
+                style={styles.heroSyncBtn}
+                onPress={handleImportFromTelegram}
+                disabled={isImporting}
+                activeOpacity={0.8}
+              >
+                {isImporting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 5 }} />
+                ) : (
+                  <FontAwesome name="refresh" size={11} color="#FFFFFF" style={{ marginRight: 5 }} />
+                )}
+                <Text style={styles.heroSyncBtnText}>
+                  {isImporting ? 'Syncing...' : 'Sync Streams'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+      </View>
 
       {/* Search Input Bar */}
       <View style={styles.searchBarWrap}>
@@ -1161,8 +1339,12 @@ export default function CloudExplorerScreen() {
         </View>
       )}
 
-      {/* Category Filter Chips Carousel */}
-      <View style={styles.categoryChipsBar}>
+      {/* Category Filter Chips Horizontal ScrollView */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.categoryChipsScroll}
+      >
         {(['all', 'image', 'video', 'audio', 'document', 'missing'] as CategoryFilter[]).map((cat) => {
           if (cat === 'missing' && categoryCounts.missing === 0) return null;
           const isSelected = activeCategory === cat;
@@ -1219,7 +1401,7 @@ export default function CloudExplorerScreen() {
             </TouchableOpacity>
           );
         })}
-      </View>
+      </ScrollView>
 
       {/* Main Content Area */}
       {loading ? (
@@ -1488,6 +1670,17 @@ export default function CloudExplorerScreen() {
                         ]}
                       >
                         {selectedItem.cloudStatus === 'missing' ? 'Deleted from Telegram' : 'Active in Telegram'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={[styles.metaDivider, { backgroundColor: border }]} />
+                  <View style={styles.metaColBlock}>
+                    <Text style={[styles.metaLabel, { color: subtextColor, marginBottom: 4 }]}>
+                      File Location / Cloud URI
+                    </Text>
+                    <View style={[styles.uriBox, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9', borderColor: border }]}>
+                      <Text style={[styles.uriText, { color: textColor }]} selectable numberOfLines={3}>
+                        {selectedItem.uri}
                       </Text>
                     </View>
                   </View>
@@ -1770,6 +1963,12 @@ const styles = StyleSheet.create({
     padding: 0,
   },
   categoryChipsBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    gap: 8,
+  },
+  categoryChipsScroll: {
     flexDirection: 'row',
     paddingHorizontal: 16,
     paddingBottom: 10,
@@ -2359,5 +2558,133 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+  },
+  heroSummaryCard: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  heroSummaryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroSummarySubhead: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94A3B8',
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  heroSummaryHeadline: {
+    fontSize: 26,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  heroSummaryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: 'rgba(32, 138, 239, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(32, 138, 239, 0.3)',
+  },
+  heroSummaryBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#208AEF',
+  },
+  heroSummaryDivider: {
+    height: 1,
+    marginVertical: 12,
+    opacity: 0.5,
+  },
+  heroSummaryBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  scopeSwitcherContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 3,
+    borderRadius: 12,
+    flex: 1,
+  },
+  scopeSwitchBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 9,
+  },
+  scopeSwitchBtnActive: {
+    backgroundColor: '#208AEF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  scopeSwitchBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#94A3B8',
+  },
+  scopeSwitchBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  heroSyncBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10B981',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  heroSyncBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  destBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    maxWidth: 120,
+  },
+  destBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  metaColBlock: {
+    paddingVertical: 4,
+  },
+  uriBox: {
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 2,
+  },
+  uriText: {
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
 });

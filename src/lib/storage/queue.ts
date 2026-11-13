@@ -650,6 +650,61 @@ export function resolveFileDestination(
   };
 }
 
+/**
+ * Tests whether an uploaded record belongs to the configured multi-stream channels.
+ * When multi-channel routing is enabled, only files explicitly associated with
+ * the configured photo, video, or document channels are included.
+ * Legacy or Saved Messages backups are strictly excluded.
+ */
+export function isRecordInMultiStream(
+  rec: UploadedRecord,
+  config: AppConfig,
+  resolvedChannelIds?: Set<string>
+): boolean {
+  if (!config?.multiChannelRouting) return true;
+
+  // Strict Saved Messages exclusion
+  const destLower = (rec.destinationTitle || '').toLowerCase().trim();
+  if (destLower === 'saved messages' || destLower.startsWith('saved messages')) {
+    return false;
+  }
+
+  const streamIds = new Set<string>();
+  if (config.photoChannelId) streamIds.add(String(config.photoChannelId).trim());
+  if (config.videoChannelId) streamIds.add(String(config.videoChannelId).trim());
+  if (config.documentChannelId) streamIds.add(String(config.documentChannelId).trim());
+  if (resolvedChannelIds) {
+    resolvedChannelIds.forEach((id) => streamIds.add(id));
+  }
+
+  const streamTitles = new Set<string>();
+  if (config.photoChannelTitle) streamTitles.add(config.photoChannelTitle.toLowerCase().trim());
+  if (config.videoChannelTitle) streamTitles.add(config.videoChannelTitle.toLowerCase().trim());
+  if (config.documentChannelTitle) streamTitles.add(config.documentChannelTitle.toLowerCase().trim());
+
+  // 1. Explicit record chatId match
+  if (rec.chatId !== undefined && rec.chatId !== null && streamIds.has(String(rec.chatId))) {
+    return true;
+  }
+
+  // 2. Explicit destinationTitle match
+  if (rec.destinationTitle && streamTitles.has(destLower)) {
+    return true;
+  }
+
+  // 3. Telegram URI scheme match: tg://<chatId>/<messageId>
+  if (rec.uri && rec.uri.startsWith('tg://')) {
+    const afterScheme = rec.uri.replace('tg://', '');
+    const slashIdx = afterScheme.indexOf('/');
+    const chatPart = slashIdx > 0 ? afterScheme.substring(0, slashIdx) : afterScheme;
+    if (streamIds.has(chatPart)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ─── Chunk Manifest Storage ─────────────────────────────────────────────────
 
 /**

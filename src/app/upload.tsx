@@ -1123,7 +1123,11 @@ export default function UploadScreen() {
           </View>
 
           {/* Queue File Type Filter Chips */}
-          <View style={styles.filterChipRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterChipScroll}
+          >
             <TouchableOpacity
               style={[styles.filterChip, queueFilter === 'all' && styles.filterChipActive]}
               onPress={() => setQueueFilter('all')}
@@ -1164,7 +1168,7 @@ export default function UploadScreen() {
                 Docs ({queueCategoryCounts.document})
               </Text>
             </TouchableOpacity>
-          </View>
+          </ScrollView>
 
           {/* Queue Section Header */}
           <View style={styles.sectionHeaderRow}>
@@ -1222,7 +1226,11 @@ export default function UploadScreen() {
           </View>
 
           {/* History Status Filters */}
-          <View style={styles.filterChipRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterChipScroll}
+          >
             <TouchableOpacity
               style={[styles.filterChip, historyFilter === 'all' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('all')}
@@ -1258,7 +1266,7 @@ export default function UploadScreen() {
                 Dismissed
               </Text>
             </TouchableOpacity>
-          </View>
+          </ScrollView>
 
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionHeaderTitle}>
@@ -1758,6 +1766,13 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 6,
     marginBottom: 12,
+  },
+  filterChipScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingBottom: 4,
+    marginBottom: 8,
   },
   filterChip: {
     flexDirection: 'row',

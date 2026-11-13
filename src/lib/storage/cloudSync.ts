@@ -424,6 +424,12 @@ export async function importFromTelegramHistory(options: {
           isDoc = true;
           fileName = content.audio.file_name || `audio_${msg.id}.mp3`;
           size = content.audio.audio?.size || content.audio.size || 0;
+        } else if (content['@type'] === 'messagePhoto' && content.photo) {
+          isDoc = true;
+          const sizes = content.photo.sizes || [];
+          const largest = sizes[sizes.length - 1];
+          fileName = `photo_${msg.id}.jpg`;
+          size = largest?.photo?.size || 0;
         }
 
         if (fileName === 'nimo_cloud_profile_v1.json') continue;

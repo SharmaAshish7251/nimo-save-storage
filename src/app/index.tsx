@@ -30,6 +30,7 @@ import {
   ActionHistoryItem,
   AppConfig,
   SchedulerState,
+  isRecordInMultiStream,
 } from '@/lib/storage/queue';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { schedulerEngine, calculateNextEstimatedRun } from '@/lib/scheduler/schedulerEngine';
@@ -124,13 +125,7 @@ export default function HomeScreen() {
 
       let activeCloudItems = uploadedItems || [];
       if (appConfig?.multiChannelRouting) {
-        const savedChatId = await tdLibClient.getSavedMessagesChatId().catch(() => null);
-        activeCloudItems = activeCloudItems.filter((rec) => {
-          const isSaved =
-            rec.destinationTitle === 'Saved Messages' ||
-            (savedChatId && (rec.chatId === savedChatId || rec.uri.startsWith(`tg://${savedChatId}/`)));
-          return !isSaved;
-        });
+        activeCloudItems = activeCloudItems.filter((rec) => isRecordInMultiStream(rec, appConfig));
       }
 
       const cBytes = activeCloudItems.reduce(

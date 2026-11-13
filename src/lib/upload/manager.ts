@@ -560,9 +560,9 @@ export class UploadManager {
       }
 
       const durationMs = Date.now() - startTime;
-      console.error(`Failed to upload ${item.fileName}:`, error);
-      uploadNotificationService.showUploadError(item.fileName, error.message || 'Upload failed').catch(() => {});
-      await this.updateItemStatus(item.id, 'failed', item.progress, error.message, undefined, undefined, durationMs);
+      console.error(`Failed to upload ${item.fileName}: ${error?.message || error}`);
+      uploadNotificationService.showUploadError(item.fileName, error?.message || 'Upload failed').catch(() => {});
+      await this.updateItemStatus(item.id, 'failed', item.progress, error?.message, undefined, undefined, durationMs);
 
       try {
         const config = await getConfig();

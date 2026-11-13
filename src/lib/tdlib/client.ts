@@ -688,6 +688,7 @@ class TdLibClientService {
     const { path: localPath, isTemp } = await resolveToLocalPath(uri, fileName);
 
     const targetChatId = await this.resolveTargetChatId(targetChat);
+    await this.ensureChatLoaded(targetChatId);
 
     const normalizePath = (p?: string): string => {
       if (!p) return '';
@@ -927,6 +928,91 @@ class TdLibClientService {
         finish(null);
       });
     });
+  }
+
+  /**
+   * Ensures that a chat is loaded into TDLib's memory and database.
+   * If TDLib has not loaded the chat list or this specific channel yet,
+   * sending a message or querying it results in "400 Chat not found".
+   */
+  public async ensureChatLoaded(chatId: number): Promise<boolean> {
+    await this.init();
+    const numId = Number(chatId);
+    if (!Number.isFinite(numId) || numId === 0) return false;
+
+    // Check if it's saved messages
+    const savedId = await this.getSavedMessagesChatId().catch(() => null);
+    if (savedId && numId === savedId) return true;
+
+    console.log(`[TdLib] Ensuring chat is loaded in memory: ${numId}...`);
+
+    // 1. Direct getChat check (loads from TDLib DB / cache)
+    try {
+      const chat = await this.sendTdRequest<any>(
+        { '@type': 'getChat', chat_id: numId },
+        (type, data) =>
+          (type === 'chat' || data?.['@type'] === 'chat') &&
+          Number(data?.id) === Number(numId),
+        2500
+      );
+      if (chat && chat.id) {
+        console.log(`[TdLib] Chat ${numId} successfully loaded via getChat`);
+        return true;
+      }
+    } catch {}
+
+    // 2. If it's a supergroup/channel (-100...), try createSupergroupChat
+    const chatIdStr = String(numId);
+    if (chatIdStr.startsWith('-100')) {
+      try {
+        const supergroupId = Number(chatIdStr.replace(/^-100/, ''));
+        if (Number.isFinite(supergroupId) && supergroupId > 0) {
+          console.log(`[TdLib] Loading supergroup ${supergroupId} via createSupergroupChat...`);
+          const sgChat = await this.sendTdRequest<any>(
+            { '@type': 'createSupergroupChat', supergroup_id: supergroupId, force: false },
+            (type, data) => type === 'chat' || data?.['@type'] === 'chat',
+            3500
+          );
+          if (sgChat && sgChat.id) {
+            console.log(`[TdLib] Chat ${numId} loaded via createSupergroupChat`);
+            return true;
+          }
+        }
+      } catch (sgErr) {
+        console.warn(`[TdLib] createSupergroupChat failed:`, sgErr);
+      }
+    }
+
+    // 3. Populate TDLib chat list memory by loading chats in batches
+    console.log(`[TdLib] Chat ${numId} not found in immediate cache, loading chat list...`);
+    try {
+      for (let i = 0; i < 3; i++) {
+        await TdLib.loadChats(50).catch(() => null);
+        const chat = await this.sendTdRequest<any>(
+          { '@type': 'getChat', chat_id: numId },
+          (type, data) =>
+            (type === 'chat' || data?.['@type'] === 'chat') &&
+            Number(data?.id) === Number(numId),
+          2000
+        );
+        if (chat && chat.id) {
+          console.log(`[TdLib] Chat ${numId} found after loading chat batch ${i + 1}`);
+          return true;
+        }
+      }
+    } catch (loadErr) {
+      console.warn(`[TdLib] loadChats search failed:`, loadErr);
+    }
+
+    // 4. Try openChat as a final measure
+    try {
+      await TdLib.td_json_client_send({
+        '@type': 'openChat',
+        chat_id: numId,
+      }).catch(() => {});
+    } catch {}
+
+    return false;
   }
 
   private async fetchChatById(chatId: number): Promise<any | null> {
@@ -1309,6 +1395,7 @@ class TdLibClientService {
     offset: number = 0
   ): Promise<any[]> {
     await this.init();
+    await this.ensureChatLoaded(chatId).catch(() => {});
     try {
       const items = await TdLib.getChatHistory(chatId, fromMessageId, limit, offset);
       if (!Array.isArray(items)) return [];
@@ -1343,6 +1430,7 @@ class TdLibClientService {
     }
 
     // 1. Fetch message from TDLib
+    await this.ensureChatLoaded(numericChatId).catch(() => {});
     const result = await TdLib.getMessage(numericChatId, numericMsgId);
     if (!result) {
       throw new Error(`Message ${messageId} not found in chat ${chatId}`);

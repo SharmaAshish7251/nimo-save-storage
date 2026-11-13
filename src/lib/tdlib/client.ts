@@ -1214,7 +1214,12 @@ class TdLibClientService {
   public async checkMessageExists(chatId: number, messageId: number): Promise<boolean> {
     await this.init();
     try {
-      const result = await TdLib.getMessage(chatId, messageId);
+      const numericChatId = Number(chatId);
+      const numericMsgId = Number(messageId);
+      if (!Number.isFinite(numericChatId) || !Number.isFinite(numericMsgId)) {
+        return false;
+      }
+      const result = await TdLib.getMessage(numericChatId, numericMsgId);
       if (!result) return false;
       const raw = typeof result === 'string' ? result : (result as any).raw;
       if (!raw) return true;
@@ -1324,8 +1329,14 @@ class TdLibClientService {
   ): Promise<string> {
     await this.init();
 
+    const numericChatId = Number(chatId);
+    const numericMsgId = Number(messageId);
+    if (!Number.isFinite(numericChatId) || !Number.isFinite(numericMsgId)) {
+      throw new Error(`Invalid chatId (${String(chatId)}) or messageId (${String(messageId)}) passed to downloadMessageFile`);
+    }
+
     // 1. Fetch message from TDLib
-    const result = await TdLib.getMessage(chatId, messageId);
+    const result = await TdLib.getMessage(numericChatId, numericMsgId);
     if (!result) {
       throw new Error(`Message ${messageId} not found in chat ${chatId}`);
     }
@@ -1453,7 +1464,12 @@ class TdLibClientService {
   ): Promise<string | null> {
     try {
       await this.init();
-      const result = await TdLib.getMessage(chatId, messageId);
+      const numericChatId = Number(chatId);
+      const numericMsgId = Number(messageId);
+      if (!Number.isFinite(numericChatId) || !Number.isFinite(numericMsgId)) {
+        return null;
+      }
+      const result = await TdLib.getMessage(numericChatId, numericMsgId);
       if (!result) return null;
 
       const raw = typeof result === 'string' ? result : (result as any).raw || result;

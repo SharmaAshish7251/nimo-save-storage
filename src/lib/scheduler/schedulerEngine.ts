@@ -139,6 +139,8 @@ class SchedulerEngine {
   private timer: ReturnType<typeof setInterval> | null = null;
   private appStateSubscription: any = null;
   private chargingSubscription: { remove: () => void } | null = null;
+  private wasCharging: boolean = false;
+  private lastChargingTriggerAt: number = 0;
   private listeners: Set<(state: SchedulerState) => void> = new Set();
 
   /**
@@ -489,12 +491,22 @@ class SchedulerEngine {
         const isCharging =
           batteryState === Battery.BatteryState.CHARGING ||
           batteryState === Battery.BatteryState.FULL;
-        if (!isCharging) return;
+
+        const justPluggedIn = !this.wasCharging && isCharging;
+        this.wasCharging = isCharging;
+
+        if (!justPluggedIn) return;
+
+        const now = Date.now();
+        // Throttle charging triggers to at most once per 60 seconds
+        if (now - this.lastChargingTriggerAt < 60000) return;
+        this.lastChargingTriggerAt = now;
+
         try {
           const config = await getConfig();
           if (!config.autoUploadEnabled && !config.syncOnPlug) return;
           if (this.isRunning || uploadManager.isActive) return;
-          console.log('[Scheduler] Charging detected — triggering opportunistic backup...');
+          console.log('[Scheduler] Cable plugged in — triggering opportunistic backup...');
           await this.executeScheduler({ triggerSource: 'interval_timer', forceManual: false });
         } catch (err) {
           console.warn('[Scheduler] Charging trigger error:', err);

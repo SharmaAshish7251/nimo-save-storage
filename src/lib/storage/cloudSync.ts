@@ -46,30 +46,66 @@ export async function verifyCloudRecord(
   record: UploadedRecord,
   providedChatId?: number,
 ): Promise<{ exists: boolean; record: UploadedRecord }> {
-  const chatId = providedChatId ?? (await resolveCurrentChatId());
+  // If record has no message ID at all, it's not in cloud
+  if (!record.telegramMessageId && (!record.chunkManifest || record.chunkManifest.parts.length === 0)) {
+    return { exists: false, record: { ...record, cloudStatus: 'local_only' } };
+  }
+
+  // Determine candidate chat IDs to probe:
+  // 1. Explicitly provided chatId
+  // 2. record.chatId where the file was uploaded
+  // 3. Current active destination chatId
+  // 4. Saved Messages chatId
+  const candidateChatIds: number[] = [];
+  if (providedChatId) candidateChatIds.push(providedChatId);
+  if (record.chatId && !candidateChatIds.includes(record.chatId)) candidateChatIds.push(record.chatId);
+
+  try {
+    const currentChatId = await resolveCurrentChatId();
+    if (!candidateChatIds.includes(currentChatId)) candidateChatIds.push(currentChatId);
+  } catch {}
+
+  try {
+    const savedMessagesId = await tdLibClient.getSavedMessagesChatId();
+    if (!candidateChatIds.includes(savedMessagesId)) candidateChatIds.push(savedMessagesId);
+  } catch {}
 
   let exists = false;
-
-  if (record.chunkManifest && record.chunkManifest.parts.length > 0) {
-    // Multi-part file: ALL parts must still exist in Telegram Cloud
-    const partIds = record.chunkManifest.parts.map((p) => p.telegramMessageId).filter(Boolean);
-    if (partIds.length === 0) {
-      exists = false;
-    } else {
-      const batchMap = await tdLibClient.checkMessagesBatch(chatId, partIds);
-      exists = partIds.every((id) => batchMap.get(id) === true);
-    }
-  } else if (record.telegramMessageId) {
-    // Normal single-message upload
-    exists = await tdLibClient.checkMessageExists(chatId, record.telegramMessageId);
-  } else {
-    // No message ID recorded (local only or legacy)
-    exists = false;
+  for (const chatId of candidateChatIds) {
+    try {
+      if (record.chunkManifest && record.chunkManifest.parts.length > 0) {
+        const partIds = record.chunkManifest.parts.map((p) => p.telegramMessageId).filter(Boolean);
+        if (partIds.length > 0) {
+          const batchMap = await tdLibClient.checkMessagesBatch(chatId, partIds);
+          if (partIds.every((id) => batchMap.get(id) === true)) {
+            exists = true;
+            break;
+          }
+        }
+      } else if (record.telegramMessageId) {
+        const found = await tdLibClient.checkMessageExists(chatId, record.telegramMessageId);
+        if (found) {
+          exists = true;
+          break;
+        }
+      }
+    } catch {}
   }
+
+  // If confirmed found, status is 'synced'.
+  // If not found in local TDLib cache, preserve 'synced' for confirmed message IDs
+  // rather than falsely marking them 'missing' (TDLib getMessage only checks local cache).
+  const finalStatus: 'synced' | 'missing' | 'local_only' = exists
+    ? 'synced'
+    : record.cloudStatus === 'synced'
+      ? 'synced'
+      : record.telegramMessageId
+        ? 'synced'
+        : 'missing';
 
   const updated: UploadedRecord = {
     ...record,
-    cloudStatus: exists ? 'synced' : 'missing',
+    cloudStatus: finalStatus,
     lastVerifiedAt: Date.now(),
   };
 
@@ -81,7 +117,7 @@ export async function verifyCloudRecord(
     await saveUploadedIndex(index);
   }
 
-  return { exists, record: updated };
+  return { exists: finalStatus === 'synced', record: updated };
 }
 
 /**

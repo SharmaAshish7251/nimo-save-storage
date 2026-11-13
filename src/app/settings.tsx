@@ -399,8 +399,12 @@ export default function SettingsScreen() {
                 setConfig(refreshed);
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
                 Alert.alert('Profile Restored', 'Settings, folders, and cloud upload records have been successfully restored.');
+              } else if (res.reason === 'NO_PROFILE_FOUND') {
+                Alert.alert('No Profile Found', 'No existing profile snapshot was found in your Telegram Saved Messages.');
+              } else if (res.reason === 'NOT_LOGGED_IN') {
+                Alert.alert('Not Connected', 'Please connect your Telegram account before restoring your cloud profile.');
               } else {
-                Alert.alert('No Profile Found', res.reason || 'No existing profile snapshot was found in Saved Messages.');
+                Alert.alert('Restore Failed', res.reason || 'Could not restore cloud profile snapshot.');
               }
             } catch (err: any) {
               Alert.alert('Restore Error', err?.message || 'Failed to restore profile');

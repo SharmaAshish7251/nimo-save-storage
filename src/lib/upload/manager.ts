@@ -11,6 +11,7 @@ import {
   completeUploadAtomically,
   saveChunkManifest,
   formatFileSize,
+  resolveFileDestination,
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
 import { getFileInfo, computeFastFileHash } from '../storage/fileHelper';
@@ -378,23 +379,9 @@ export class UploadManager {
       }
 
       const config = await getConfig();
-      let targetChat = config.uploadToSavedMessages || !config.targetChatId ? 'me' : config.targetChatId;
-
-      // Categorical multi-channel routing if enabled
-      if (config.multiChannelRouting) {
-        const mime = item.mimeType || '';
-        const ext = (item.fileName.split('.').pop() || '').toLowerCase();
-        const isPhoto = mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(ext);
-        const isVideo = mime.startsWith('video/') || ['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp'].includes(ext);
-
-        if (isPhoto && config.photoChannelId) {
-          targetChat = config.photoChannelId;
-        } else if (isVideo && config.videoChannelId) {
-          targetChat = config.videoChannelId;
-        } else if (!isPhoto && !isVideo && config.documentChannelId) {
-          targetChat = config.documentChannelId;
-        }
-      }
+      const resolvedDest = resolveFileDestination(item.fileName, item.mimeType, config);
+      const targetChat = resolvedDest.targetChat;
+      const destName = resolvedDest.destinationTitle;
 
       // Pre-upload Duplicate Conflict Check
       const fastHash = await computeFastFileHash(item.uri, actualSize).catch(() => undefined);
@@ -412,10 +399,8 @@ export class UploadManager {
         const policy = config.duplicatePolicy || 'skip_if_cloud_match';
         if (policy === 'skip_if_cloud_match') {
           console.log(`[UploadManager] Cloud match found for ${item.fileName} (${conflict.conflictType}). Linking local copy to existing Telegram message ${conflict.record.telegramMessageId}`);
-          const destName =
-            config.targetChatTitle ||
-            (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
 
+          const numericChatId = await tdLibClient.resolveTargetChatId(targetChat).catch(() => undefined);
           await completeUploadAtomically({
             queueId: item.id,
             uri: item.uri,
@@ -423,10 +408,12 @@ export class UploadManager {
             size: actualSize,
             hash: fastHash || conflict.record.hash,
             telegramMessageId: conflict.record.telegramMessageId,
+            chatId: conflict.record.chatId || numericChatId,
+            destinationTitle: conflict.record.destinationTitle || destName,
             mediaAssetId: item.mediaAssetId,
             uploadedAt: Date.now(),
             uploadDurationMs: 0,
-            destination: destName,
+            destination: conflict.record.destinationTitle || destName,
             chunkManifest: conflict.record.chunkManifest,
           });
 
@@ -442,7 +429,7 @@ export class UploadManager {
       // ── Multi-part chunking for free-tier accounts with large files ──────
       // Triggered when file > 1.95 GB on a free Telegram account.
       if (!isPremium && actualSize && needsChunking(actualSize)) {
-        await this.uploadItemAsChunks(item, actualSize, targetChat, config, startTime, abortController.signal, fastHash);
+        await this.uploadItemAsChunks(item, actualSize, targetChat, destName, config, startTime, abortController.signal, fastHash);
         return;
       }
 
@@ -534,10 +521,7 @@ export class UploadManager {
       }
 
       const durationMs = Date.now() - startTime;
-
-      const destName =
-        config.targetChatTitle ||
-        (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+      const numericChatId = await tdLibClient.resolveTargetChatId(targetChat).catch(() => undefined);
 
       // Atomically update queue, uploaded index, and history in parallel (3 reads + 3 writes)
       // instead of 5 sequential read+write pairs — critical for 100+ concurrent uploads
@@ -548,6 +532,8 @@ export class UploadManager {
         size: actualSize ?? item.size,
         hash: fastHash,
         telegramMessageId: result?.id,
+        chatId: numericChatId,
+        destinationTitle: destName,
         mediaAssetId: item.mediaAssetId,
         uploadedAt: Date.now(),
         uploadDurationMs: durationMs,
@@ -580,20 +566,14 @@ export class UploadManager {
 
       try {
         const config = await getConfig();
-        const targetChat =
-          config.uploadToSavedMessages || !config.targetChatId
-            ? 'me'
-            : config.targetChatId;
-        const destName =
-          config.targetChatTitle ||
-          (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+        const failureDest = resolveFileDestination(item.fileName, item.mimeType, config);
 
         await recordActionHistory({
           fileName: item.fileName,
           uri: item.uri,
           size: item.size,
           status: 'failed',
-          destination: destName,
+          destination: failureDest.destinationTitle,
           uploadDurationMs: durationMs,
           error: error.message || 'Upload failed',
         });
@@ -615,6 +595,7 @@ export class UploadManager {
     item: QueueItem,
     actualSize: number,
     targetChat: string,
+    destName: string,
     config: Awaited<ReturnType<typeof getConfig>>,
     startTime: number,
     abortSignal?: AbortSignal,
@@ -622,9 +603,7 @@ export class UploadManager {
   ): Promise<void> {
     let chunkPaths: string[] = [];
     try {
-      const destName =
-        config.targetChatTitle ||
-        (targetChat === 'me' ? 'Saved Messages' : String(targetChat));
+      const numericChatId = await tdLibClient.resolveTargetChatId(targetChat).catch(() => undefined);
 
       // 1. Split the file into chunk files in the app cache directory
       console.log(`[UploadManager] Starting chunk split for ${item.fileName} (${(actualSize / (1024 ** 3)).toFixed(2)} GB)`);
@@ -708,6 +687,8 @@ export class UploadManager {
         hash: fastHash,
         // Use the first part's message ID as the representative ID
         telegramMessageId: manifestParts[0]?.telegramMessageId,
+        chatId: numericChatId,
+        destinationTitle: destName,
         mediaAssetId: item.mediaAssetId,
         uploadedAt: Date.now(),
         uploadDurationMs: durationMs,
@@ -779,10 +760,12 @@ export class UploadManager {
   }
 
   async discardItem(id: string): Promise<void> {
+    const queue = await getQueue();
+    const item = queue.find((q) => q.id === id);
     const config = await getConfig();
-    const destName =
-      config.targetChatTitle ||
-      (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId));
+    const destName = item
+      ? resolveFileDestination(item.fileName, item.mimeType, config).destinationTitle
+      : (config.targetChatTitle || (config.targetChatId === 'me' ? 'Saved Messages' : String(config.targetChatId)));
     await removeFromQueue(id, true, destName);
   }
 

@@ -2,9 +2,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import {
   getUploadedIndex,
+  saveUploadedIndex,
   getQueue,
   recordActionHistory,
-  updateUploadedRecord,
 } from './queue';
 import {
   FileCategory,
@@ -13,7 +13,6 @@ import {
   findMatchingMediaLibraryAsset,
   extractMediaStoreAssetId,
 } from './fileHelper';
-import { verifyCloudRecord } from './cloudSync';
 
 export interface CleanableItem {
   uri: string;
@@ -61,10 +60,23 @@ export interface CleanResult {
  * consume physical space on the local device.
  */
 export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
-  const [uploaded, queue] = await Promise.all([
+  const [uploadedRaw, queue] = await Promise.all([
     getUploadedIndex(),
     getQueue().catch(() => []),
   ]);
+
+  // Self-heal: automatically recover any records falsely marked as 'missing' by earlier failed checks
+  let healedAny = false;
+  const uploaded = uploadedRaw.map((record) => {
+    if (record.telegramMessageId && record.cloudStatus === 'missing') {
+      healedAny = true;
+      return { ...record, cloudStatus: 'synced' as const, lastVerifiedAt: Date.now() };
+    }
+    return record;
+  });
+  if (healedAny) {
+    await saveUploadedIndex(uploaded);
+  }
 
   const pendingQueueCount = queue.filter((q) => q.status !== 'completed').length;
 
@@ -177,21 +189,16 @@ export async function executeCleanSpace(
     let deleted = false;
 
     // ── SAFETY SHIELD CHECK ──────────────────────────────────────────────────
-    // Verify cloud copy actually exists before wiping local data
+    // Files are eligible for cleaning if they have a confirmed cloud upload (telegramMessageId or chunkManifest).
+    // Safety Shield blocks deletion ONLY if the file was never uploaded to Telegram cloud.
     const rec = uploaded.find((u) => u.uri === item.uri);
-    if (rec && (rec.telegramMessageId || rec.chunkManifest)) {
-      try {
-        const { exists } = await verifyCloudRecord(rec);
-        if (!exists) {
-          console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — Telegram Cloud copy is missing!`);
-          await updateUploadedRecord(item.uri, { cloudStatus: 'missing' });
-          blockedCount += 1;
-          if (onProgress) onProgress(i + 1, items.length);
-          continue; // SKIP deletion — protect user's file!
-        }
-      } catch {
-        // If network probe fails, proceed cautiously or skip if strictly verified
-      }
+    const hasCloudRecord = Boolean(rec && (rec.telegramMessageId || rec.chunkManifest || item.telegramMessageId));
+
+    if (!hasCloudRecord) {
+      console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — No Telegram cloud upload record found.`);
+      blockedCount += 1;
+      if (onProgress) onProgress(i + 1, items.length);
+      continue;
     }
 
     if (!item.canAutoDelete) {

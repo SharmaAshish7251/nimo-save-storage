@@ -64,13 +64,13 @@ export async function saveProfileSyncMeta(meta: Partial<ProfileSyncMeta>): Promi
 /**
  * Searches the user's Saved Messages chat for the latest cloud profile backup.
  */
-export async function findLatestCloudProfileMessage(): Promise<{ messageId: number; docFile: any } | null> {
+export async function findLatestCloudProfileMessage(): Promise<{ messageId: number; chatId: number; docFile: any } | null> {
   try {
     const savedChatId = await tdLibClient.getSavedMessagesChatId();
     if (!savedChatId) return null;
 
-    // Search recent chat history in Saved Messages
-    const messages = await tdLibClient.getChatHistory(savedChatId, 0, 50, 0);
+    // Search recent chat history in Saved Messages (up to 100 messages)
+    const messages = await tdLibClient.getChatHistory(savedChatId, 0, 100, 0);
     if (!Array.isArray(messages)) return null;
 
     for (const msg of messages) {
@@ -78,18 +78,20 @@ export async function findLatestCloudProfileMessage(): Promise<{ messageId: numb
       const content = msg.content;
       if (!content) continue;
 
-      const caption = content.caption?.text || '';
+      const caption = content.caption?.text || (typeof content.caption === 'string' ? content.caption : '');
       const doc = content.document;
       const fileName = doc?.file_name || doc?.fileName || '';
 
       const isProfile =
         caption.includes('[NIMO_CLOUD_PROFILE_V1]') ||
-        fileName === PROFILE_FILE_NAME;
+        fileName === PROFILE_FILE_NAME ||
+        fileName.toLowerCase().includes('nimo_cloud_profile');
 
-      if (isProfile && doc?.document) {
+      if (isProfile) {
         return {
           messageId: msg.id,
-          docFile: doc.document,
+          chatId: savedChatId,
+          docFile: doc?.document || doc || null,
         };
       }
     }
@@ -234,7 +236,7 @@ export async function restoreFromCloudProfile(options: {
     }
 
     console.log('[CloudProfileSync] Found profile message:', latest.messageId, 'Downloading file...');
-    const downloadedPath = await tdLibClient.downloadMessageFile(latest.docFile, 20000);
+    const downloadedPath = await tdLibClient.downloadMessageFile(latest.chatId, latest.messageId);
     if (!downloadedPath) {
       return { restored: false, reason: 'FILE_DOWNLOAD_FAILED' };
     }

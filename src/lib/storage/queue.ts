@@ -302,6 +302,8 @@ export interface UploadedRecord {
   hash?: string;
   uploadedAt: number;
   telegramMessageId?: number;
+  chatId?: number;
+  destinationTitle?: string;
   /** Optional MediaLibrary asset ID for reliable Android MediaStore deletion */
   mediaAssetId?: string;
   /** Present only for files uploaded as multiple parts (>1.95 GB) */
@@ -365,6 +367,8 @@ export async function completeUploadAtomically(params: {
   size: number;
   hash?: string;
   telegramMessageId?: number;
+  chatId?: number;
+  destinationTitle?: string;
   mediaAssetId?: string;
   uploadedAt: number;
   uploadDurationMs: number;
@@ -394,6 +398,8 @@ export async function completeUploadAtomically(params: {
     ...(params.hash ? { hash: params.hash } : {}),
     uploadedAt: params.uploadedAt,
     telegramMessageId: params.telegramMessageId,
+    ...(params.chatId !== undefined ? { chatId: params.chatId } : {}),
+    ...(params.destinationTitle ? { destinationTitle: params.destinationTitle } : {}),
     ...(params.mediaAssetId ? { mediaAssetId: params.mediaAssetId } : {}),
     ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
     cloudStatus: 'synced',
@@ -565,6 +571,83 @@ export async function saveSchedulerState(patch: Partial<SchedulerState>): Promis
 
 export async function resetSchedulerState(): Promise<void> {
   await AsyncStorage.removeItem(SCHEDULER_STATE_KEY);
+}
+
+// ─── Destination Resolution (Multi-Stream & Single Destination) ─────────────
+
+export interface ResolvedDestination {
+  targetChat: string;
+  destinationTitle: string;
+  category: 'photo' | 'video' | 'document' | 'default';
+  isMultiStream: boolean;
+}
+
+/**
+ * Resolves the target Telegram chat ID and human-friendly destination title
+ * for a file, honoring multi-channel (multi-stream) routing when enabled.
+ */
+export function resolveFileDestination(
+  fileName: string,
+  mimeType?: string,
+  config?: AppConfig | null
+): ResolvedDestination {
+  const defaultTarget =
+    !config || config.uploadToSavedMessages || !config.targetChatId
+      ? 'me'
+      : config.targetChatId;
+  const defaultTitle =
+    config?.targetChatTitle ||
+    (defaultTarget === 'me' ? 'Saved Messages' : String(defaultTarget));
+
+  if (!config?.multiChannelRouting) {
+    return {
+      targetChat: defaultTarget,
+      destinationTitle: defaultTitle,
+      category: 'default',
+      isMultiStream: false,
+    };
+  }
+
+  const ext = (fileName.split('.').pop() || '').toLowerCase();
+  const mime = (mimeType || '').toLowerCase();
+
+  const isPhoto =
+    mime.startsWith('image/') ||
+    ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif', 'bmp', 'svg'].includes(ext);
+  const isVideo =
+    mime.startsWith('video/') ||
+    ['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp', 'ts'].includes(ext);
+
+  if (isPhoto && config.photoChannelId) {
+    return {
+      targetChat: config.photoChannelId,
+      destinationTitle: config.photoChannelTitle || 'Photos Channel',
+      category: 'photo',
+      isMultiStream: true,
+    };
+  } else if (isVideo && config.videoChannelId) {
+    return {
+      targetChat: config.videoChannelId,
+      destinationTitle: config.videoChannelTitle || 'Videos Channel',
+      category: 'video',
+      isMultiStream: true,
+    };
+  } else if (!isPhoto && !isVideo && config.documentChannelId) {
+    return {
+      targetChat: config.documentChannelId,
+      destinationTitle: config.documentChannelTitle || 'Documents Channel',
+      category: 'document',
+      isMultiStream: true,
+    };
+  }
+
+  // Fallback to default destination when category-specific channel is not configured
+  return {
+    targetChat: defaultTarget,
+    destinationTitle: defaultTitle,
+    category: isPhoto ? 'photo' : isVideo ? 'video' : 'document',
+    isMultiStream: true,
+  };
 }
 
 // ─── Chunk Manifest Storage ─────────────────────────────────────────────────

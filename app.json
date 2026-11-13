@@ -28,7 +28,8 @@
         "READ_MEDIA_VIDEO",
         "READ_MEDIA_AUDIO",
         "RECEIVE_BOOT_COMPLETED",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "MANAGE_EXTERNAL_STORAGE"
       ]
     },
     "web": {

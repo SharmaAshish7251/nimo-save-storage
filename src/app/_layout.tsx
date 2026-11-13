@@ -86,6 +86,7 @@ export default function RootLayout() {
         console.warn('App initialization error:', err);
       } finally {
         setAppIsReady(true);
+        SplashScreen.hideAsync().catch(() => {});
       }
     }
 

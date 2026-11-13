@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import { computeFastFileHash } from './fileHelper';
+import { computeFastFileHash, extractMediaStoreAssetId } from './fileHelper';
 
 export { computeFastFileHash };
 
@@ -133,19 +133,27 @@ export async function deleteDuplicates(
     for (const copy of redundantCopies) {
       try {
         let deleted = false;
-        if (copy.uri.startsWith('ph://') || copy.uri.includes('content://media')) {
+        const assetId =
+          extractMediaStoreAssetId(copy.uri) ||
+          (copy.uri.startsWith('ph://') ? copy.uri : undefined);
+
+        if (assetId) {
           try {
-            const res = await MediaLibrary.deleteAssetsAsync([copy.uri]);
+            const res = await MediaLibrary.deleteAssetsAsync([assetId]);
             if (res) deleted = true;
           } catch {}
         }
         if (!deleted) {
-          await FileSystem.deleteAsync(copy.uri, { idempotent: true });
-          deleted = true;
+          try {
+            await FileSystem.deleteAsync(copy.uri, { idempotent: true });
+            deleted = true;
+          } catch {}
         }
         if (deleted) {
           deletedCount++;
           freedBytes += group.size;
+        } else {
+          errors.push(`Failed to delete ${copy.name}: File could not be removed`);
         }
       } catch (err: any) {
         errors.push(`Failed to delete ${copy.name}: ${err?.message || 'Permission denied'}`);

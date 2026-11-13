@@ -93,15 +93,8 @@ export async function verifyCloudRecord(
   }
 
   // If confirmed found, status is 'synced'.
-  // If not found in local TDLib cache, preserve 'synced' for confirmed message IDs
-  // rather than falsely marking them 'missing' (TDLib getMessage only checks local cache).
-  const finalStatus: 'synced' | 'missing' | 'local_only' = exists
-    ? 'synced'
-    : record.cloudStatus === 'synced'
-      ? 'synced'
-      : record.telegramMessageId
-        ? 'synced'
-        : 'missing';
+  // If not confirmed found on Telegram server, mark as 'missing'.
+  const finalStatus: 'synced' | 'missing' | 'local_only' = exists ? 'synced' : 'missing';
 
   const updated: UploadedRecord = {
     ...record,
@@ -222,14 +215,7 @@ export async function reconcileCloudIndex(options: {
       exists = resultMap.get(r.telegramMessageId) === true;
     }
 
-    // Defensive check: If confirmed in cache, mark 'synced'.
-    // If not confirmed in local TDLib cache, preserve 'synced' for confirmed message IDs
-    // rather than falsely marking them 'missing' (TDLib getMessage only checks local cache).
-    const finalStatus: 'synced' | 'missing' = exists
-      ? 'synced'
-      : r.cloudStatus === 'synced' || r.telegramMessageId || r.chunkManifest
-      ? 'synced'
-      : 'missing';
+    const finalStatus: 'synced' | 'missing' = exists ? 'synced' : 'missing';
 
     const updated: UploadedRecord = {
       ...r,

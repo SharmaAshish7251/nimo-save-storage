@@ -7,25 +7,28 @@ import {
   AppState,
   AppStateStatus,
   Image,
-  useColorScheme,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { getConfig } from '@/lib/storage/queue';
+import { useAppTheme } from '@/context/ThemeContext';
 
 export function BiometricLockOverlay() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [isLocked, setIsLocked] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const lastBackgroundTime = useRef<number | null>(null);
   const isAuthenticating = useRef<boolean>(false);
+  const lastAuthAttemptAt = useRef<number>(0);
 
   const triggerAuth = useCallback(async () => {
-    if (isAuthenticating.current) return;
+    const now = Date.now();
+    // Guard against rapid duplicate prompts within 2 seconds
+    if (isAuthenticating.current || now - lastAuthAttemptAt.current < 2000) return;
     isAuthenticating.current = true;
+    lastAuthAttemptAt.current = now;
     setAuthError(null);
 
     try {
@@ -43,6 +46,8 @@ export function BiometricLockOverlay() {
         fallbackLabel: 'Use Device Passcode',
         cancelLabel: 'Cancel',
       });
+
+      lastAuthAttemptAt.current = Date.now();
 
       if (result.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -83,8 +88,10 @@ export function BiometricLockOverlay() {
         const timeoutSec = currentConfig.biometricLockTimeout ?? 0;
         const lastBg = lastBackgroundTime.current || 0;
         const elapsedSec = (Date.now() - lastBg) / 1000;
+        const timeSinceLastPrompt = Date.now() - lastAuthAttemptAt.current;
 
-        if (timeoutSec === 0 || elapsedSec >= timeoutSec) {
+        // Prevent infinite re-prompt loops when biometric dialog dismisses and AppState becomes active
+        if ((timeoutSec === 0 || elapsedSec >= timeoutSec) && timeSinceLastPrompt > 2500) {
           setIsLocked(true);
           triggerAuth();
         }

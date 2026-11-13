@@ -184,6 +184,21 @@ export async function saveQueue(queue: QueueItem[]): Promise<void> {
   await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
 }
 
+let queueLockPromise: Promise<any> = Promise.resolve();
+
+/**
+ * Serializes critical read-modify-write operations on the queue and uploaded index
+ * to prevent race conditions during concurrent worker operations.
+ */
+export function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = queueLockPromise.then(
+    () => fn(),
+    () => fn()
+  );
+  queueLockPromise = next.catch(() => {});
+  return next;
+}
+
 /**
  * Scans the queue and resets any orphaned items stuck with status 'uploading'
  * back to 'pending'. This handles scenarios where the app was force-closed,
@@ -219,21 +234,23 @@ export async function recoverInterruptedUploads(): Promise<number> {
 }
 
 export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>): Promise<QueueItem> {
-  const queue = await getQueue();
-  // Fix 2.1: Deduplicate by URI — skip if already in queue with a non-completed status
-  const existing = queue.find(q => q.uri === item.uri && q.status !== 'completed');
-  if (existing) return existing;
-  const newItem: QueueItem = {
-    ...item,
-    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    status: 'pending',
-    progress: 0,
-    retries: 0,
-    addedAt: Date.now(),
-  };
-  queue.push(newItem);
-  await saveQueue(queue);
-  return newItem;
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    // Fix 2.1: Deduplicate by URI — skip if already in queue with a non-completed status
+    const existing = queue.find(q => q.uri === item.uri && q.status !== 'completed');
+    if (existing) return existing;
+    const newItem: QueueItem = {
+      ...item,
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      status: 'pending',
+      progress: 0,
+      retries: 0,
+      addedAt: Date.now(),
+    };
+    queue.push(newItem);
+    await saveQueue(queue);
+    return newItem;
+  });
 }
 
 /**
@@ -246,39 +263,41 @@ export async function addManyToQueue(
 ): Promise<{ added: QueueItem[]; skipped: number }> {
   if (items.length === 0) return { added: [], skipped: 0 };
 
-  const queue = await getQueue();
-  // Build a Set of URIs already in queue (non-completed) for O(1) dedup lookup
-  const existingUris = new Set(
-    queue.filter(q => q.status !== 'completed').map(q => q.uri)
-  );
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    // Build a Set of URIs already in queue (non-completed) for O(1) dedup lookup
+    const existingUris = new Set(
+      queue.filter(q => q.status !== 'completed').map(q => q.uri)
+    );
 
-  const now = Date.now();
-  let counter = 0;
-  const newItems: QueueItem[] = [];
-  let skipped = 0;
+    const now = Date.now();
+    let counter = 0;
+    const newItems: QueueItem[] = [];
+    let skipped = 0;
 
-  for (const item of items) {
-    if (existingUris.has(item.uri)) {
-      skipped++;
-      continue;
+    for (const item of items) {
+      if (existingUris.has(item.uri)) {
+        skipped++;
+        continue;
+      }
+      const newItem: QueueItem = {
+        ...item,
+        id: `${now}_${counter++}_${Math.random().toString(36).substr(2, 9)}`,
+        status: 'pending',
+        progress: 0,
+        retries: 0,
+        addedAt: now,
+      };
+      newItems.push(newItem);
+      existingUris.add(item.uri); // prevent intra-batch duplicates
     }
-    const newItem: QueueItem = {
-      ...item,
-      id: `${now}_${counter++}_${Math.random().toString(36).substr(2, 9)}`,
-      status: 'pending',
-      progress: 0,
-      retries: 0,
-      addedAt: now,
-    };
-    newItems.push(newItem);
-    existingUris.add(item.uri); // prevent intra-batch duplicates
-  }
 
-  if (newItems.length > 0) {
-    await saveQueue([...queue, ...newItems]);
-  }
+    if (newItems.length > 0) {
+      await saveQueue([...queue, ...newItems]);
+    }
 
-  return { added: newItems, skipped };
+    return { added: newItems, skipped };
+  });
 }
 
 export async function resetItemToPending(id: string): Promise<QueueItem | null> {
@@ -325,11 +344,13 @@ export async function getUploadedIndex(): Promise<UploadedRecord[]> {
 }
 
 export async function markUploaded(record: UploadedRecord): Promise<void> {
-  const index = await getUploadedIndex();
-  // Avoid duplicates by uri
-  const filtered = index.filter(r => r.uri !== record.uri);
-  filtered.push(record);
-  await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filtered));
+  return withQueueLock(async () => {
+    const index = await getUploadedIndex();
+    // Avoid duplicates by uri
+    const filtered = index.filter(r => r.uri !== record.uri);
+    filtered.push(record);
+    await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filtered));
+  });
 }
 
 export async function saveUploadedIndex(records: UploadedRecord[]): Promise<void> {
@@ -340,18 +361,22 @@ export async function updateUploadedRecord(
   uri: string,
   patch: Partial<UploadedRecord>
 ): Promise<UploadedRecord | null> {
-  const index = await getUploadedIndex();
-  const idx = index.findIndex((r) => r.uri === uri);
-  if (idx < 0) return null;
-  index[idx] = { ...index[idx], ...patch };
-  await saveUploadedIndex(index);
-  return index[idx];
+  return withQueueLock(async () => {
+    const index = await getUploadedIndex();
+    const idx = index.findIndex((r) => r.uri === uri);
+    if (idx < 0) return null;
+    index[idx] = { ...index[idx], ...patch };
+    await saveUploadedIndex(index);
+    return index[idx];
+  });
 }
 
 export async function removeUploadedRecord(uri: string): Promise<void> {
-  const index = await getUploadedIndex();
-  const filtered = index.filter((r) => r.uri !== uri);
-  await saveUploadedIndex(filtered);
+  return withQueueLock(async () => {
+    const index = await getUploadedIndex();
+    const filtered = index.filter((r) => r.uri !== uri);
+    await saveUploadedIndex(filtered);
+  });
 }
 
 
@@ -375,54 +400,56 @@ export async function completeUploadAtomically(params: {
   destination: string;
   chunkManifest?: ChunkManifest;
 }): Promise<void> {
-  const [queue, uploadedIndex, history] = await Promise.all([
-    getQueue(),
-    getUploadedIndex(),
-    getActionHistory(),
-  ]);
+  return withQueueLock(async () => {
+    const [queue, uploadedIndex, history] = await Promise.all([
+      getQueue(),
+      getUploadedIndex(),
+      getActionHistory(),
+    ]);
 
-  const queueIndex = queue.findIndex((item: QueueItem) => item.id === params.queueId);
-  if (queueIndex >= 0) {
-    queue[queueIndex].status = 'completed';
-    queue[queueIndex].progress = 100;
-    queue[queueIndex].uploadedAt = params.uploadedAt;
-    queue[queueIndex].uploadDurationMs = params.uploadDurationMs;
-    queue[queueIndex].lastAttemptAt = Date.now();
-  }
+    const queueIndex = queue.findIndex((item: QueueItem) => item.id === params.queueId);
+    if (queueIndex >= 0) {
+      queue[queueIndex].status = 'completed';
+      queue[queueIndex].progress = 100;
+      queue[queueIndex].uploadedAt = params.uploadedAt;
+      queue[queueIndex].uploadDurationMs = params.uploadDurationMs;
+      queue[queueIndex].lastAttemptAt = Date.now();
+    }
 
-  const filteredUploaded = uploadedIndex.filter((r: UploadedRecord) => r.uri !== params.uri);
-  filteredUploaded.push({
-    uri: params.uri,
-    fileName: params.fileName,
-    size: params.size,
-    ...(params.hash ? { hash: params.hash } : {}),
-    uploadedAt: params.uploadedAt,
-    telegramMessageId: params.telegramMessageId,
-    ...(params.chatId !== undefined ? { chatId: params.chatId } : {}),
-    ...(params.destinationTitle ? { destinationTitle: params.destinationTitle } : {}),
-    ...(params.mediaAssetId ? { mediaAssetId: params.mediaAssetId } : {}),
-    ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
-    cloudStatus: 'synced',
-    lastVerifiedAt: Date.now(),
+    const filteredUploaded = uploadedIndex.filter((r: UploadedRecord) => r.uri !== params.uri);
+    filteredUploaded.push({
+      uri: params.uri,
+      fileName: params.fileName,
+      size: params.size,
+      ...(params.hash ? { hash: params.hash } : {}),
+      uploadedAt: params.uploadedAt,
+      telegramMessageId: params.telegramMessageId,
+      ...(params.chatId !== undefined ? { chatId: params.chatId } : {}),
+      ...(params.destinationTitle ? { destinationTitle: params.destinationTitle } : {}),
+      ...(params.mediaAssetId ? { mediaAssetId: params.mediaAssetId } : {}),
+      ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
+      cloudStatus: 'synced',
+      lastVerifiedAt: Date.now(),
+    });
+
+    const newHistoryItem: ActionHistoryItem = {
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      fileName: params.fileName,
+      uri: params.uri,
+      size: params.size,
+      status: 'uploaded',
+      timestamp: Date.now(),
+      uploadDurationMs: params.uploadDurationMs,
+      destination: params.destination,
+    };
+    const updatedHistory = [newHistoryItem, ...history].slice(0, MAX_HISTORY_ITEMS);
+
+    await Promise.all([
+      saveQueue(queue),
+      AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filteredUploaded)),
+      AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory)),
+    ]);
   });
-
-  const newHistoryItem: ActionHistoryItem = {
-    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    fileName: params.fileName,
-    uri: params.uri,
-    size: params.size,
-    status: 'uploaded',
-    timestamp: Date.now(),
-    uploadDurationMs: params.uploadDurationMs,
-    destination: params.destination,
-  };
-  const updatedHistory = [newHistoryItem, ...history].slice(0, MAX_HISTORY_ITEMS);
-
-  await Promise.all([
-    saveQueue(queue),
-    AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filteredUploaded)),
-    AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory)),
-  ]);
 }
 export async function isUploaded(uri: string): Promise<boolean> {
   const index = await getUploadedIndex();

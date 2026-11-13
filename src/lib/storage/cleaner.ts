@@ -2,7 +2,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import {
   getUploadedIndex,
-  saveUploadedIndex,
   getQueue,
   recordActionHistory,
 } from './queue';
@@ -13,6 +12,7 @@ import {
   findMatchingMediaLibraryAsset,
   extractMediaStoreAssetId,
 } from './fileHelper';
+import { verifyCloudRecord } from './cloudSync';
 
 export interface CleanableItem {
   uri: string;
@@ -27,6 +27,7 @@ export interface CleanableItem {
   uploadedAt: number;
   category: FileCategory;
   telegramMessageId?: number;
+  chatId?: number;
 }
 
 export interface CategorySummary {
@@ -60,23 +61,10 @@ export interface CleanResult {
  * consume physical space on the local device.
  */
 export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
-  const [uploadedRaw, queue] = await Promise.all([
+  const [uploaded, queue] = await Promise.all([
     getUploadedIndex(),
     getQueue().catch(() => []),
   ]);
-
-  // Self-heal: automatically recover any records falsely marked as 'missing' by earlier failed checks
-  let healedAny = false;
-  const uploaded = uploadedRaw.map((record) => {
-    if (record.telegramMessageId && record.cloudStatus === 'missing') {
-      healedAny = true;
-      return { ...record, cloudStatus: 'synced' as const, lastVerifiedAt: Date.now() };
-    }
-    return record;
-  });
-  if (healedAny) {
-    await saveUploadedIndex(uploaded);
-  }
 
   const pendingQueueCount = queue.filter((q) => q.status !== 'completed').length;
 
@@ -94,6 +82,9 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
   let restrictedBytes = 0;
 
   for (const record of uploaded) {
+    // Safety Shield: Do NOT suggest cleaning local files whose cloud copies are marked missing
+    if (record.cloudStatus === 'missing') continue;
+
     try {
       const target = await resolveLocalFileTarget({
         uri: record.uri,
@@ -121,6 +112,7 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
         uploadedAt: record.uploadedAt,
         category,
         telegramMessageId: record.telegramMessageId,
+        chatId: record.chatId,
       };
 
       if (target.canAutoDelete) {
@@ -189,16 +181,34 @@ export async function executeCleanSpace(
     let deleted = false;
 
     // ── SAFETY SHIELD CHECK ──────────────────────────────────────────────────
-    // Files are eligible for cleaning if they have a confirmed cloud upload (telegramMessageId or chunkManifest).
-    // Safety Shield blocks deletion ONLY if the file was never uploaded to Telegram cloud.
+    // Files are eligible for cleaning only if they have a confirmed cloud upload.
+    // Safety Shield blocks deletion if cloudStatus is 'missing' or if the file was never uploaded.
     const rec = uploaded.find((u) => u.uri === item.uri);
     const hasCloudRecord = Boolean(rec && (rec.telegramMessageId || rec.chunkManifest || item.telegramMessageId));
 
-    if (!hasCloudRecord) {
-      console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — No Telegram cloud upload record found.`);
+    if (!hasCloudRecord || rec?.cloudStatus === 'missing') {
+      console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — No valid Telegram cloud upload record found.`);
       blockedCount += 1;
       if (onProgress) onProgress(i + 1, items.length);
       continue;
+    }
+
+    // Active Safety Shield Live Verification: Verify message actually exists in Telegram Cloud before deleting local copy!
+    if (rec) {
+      try {
+        const verification = await verifyCloudRecord(rec, item.chatId);
+        if (!verification.exists) {
+          console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — Cloud message no longer exists on Telegram.`);
+          blockedCount += 1;
+          if (onProgress) onProgress(i + 1, items.length);
+          continue;
+        }
+      } catch (verifyErr) {
+        console.warn(`[Cleaner Safety Shield] Verification failed for "${item.fileName}", blocking local deletion for safety:`, verifyErr);
+        blockedCount += 1;
+        if (onProgress) onProgress(i + 1, items.length);
+        continue;
+      }
     }
 
     if (!item.canAutoDelete) {

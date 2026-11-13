@@ -34,15 +34,29 @@ export async function resolveToLocalPath(
     ? preferredFileName.replace(/[/\\?%*:|"<>]/g, '_')
     : null;
 
-  // Direct disk access if already an accessible file on disk AND already has the correct filename
+  // Direct disk access ONLY if already an accessible file inside the app's private sandbox
+  // (TDLib C++ core cannot open /storage/emulated/0/... directly due to Android Scoped Storage)
   if (uri.startsWith('/') || uri.startsWith('file://')) {
     const rawPath = safeDecodeURI(uri.replace(/^file:\/\//, ''));
+    const cacheDirNoScheme = LegacyFileSystem.cacheDirectory
+      ? safeDecodeURI(LegacyFileSystem.cacheDirectory.replace(/^file:\/\//, ''))
+      : null;
+    const documentDirNoScheme = LegacyFileSystem.documentDirectory
+      ? safeDecodeURI(LegacyFileSystem.documentDirectory.replace(/^file:\/\//, ''))
+      : null;
+
+    const isInsideAppSandbox =
+      rawPath.startsWith('/data/user/0/') ||
+      rawPath.startsWith('/data/data/') ||
+      (cacheDirNoScheme && rawPath.startsWith(cacheDirNoScheme)) ||
+      (documentDirNoScheme && rawPath.startsWith(documentDirNoScheme));
+
     const currentBaseName = rawPath.split('/').pop() || '';
-    if (!safeName || currentBaseName === safeName) {
+    if (isInsideAppSandbox && (!safeName || currentBaseName === safeName)) {
       try {
         const fileInfo = await LegacyFileSystem.getInfoAsync(uri);
         if (fileInfo.exists) {
-          console.log(`[resolveToLocalPath] Direct local path used (zero-copy): ${rawPath}`);
+          console.log(`[resolveToLocalPath] Direct sandbox path used (zero-copy): ${rawPath}`);
           return { path: rawPath, isTemp: false };
         }
       } catch (e) {

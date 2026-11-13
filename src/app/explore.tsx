@@ -93,6 +93,8 @@ export default function CloudExplorerScreen() {
 
   // Stream View Scope: 'current' (current device backup) vs 'all' (all cloud files in stream channels)
   const [streamScope, setStreamScope] = useState<'current' | 'all'>('current');
+  // Pagination display limit for FlatList windowing (loads 60 at a time)
+  const [displayLimit, setDisplayLimit] = useState(60);
 
   const loadCloudItems = useCallback(async () => {
     try {
@@ -290,30 +292,42 @@ export default function CloudExplorerScreen() {
     }
   };
 
+  const executeSync = async (limitPerChannel: number, isFull: boolean) => {
+    setIsImporting(true);
+    try {
+      const res = await importFromTelegramHistory({
+        perChannelLimit: limitPerChannel,
+        fetchAll: isFull,
+        onProgress: (found, targetName) => {
+          console.log(`[Explore Sync] Scanned ${found} files in ${targetName || 'channel'}...`);
+        },
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      await loadCloudItems();
+      Alert.alert(
+        'Sync Finished',
+        `Scanned ${res.totalFound} messages and imported ${res.imported} cloud file(s) into your catalog.`
+      );
+    } catch (err: any) {
+      Alert.alert('Sync Error', err?.message || 'Failed to scan Telegram history.');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const handleImportFromTelegram = () => {
     Alert.alert(
       'Sync Telegram Cloud History',
-      'Scan your backup destination in Telegram to discover and import existing files into Cloud Explorer?',
+      'Choose how deep to scan your backup stream channels for existing files:',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Scan Cloud',
-          onPress: async () => {
-            setIsImporting(true);
-            try {
-              const res = await importFromTelegramHistory({ limit: 150 });
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-              await loadCloudItems();
-              Alert.alert(
-                'Sync Finished',
-                `Scanned ${res.totalFound} messages and imported ${res.imported} new cloud file(s) into your catalog.`
-              );
-            } catch (err: any) {
-              Alert.alert('Sync Error', err?.message || 'Failed to scan Telegram history.');
-            } finally {
-              setIsImporting(false);
-            }
-          },
+          text: 'Quick Sync (100 files)',
+          onPress: () => executeSync(100, false),
+        },
+        {
+          text: 'Full Sync (All 1000+ files)',
+          onPress: () => executeSync(2500, true),
         },
       ]
     );
@@ -386,6 +400,16 @@ export default function CloudExplorerScreen() {
   const filteredBytes = useMemo(() => {
     return filteredAndSortedItems.reduce((acc, it) => acc + (it.size || 0), 0);
   }, [filteredAndSortedItems]);
+
+  // Reset pagination window whenever search, category, sort, or scope changes
+  useEffect(() => {
+    setDisplayLimit(60);
+  }, [searchQuery, activeCategory, sortOption, streamScope]);
+
+  // Paginated slice for 60fps virtualization window
+  const paginatedItems = useMemo(() => {
+    return filteredAndSortedItems.slice(0, displayLimit);
+  }, [filteredAndSortedItems, displayLimit]);
 
   const resolvedItemDest = useMemo(() => {
     if (!selectedItem) {
@@ -1414,17 +1438,53 @@ export default function CloudExplorerScreen() {
       ) : filteredAndSortedItems.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIconBadge}>
-            <FontAwesome name="cloud-upload" size={38} color="#208AEF" />
+            <FontAwesome
+              name={searchQuery ? 'search' : activeCategory !== 'all' ? 'filter' : 'cloud-upload'}
+              size={36}
+              color="#208AEF"
+            />
           </View>
           <Text style={[styles.emptyTitle, { color: textColor }]}>
-            {searchQuery ? 'No Matching Files' : 'Cloud Storage is Empty'}
+            {searchQuery
+              ? 'No Matching Files'
+              : activeCategory !== 'all'
+              ? `No ${activeCategory === 'image' ? 'Photos' : activeCategory === 'video' ? 'Videos' : activeCategory === 'document' ? 'Documents' : activeCategory} Found`
+              : streamScope === 'current' && items.length > 0
+              ? 'No Local Files in Current Backup'
+              : 'Cloud Storage is Empty'}
           </Text>
           <Text style={[styles.emptySubtitle, { color: subtextColor }]}>
             {searchQuery
               ? `No backed-up files matching "${searchQuery}".`
+              : activeCategory !== 'all' && items.length > 0
+              ? `No files match the "${activeCategory}" filter, but you have ${items.length} files in other categories.`
+              : streamScope === 'current' && items.length > 0
+              ? `You have ${items.length} files in Telegram Cloud. Switch to "All Stream Cloud" to browse them.`
               : 'Files backed up by the auto-scheduler or upload queue will appear here in your personal cloud gallery.'}
           </Text>
-          {!searchQuery && (
+          {activeCategory !== 'all' && items.length > 0 ? (
+            <TouchableOpacity
+              style={styles.emptyActionBtn}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setActiveCategory('all');
+              }}
+            >
+              <FontAwesome name="th-large" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.emptyActionBtnText}>Show All Categories ({items.length})</Text>
+            </TouchableOpacity>
+          ) : streamScope === 'current' && items.length > 0 ? (
+            <TouchableOpacity
+              style={styles.emptyActionBtn}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setStreamScope('all');
+              }}
+            >
+              <FontAwesome name="cloud" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.emptyActionBtnText}>Switch to All Stream Cloud ({items.length})</Text>
+            </TouchableOpacity>
+          ) : !searchQuery ? (
             <TouchableOpacity
               style={styles.emptyActionBtn}
               onPress={() => router.push('/upload')}
@@ -1432,12 +1492,12 @@ export default function CloudExplorerScreen() {
               <FontAwesome name="plus" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
               <Text style={styles.emptyActionBtnText}>Go to Upload Queue</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
         </View>
       ) : (
         <FlatList
           key={viewMode}
-          data={filteredAndSortedItems}
+          data={paginatedItems}
           keyExtractor={(item) => item.uri}
           numColumns={viewMode === 'grid' ? GRID_COLUMNS : 1}
           contentContainerStyle={[
@@ -1445,6 +1505,28 @@ export default function CloudExplorerScreen() {
             { paddingBottom: Math.max(insets.bottom, 20) + (isSelectMode ? 96 : 16) },
           ]}
           renderItem={viewMode === 'grid' ? renderGridItem : renderListItem}
+          onEndReachedThreshold={0.5}
+          onEndReached={() => {
+            if (displayLimit < filteredAndSortedItems.length) {
+              setDisplayLimit((prev) => Math.min(prev + 60, filteredAndSortedItems.length));
+            }
+          }}
+          ListFooterComponent={
+            displayLimit < filteredAndSortedItems.length ? (
+              <View style={styles.listFooterWrap}>
+                <ActivityIndicator size="small" color="#208AEF" />
+                <Text style={[styles.listFooterText, { color: subtextColor }]}>
+                  Loading more items ({paginatedItems.length} of {filteredAndSortedItems.length})...
+                </Text>
+              </View>
+            ) : filteredAndSortedItems.length > 60 ? (
+              <View style={styles.listFooterWrap}>
+                <Text style={[styles.listFooterText, { color: subtextColor }]}>
+                  Showing all {filteredAndSortedItems.length} files
+                </Text>
+              </View>
+            ) : undefined
+          }
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -2686,5 +2768,15 @@ const styles = StyleSheet.create({
   uriText: {
     fontSize: 11,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  listFooterWrap: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listFooterText: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 6,
   },
 });

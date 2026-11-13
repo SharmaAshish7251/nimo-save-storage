@@ -80,6 +80,11 @@ export default function HomeScreen() {
         getActionHistory().catch(() => []),
       ]);
 
+      // Update login status and initial config immediately so UI reflects connected state right away
+      setLoggedIn(loginStatus);
+      setConfig(initialConfig);
+      setSchedulerState(initialSched);
+
       let appConfig = initialConfig;
       let queueItems = initialQueue;
       let uploadedItems = initialUploaded;
@@ -101,6 +106,8 @@ export default function HomeScreen() {
             schedState = freshSched;
             queueItems = freshQueue;
             uploadedItems = freshUploaded;
+            setConfig(appConfig);
+            setSchedulerState(schedState);
             Alert.alert(
               'Profile Restored from Telegram',
               'Your previous settings, watched folders, and upload history were successfully restored from Telegram Cloud.'
@@ -109,21 +116,28 @@ export default function HomeScreen() {
         }
       }
 
-      setLoggedIn(loginStatus);
-      setConfig(appConfig);
-      setSchedulerState(schedState);
-
       const qBytes = (queueItems || []).reduce(
         (acc: number, item: QueueItem) => acc + (item.size || 0),
         0
       );
       setQueueInfo({ count: (queueItems || []).length, totalBytes: qBytes });
 
-      const cBytes = (uploadedItems || []).reduce(
+      let activeCloudItems = uploadedItems || [];
+      if (appConfig?.multiChannelRouting) {
+        const savedChatId = await tdLibClient.getSavedMessagesChatId().catch(() => null);
+        activeCloudItems = activeCloudItems.filter((rec) => {
+          const isSaved =
+            rec.destinationTitle === 'Saved Messages' ||
+            (savedChatId && (rec.chatId === savedChatId || rec.uri.startsWith(`tg://${savedChatId}/`)));
+          return !isSaved;
+        });
+      }
+
+      const cBytes = activeCloudItems.reduce(
         (acc: number, item: UploadedRecord) => acc + (item.size || 0),
         0
       );
-      setCloudStats({ count: (uploadedItems || []).length, totalBytes: cBytes });
+      setCloudStats({ count: activeCloudItems.length, totalBytes: cBytes });
 
       // Recent 3 uploaded items
       setRecentUploads(
@@ -185,7 +199,11 @@ export default function HomeScreen() {
         checkStatus();
       }
       const unsub = tdLibClient.onAuthStateChange((state) => {
-        setLoggedIn(state === 'authorizationStateReady');
+        const isReady = state === 'authorizationStateReady';
+        setLoggedIn(isReady);
+        if (isReady && onboardingStatus === 'done') {
+          checkStatus();
+        }
       });
       return () => {
         unsub();
@@ -332,7 +350,9 @@ export default function HomeScreen() {
             <View style={styles.heroMetaItem}>
               <FontAwesome name="comment" size={11} color="#93C5FD" style={{ marginRight: 5 }} />
               <Text style={styles.heroMetaText} numberOfLines={1}>
-                {config?.uploadToSavedMessages || config?.targetChatId === 'me'
+                {config?.multiChannelRouting
+                  ? 'Multi-Stream (3 Channels)'
+                  : config?.uploadToSavedMessages || config?.targetChatId === 'me'
                   ? 'Saved Messages'
                   : config?.targetChatTitle || 'Target Channel'}
               </Text>
@@ -504,7 +524,7 @@ export default function HomeScreen() {
                     {item.fileName}
                   </Text>
                   <Text style={[styles.recentMeta, { color: subtextColor }]}>
-                    {formatFileSize(item.size)} • Preserved in Telegram
+                    {formatFileSize(item.size)} • {item.destination || 'Preserved in Telegram'}
                   </Text>
                 </View>
                 <Text style={[styles.recentTime, { color: subtextColor }]}>

@@ -11,12 +11,12 @@ import {
   Modal,
   ActivityIndicator,
   Alert,
-  useColorScheme,
   Dimensions,
   RefreshControl,
   Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/context/ThemeContext';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
@@ -31,6 +31,7 @@ import {
   formatFileSize,
   addToQueue,
   removeUploadedRecord,
+  resolveFileDestination,
 } from '@/lib/storage/queue';
 import { getFileCategory } from '@/lib/scanner/files';
 import { resolveLocalFileTarget } from '@/lib/storage/fileHelper';
@@ -65,8 +66,7 @@ function getRestoredCachePath(fileName: string, id: string | number): string {
 
 export default function CloudExplorerScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [items, setItems] = useState<CloudItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,16 +93,33 @@ export default function CloudExplorerScreen() {
 
   const loadCloudItems = useCallback(async () => {
     try {
-      const [uploaded, appConfig] = await Promise.all([
+      const [uploaded, appConfig, savedChatId] = await Promise.all([
         getUploadedIndex(),
         getConfig(),
+        tdLibClient.getSavedMessagesChatId().catch(() => null),
       ]);
       setConfig(appConfig);
 
+      // If multi-channel routing is enabled, exclude Saved Messages records completely
+      const relevantRecords = appConfig?.multiChannelRouting
+        ? uploaded.filter((rec) => {
+            const isSaved =
+              rec.destinationTitle === 'Saved Messages' ||
+              (savedChatId && (rec.chatId === savedChatId || rec.uri.startsWith(`tg://${savedChatId}/`)));
+            return !isSaved;
+          })
+        : uploaded;
+
       // Verify local availability concurrently
       const mapped: CloudItem[] = await Promise.all(
-        uploaded.map(async (rec) => {
+        relevantRecords.map(async (rec) => {
           const category = getFileCategory(rec.fileName);
+          const resolvedDest = resolveFileDestination(rec.fileName, undefined, appConfig);
+          const destinationTitle =
+            rec.destinationTitle && rec.destinationTitle !== 'Saved Messages'
+              ? rec.destinationTitle
+              : resolvedDest.destinationTitle;
+
           let existsLocally = false;
           let resolvedLocalUri = rec.uri;
           try {
@@ -123,6 +140,7 @@ export default function CloudExplorerScreen() {
           }
           return {
             ...rec,
+            destinationTitle,
             category,
             existsLocally,
             ...(resolvedLocalUri !== rec.uri && resolvedLocalUri.startsWith('file://')
@@ -317,6 +335,42 @@ export default function CloudExplorerScreen() {
       }
     });
   }, [items, searchQuery, activeCategory, sortOption]);
+
+  const resolvedItemDest = useMemo(() => {
+    if (!selectedItem) {
+      return {
+        title: '',
+        icon: 'cloud' as any,
+        isStream: false,
+        streamCategory: 'Cloud Storage',
+      };
+    }
+    const dest = resolveFileDestination(selectedItem.fileName, undefined, config);
+    const title =
+      selectedItem.destinationTitle && selectedItem.destinationTitle !== 'Saved Messages'
+        ? selectedItem.destinationTitle
+        : dest.destinationTitle;
+
+    let icon: any = 'cloud';
+    let streamCategory = 'Cloud Storage';
+    if (selectedItem.category === 'image') {
+      icon = 'photo';
+      streamCategory = 'Photos Stream';
+    } else if (selectedItem.category === 'video') {
+      icon = 'video-camera';
+      streamCategory = 'Videos Stream';
+    } else if (selectedItem.category === 'document') {
+      icon = 'file-text';
+      streamCategory = 'Documents Stream';
+    }
+
+    return {
+      title,
+      icon,
+      isStream: !!config?.multiChannelRouting,
+      streamCategory,
+    };
+  }, [selectedItem, config]);
 
   const toggleSelection = (uri: string) => {
     setSelectedUris((prev) => {
@@ -545,7 +599,8 @@ export default function CloudExplorerScreen() {
       }
     }
 
-    const chatId = await tdLibClient.resolveTargetChatId(config?.targetChatId || 'me');
+    const chatId =
+      item.chatId || (await tdLibClient.resolveTargetChatId(config?.targetChatId || 'me'));
 
     // Case A: Multi-Part Chunked File
     if (item.chunkManifest && item.chunkManifest.parts.length > 0) {
@@ -985,6 +1040,127 @@ export default function CloudExplorerScreen() {
         </View>
       </View>
 
+      {/* Multi-Stream Channels Quick-Selector Bar */}
+      {config?.multiChannelRouting && (
+        <View
+          style={[
+            styles.multiStreamHeaderBar,
+            {
+              backgroundColor: isDark ? '#1E293B' : '#EFF6FF',
+              borderColor: isDark ? '#334155' : '#DBEAFE',
+            },
+          ]}
+        >
+          <View style={styles.multiStreamTopRow}>
+            <View style={styles.multiStreamBadge}>
+              <FontAwesome name="random" size={11} color="#2563EB" />
+              <Text style={styles.multiStreamBadgeText}>MULTI-STREAM ACTIVE</Text>
+            </View>
+            <Text style={[styles.multiStreamNote, { color: subtextColor }]}>
+              3 Channels • Saved Messages hidden
+            </Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.multiStreamChipsScroll}
+          >
+            <TouchableOpacity
+              style={[
+                styles.streamChip,
+                activeCategory === 'image' && styles.streamChipActive,
+                {
+                  backgroundColor:
+                    activeCategory === 'image' ? '#10B981' : isDark ? '#0F172A' : '#FFFFFF',
+                  borderColor: activeCategory === 'image' ? '#10B981' : border,
+                },
+              ]}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setActiveCategory(activeCategory === 'image' ? 'all' : 'image');
+              }}
+            >
+              <FontAwesome
+                name="photo"
+                size={11}
+                color={activeCategory === 'image' ? '#FFFFFF' : '#10B981'}
+              />
+              <Text
+                style={[
+                  styles.streamChipText,
+                  { color: activeCategory === 'image' ? '#FFFFFF' : textColor },
+                ]}
+                numberOfLines={1}
+              >
+                Photos: {config.photoChannelTitle || 'Configured'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.streamChip,
+                activeCategory === 'video' && styles.streamChipActive,
+                {
+                  backgroundColor:
+                    activeCategory === 'video' ? '#8B5CF6' : isDark ? '#0F172A' : '#FFFFFF',
+                  borderColor: activeCategory === 'video' ? '#8B5CF6' : border,
+                },
+              ]}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setActiveCategory(activeCategory === 'video' ? 'all' : 'video');
+              }}
+            >
+              <FontAwesome
+                name="video-camera"
+                size={11}
+                color={activeCategory === 'video' ? '#FFFFFF' : '#8B5CF6'}
+              />
+              <Text
+                style={[
+                  styles.streamChipText,
+                  { color: activeCategory === 'video' ? '#FFFFFF' : textColor },
+                ]}
+                numberOfLines={1}
+              >
+                Videos: {config.videoChannelTitle || 'Configured'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.streamChip,
+                activeCategory === 'document' && styles.streamChipActive,
+                {
+                  backgroundColor:
+                    activeCategory === 'document' ? '#3B82F6' : isDark ? '#0F172A' : '#FFFFFF',
+                  borderColor: activeCategory === 'document' ? '#3B82F6' : border,
+                },
+              ]}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setActiveCategory(activeCategory === 'document' ? 'all' : 'document');
+              }}
+            >
+              <FontAwesome
+                name="file-text"
+                size={11}
+                color={activeCategory === 'document' ? '#FFFFFF' : '#3B82F6'}
+              />
+              <Text
+                style={[
+                  styles.streamChipText,
+                  { color: activeCategory === 'document' ? '#FFFFFF' : textColor },
+                ]}
+                numberOfLines={1}
+              >
+                Docs: {config.documentChannelTitle || 'Configured'}
+              </Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      )}
+
       {/* Category Filter Chips Carousel */}
       <View style={styles.categoryChipsBar}>
         {(['all', 'image', 'video', 'audio', 'document', 'missing'] as CategoryFilter[]).map((cat) => {
@@ -1189,6 +1365,65 @@ export default function CloudExplorerScreen() {
                   </View>
                 )}
 
+                {/* Prominent Stream Destination Card */}
+                <View
+                  style={[
+                    styles.destinationCard,
+                    {
+                      backgroundColor: isDark ? '#1E293B' : '#EFF6FF',
+                      borderColor: isDark ? '#3B82F6' : '#BFDBFE',
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.destinationIconCircle,
+                      {
+                        backgroundColor:
+                          selectedItem.category === 'image'
+                            ? '#10B981'
+                            : selectedItem.category === 'video'
+                            ? '#8B5CF6'
+                            : '#2563EB',
+                      },
+                    ]}
+                  >
+                    <FontAwesome name={resolvedItemDest.icon} size={15} color="#FFFFFF" />
+                  </View>
+                  <View style={styles.destinationTextCol}>
+                    <View style={styles.destinationBadgeRow}>
+                      <Text
+                        style={[
+                          styles.destinationBadgeText,
+                          {
+                            color:
+                              selectedItem.category === 'image'
+                                ? '#10B981'
+                                : selectedItem.category === 'video'
+                                ? '#8B5CF6'
+                                : '#2563EB',
+                          },
+                        ]}
+                      >
+                        {config?.multiChannelRouting
+                          ? `${resolvedItemDest.streamCategory.toUpperCase()} CHANNEL`
+                          : 'DESTINATION CHANNEL'}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[styles.destinationTitleText, { color: textColor }]}
+                      numberOfLines={1}
+                    >
+                      {resolvedItemDest.title}
+                    </Text>
+                    {selectedItem.chatId && (
+                      <Text style={[styles.destinationChatIdText, { color: subtextColor }]}>
+                        Channel ID: {selectedItem.chatId}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
                 {/* Metadata Card */}
                 <View
                   style={[
@@ -1197,9 +1432,11 @@ export default function CloudExplorerScreen() {
                   ]}
                 >
                   <View style={styles.metaRowBetween}>
-                    <Text style={[styles.metaLabel, { color: subtextColor }]}>Telegram Destination</Text>
-                    <Text style={[styles.metaVal, { color: textColor }]} numberOfLines={1}>
-                      {config?.targetChatTitle || 'Saved Messages'}
+                    <Text style={[styles.metaLabel, { color: subtextColor }]}>
+                      {config?.multiChannelRouting ? 'Stream Channel' : 'Telegram Destination'}
+                    </Text>
+                    <Text style={[styles.metaVal, { color: '#2563EB', fontWeight: '700' }]} numberOfLines={1}>
+                      {resolvedItemDest.title}
                     </Text>
                   </View>
                   <View style={[styles.metaDivider, { backgroundColor: border }]} />
@@ -1982,6 +2219,92 @@ const styles = StyleSheet.create({
   listSelectCircleActive: {
     backgroundColor: '#208AEF',
     borderColor: '#208AEF',
+  },
+  multiStreamHeaderBar: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  multiStreamTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  multiStreamBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  multiStreamBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#2563EB',
+    letterSpacing: 0.5,
+  },
+  multiStreamNote: {
+    fontSize: 11,
+  },
+  multiStreamChipsScroll: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  streamChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  streamChipActive: {
+    borderColor: 'transparent',
+  },
+  streamChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    maxWidth: 140,
+  },
+  destinationCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 12,
+    marginBottom: 14,
+    gap: 12,
+  },
+  destinationIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  destinationTextCol: {
+    flex: 1,
+  },
+  destinationBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  destinationBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  destinationTitleText: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  destinationChatIdText: {
+    fontSize: 11,
   },
   bulkActionBar: {
     position: 'absolute',

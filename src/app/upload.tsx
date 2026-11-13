@@ -34,6 +34,10 @@ import {
   clearAllQueue,
   recoverInterruptedUploads,
   WatchedFolder,
+  AppConfig,
+  getConfig,
+  resolveFileDestination,
+  onConfigSaved,
 } from '@/lib/storage/queue';
 import { uploadManager } from '@/lib/upload/manager';
 import { useEffect, useRef, useState } from 'react';
@@ -47,9 +51,9 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/context/ThemeContext';
 
 type HistoryFilter = 'all' | 'uploaded' | 'failed' | 'dismissed';
 type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
@@ -71,6 +75,7 @@ export default function UploadScreen() {
   const [folderModalVisible, setFolderModalVisible] = useState(false);
   const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [selectedFileForDetails, setSelectedFileForDetails] = useState<FileDetailData | null>(null);
+  const [config, setConfig] = useState<AppConfig | null>(null);
   const scanAbortRef = useRef<AbortController | null>(null);
 
   // Smart Duplicate Cleaner state
@@ -121,8 +126,14 @@ export default function UploadScreen() {
   };
 
   const loadData = async () => {
-    // Load queue and history in parallel; watched folders change rarely so fetch less often
-    const [q, h, wf] = await Promise.all([getQueue(), getActionHistory(), getWatchedFolders()]);
+    // Load queue, history, watched folders, and config in parallel
+    const [q, h, wf, cfg] = await Promise.all([
+      getQueue(),
+      getActionHistory(),
+      getWatchedFolders(),
+      getConfig(),
+    ]);
+    setConfig(cfg);
 
     // Merge live in-memory progress from UploadManager so progress bars update
     // without requiring AsyncStorage writes on every TDLib progress event (Fix 1.6)
@@ -171,7 +182,13 @@ export default function UploadScreen() {
   useEffect(() => {
     loadData();
     const interval = setInterval(loadData, 2000);
-    return () => clearInterval(interval);
+    const unsub = onConfigSaved((newCfg) => {
+      setConfig(newCfg);
+    });
+    return () => {
+      clearInterval(interval);
+      unsub();
+    };
   }, []);
 
   const handlePickSingleFile = async () => {
@@ -189,8 +206,10 @@ export default function UploadScreen() {
       });
       loadData();
 
+      const dest = resolveFileDestination(file.fileName, file.mimeType, config);
       setSelectedFileForDetails({
         ...added,
+        destination: dest.destinationTitle,
         isHistory: false,
       });
     } catch (error: any) {
@@ -615,196 +634,286 @@ export default function UploadScreen() {
     }
   };
 
-  const renderQueueItem = ({ item }: { item: QueueItem }) => (
-    <TouchableOpacity
-      style={styles.item}
-      activeOpacity={0.7}
-      onPress={() => setSelectedFileForDetails({ ...item, isHistory: false })}
-    >
-      <View style={styles.itemHeader}>
-        <View style={styles.itemIconCol}>
-          {getFileCategory(item.fileName, item.mimeType) === 'image' ? (
-            <FontAwesome name="picture-o" size={18} color="#208AEF" />
-          ) : getFileCategory(item.fileName, item.mimeType) === 'video' ? (
-            <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
-          ) : getFileCategory(item.fileName, item.mimeType) === 'audio' ? (
-            <FontAwesome name="music" size={18} color="#EC4899" />
-          ) : (
-            <FontAwesome name="file-text-o" size={18} color="#10B981" />
-          )}
-        </View>
-        <View style={styles.itemInfo}>
-          <Text style={styles.fileName} numberOfLines={1}>
-            {item.fileName}
-          </Text>
-          <View style={styles.metaRow}>
-            <Text style={styles.metaText}>{formatFileSize(item.size)}</Text>
-            {item.status === 'uploading' && (
-              <>
-                <Text style={styles.metaProgressText}>• {item.progress}%</Text>
-                {typeof item.speedKbps === 'number' && item.speedKbps > 0 ? (
-                  <Text style={[styles.metaProgressText, { color: '#0284C7', fontWeight: '600' }]}>
-                    • {formatSpeed(item.speedKbps * 1024)}
-                  </Text>
-                ) : null}
-              </>
+  const renderQueueItem = ({ item }: { item: QueueItem }) => {
+    const dest = resolveFileDestination(item.fileName, item.mimeType, config);
+    return (
+      <TouchableOpacity
+        style={styles.item}
+        activeOpacity={0.7}
+        onPress={() =>
+          setSelectedFileForDetails({
+            ...item,
+            destination: dest.destinationTitle,
+            isHistory: false,
+          })
+        }
+      >
+        <View style={styles.itemHeader}>
+          <View style={styles.itemIconCol}>
+            {getFileCategory(item.fileName, item.mimeType) === 'image' ? (
+              <FontAwesome name="picture-o" size={18} color="#208AEF" />
+            ) : getFileCategory(item.fileName, item.mimeType) === 'video' ? (
+              <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
+            ) : getFileCategory(item.fileName, item.mimeType) === 'audio' ? (
+              <FontAwesome name="music" size={18} color="#EC4899" />
+            ) : (
+              <FontAwesome name="file-text-o" size={18} color="#10B981" />
             )}
-            {item.uploadDurationMs && item.uploadDurationMs > 0 && item.status === 'completed' && (
-              <Text style={styles.metaDurationText}>
-                • {formatDuration(item.uploadDurationMs)}
+          </View>
+          <View style={styles.itemInfo}>
+            <Text style={styles.fileName} numberOfLines={1}>
+              {item.fileName}
+            </Text>
+            <View style={styles.metaRow}>
+              <Text style={styles.metaText}>{formatFileSize(item.size)}</Text>
+              {item.status === 'uploading' && (
+                <>
+                  <Text style={styles.metaProgressText}>• {item.progress}%</Text>
+                  {typeof item.speedKbps === 'number' && item.speedKbps > 0 ? (
+                    <Text style={[styles.metaProgressText, { color: '#0284C7', fontWeight: '600' }]}>
+                      • {formatSpeed(item.speedKbps * 1024)}
+                    </Text>
+                  ) : null}
+                </>
+              )}
+              {item.uploadDurationMs && item.uploadDurationMs > 0 && item.status === 'completed' && (
+                <Text style={styles.metaDurationText}>
+                  • {formatDuration(item.uploadDurationMs)}
+                </Text>
+              )}
+              <Text style={styles.queueDestText} numberOfLines={1}>
+                • → {dest.destinationTitle}
               </Text>
+            </View>
+          </View>
+          <View style={styles.itemStatusRight}>
+            <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) + '15' }]}>
+              <Text style={[styles.statusText, { color: getStatusColor(item.status) }]}>
+                {item.status.toUpperCase()}
+              </Text>
+            </View>
+            {(item.status === 'pending' || (item.status === 'uploading' && !uploading)) && (
+              <TouchableOpacity
+                style={styles.itemUploadBtn}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleUploadSingleQueueItem(item);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <FontAwesome name="rocket" size={13} color="#208AEF" />
+              </TouchableOpacity>
+            )}
+            {item.status === 'uploading' && uploading && (
+              <TouchableOpacity
+                style={[styles.itemUploadBtn, { backgroundColor: '#FEF3C7' }]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handlePauseItem(item);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <FontAwesome name="pause" size={12} color="#D97706" />
+              </TouchableOpacity>
+            )}
+            {item.status === 'paused' && (
+              <TouchableOpacity
+                style={[styles.itemUploadBtn, { backgroundColor: '#DCFCE7' }]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleResumeItem(item);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <FontAwesome name="play" size={12} color="#16A34A" />
+              </TouchableOpacity>
+            )}
+            {item.status === 'failed' && (
+              <TouchableOpacity
+                style={[styles.itemUploadBtn, { backgroundColor: '#FEE2E2' }]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleRetryItem(item);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <FontAwesome name="refresh" size={13} color="#DC2626" />
+              </TouchableOpacity>
+            )}
+            {item.status !== 'completed' && (
+              <TouchableOpacity
+                style={styles.discardButton}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleDiscardItem(item);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <FontAwesome name="times" size={13} color="#9CA3AF" />
+              </TouchableOpacity>
             )}
           </View>
         </View>
-        <View style={styles.itemStatusRight}>
-          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) + '15' }]}>
-            <Text style={[styles.statusText, { color: getStatusColor(item.status) }]}>
-              {item.status.toUpperCase()}
+        {item.status === 'uploading' && (
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: `${item.progress}%` }]} />
+          </View>
+        )}
+        {item.error && <Text style={styles.errorText} numberOfLines={2}>{item.error}</Text>}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderHistoryItem = ({ item }: { item: ActionHistoryItem }) => {
+    const resolvedHistoryDest =
+      item.destination && item.destination !== 'Saved Messages'
+        ? item.destination
+        : config?.multiChannelRouting
+        ? resolveFileDestination(item.fileName, undefined, config).destinationTitle
+        : (item.destination || 'Saved Messages');
+
+    return (
+      <TouchableOpacity
+        style={styles.historyItem}
+        activeOpacity={0.7}
+        onPress={() =>
+          setSelectedFileForDetails({
+            ...item,
+            destination: resolvedHistoryDest,
+            isHistory: true,
+          })
+        }
+      >
+        <View style={styles.historyRow}>
+          <View style={styles.itemIconCol}>
+            {getFileCategory(item.fileName) === 'image' ? (
+              <FontAwesome name="picture-o" size={18} color="#208AEF" />
+            ) : getFileCategory(item.fileName) === 'video' ? (
+              <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
+            ) : getFileCategory(item.fileName) === 'audio' ? (
+              <FontAwesome name="music" size={18} color="#EC4899" />
+            ) : (
+              <FontAwesome name="file-text-o" size={18} color="#10B981" />
+            )}
+          </View>
+          <View style={styles.historyInfo}>
+            <Text style={styles.historyFileName} numberOfLines={1}>
+              {item.fileName}
+            </Text>
+            <View style={styles.historyMetaRow}>
+              <View style={styles.sizePill}>
+                <Text style={styles.sizePillText}>{formatFileSize(item.size)}</Text>
+              </View>
+              <Text style={styles.timeMetaText} numberOfLines={1}>
+                {formatTimestamp(item.timestamp)}
+                {item.uploadDurationMs && item.uploadDurationMs > 0
+                  ? ` • ${formatDuration(item.uploadDurationMs)}`
+                  : ''}
+              </Text>
+              {resolvedHistoryDest ? (
+                <Text style={styles.historyDestText} numberOfLines={1}>
+                  → {resolvedHistoryDest}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+          <View style={[styles.statusTag, { backgroundColor: getActionColor(item.status) + '18' }]}>
+            <Text style={[styles.statusTagText, { color: getActionColor(item.status) }]}>
+              {item.status === 'uploaded' ? 'DONE' : item.status.toUpperCase()}
             </Text>
           </View>
-          {(item.status === 'pending' || (item.status === 'uploading' && !uploading)) && (
+        </View>
+        {item.status === 'failed' && (
+          <View style={styles.retryRow}>
             <TouchableOpacity
-              style={styles.itemUploadBtn}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleUploadSingleQueueItem(item);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <FontAwesome name="rocket" size={13} color="#208AEF" />
-            </TouchableOpacity>
-          )}
-          {item.status === 'uploading' && uploading && (
-            <TouchableOpacity
-              style={[styles.itemUploadBtn, { backgroundColor: '#FEF3C7' }]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handlePauseItem(item);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <FontAwesome name="pause" size={12} color="#D97706" />
-            </TouchableOpacity>
-          )}
-          {item.status === 'paused' && (
-            <TouchableOpacity
-              style={[styles.itemUploadBtn, { backgroundColor: '#DCFCE7' }]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleResumeItem(item);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <FontAwesome name="play" size={12} color="#16A34A" />
-            </TouchableOpacity>
-          )}
-          {item.status === 'failed' && (
-            <TouchableOpacity
-              style={[styles.itemUploadBtn, { backgroundColor: '#FEE2E2' }]}
+              style={styles.retryButton}
               onPress={(e) => {
                 e.stopPropagation();
                 handleRetryItem(item);
               }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <FontAwesome name="refresh" size={13} color="#DC2626" />
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                <FontAwesome name="refresh" size={12} color="#DC2626" style={{ marginRight: 6 }} />
+                <Text style={styles.retryButtonText}>Retry Upload</Text>
+              </View>
             </TouchableOpacity>
-          )}
-          {item.status !== 'completed' && (
-            <TouchableOpacity
-              style={styles.discardButton}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleDiscardItem(item);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <FontAwesome name="times" size={13} color="#9CA3AF" />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-      {item.status === 'uploading' && (
-        <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: `${item.progress}%` }]} />
-        </View>
-      )}
-      {item.error && <Text style={styles.errorText} numberOfLines={2}>{item.error}</Text>}
-    </TouchableOpacity>
-  );
-
-  const renderHistoryItem = ({ item }: { item: ActionHistoryItem }) => (
-    <TouchableOpacity
-      style={styles.historyItem}
-      activeOpacity={0.7}
-      onPress={() => setSelectedFileForDetails({ ...item, isHistory: true })}
-    >
-      <View style={styles.historyRow}>
-        <View style={styles.itemIconCol}>
-          {getFileCategory(item.fileName) === 'image' ? (
-            <FontAwesome name="picture-o" size={18} color="#208AEF" />
-          ) : getFileCategory(item.fileName) === 'video' ? (
-            <FontAwesome name="video-camera" size={18} color="#8B5CF6" />
-          ) : getFileCategory(item.fileName) === 'audio' ? (
-            <FontAwesome name="music" size={18} color="#EC4899" />
-          ) : (
-            <FontAwesome name="file-text-o" size={18} color="#10B981" />
-          )}
-        </View>
-        <View style={styles.historyInfo}>
-          <Text style={styles.historyFileName} numberOfLines={1}>
-            {item.fileName}
-          </Text>
-          <View style={styles.historyMetaRow}>
-            <View style={styles.sizePill}>
-              <Text style={styles.sizePillText}>{formatFileSize(item.size)}</Text>
-            </View>
-            <Text style={styles.timeMetaText} numberOfLines={1}>
-              {formatTimestamp(item.timestamp)}
-              {item.uploadDurationMs && item.uploadDurationMs > 0
-                ? ` • ${formatDuration(item.uploadDurationMs)}`
-                : ''}
-            </Text>
-            {item.destination && (
-              <Text style={styles.historyDestText} numberOfLines={1}>
-                → {item.destination}
-              </Text>
-            )}
           </View>
-        </View>
-        <View style={[styles.statusTag, { backgroundColor: getActionColor(item.status) + '18' }]}>
-          <Text style={[styles.statusTagText, { color: getActionColor(item.status) }]}>
-            {item.status === 'uploaded' ? 'DONE' : item.status.toUpperCase()}
-          </Text>
-        </View>
-      </View>
-      {item.status === 'failed' && (
-        <View style={styles.retryRow}>
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={(e) => {
-              e.stopPropagation();
-              handleRetryItem(item);
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
-              <FontAwesome name="refresh" size={12} color="#DC2626" style={{ marginRight: 6 }} />
-              <Text style={styles.retryButtonText}>Retry Upload</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-      )}
-    </TouchableOpacity>
-  );
+        )}
+      </TouchableOpacity>
+    );
+  };
 
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   // Render unified header (replaces outer ScrollView)
   const renderHeader = () => (
     <View>
-      {/* Telegram Destination Selector */}
-      <DestinationSelector />
+      {/* Telegram Destination Selector / Multi-Stream Info Card */}
+      {config?.multiChannelRouting ? (
+        <View style={[styles.multiStreamCard, isDark && styles.multiStreamCardDark]}>
+          <View style={styles.multiStreamHeaderRow}>
+            <View style={styles.multiStreamTitleGroup}>
+              <View style={[styles.pillBadge, { backgroundColor: isDark ? 'rgba(32,138,239,0.2)' : '#EFF6FF' }]}>
+                <FontAwesome name="random" size={12} color="#208AEF" />
+                <Text style={[styles.pillBadgeText, { color: '#208AEF', marginLeft: 5, fontWeight: '700' }]}>
+                  Multi-Stream Active
+                </Text>
+              </View>
+              <Text style={[styles.multiStreamSubtitle, isDark && styles.textDarkSecondary]}>
+                Auto-routing files by type to designated Telegram channels
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.manageStreamsBtn}
+              onPress={() => router.push('/settings' as any)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.manageStreamsBtnText}>Configure ›</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Stream Route Chips */}
+          <View style={styles.streamChipsGrid}>
+            <View style={[styles.streamChip, isDark && styles.streamChipDark]}>
+              <View style={styles.streamChipIconCol}>
+                <FontAwesome name="picture-o" size={12} color="#208AEF" />
+              </View>
+              <View style={styles.streamChipInfo}>
+                <Text style={[styles.streamChipLabel, isDark && styles.textDarkSecondary]}>Photos</Text>
+                <Text style={[styles.streamChipValue, isDark && styles.textDarkPrimary]} numberOfLines={1}>
+                  {config.photoChannelTitle || config.targetChatTitle || 'Saved Messages'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.streamChip, isDark && styles.streamChipDark]}>
+              <View style={styles.streamChipIconCol}>
+                <FontAwesome name="video-camera" size={12} color="#8B5CF6" />
+              </View>
+              <View style={styles.streamChipInfo}>
+                <Text style={[styles.streamChipLabel, isDark && styles.textDarkSecondary]}>Videos</Text>
+                <Text style={[styles.streamChipValue, isDark && styles.textDarkPrimary]} numberOfLines={1}>
+                  {config.videoChannelTitle || config.targetChatTitle || 'Saved Messages'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.streamChip, isDark && styles.streamChipDark]}>
+              <View style={styles.streamChipIconCol}>
+                <FontAwesome name="file-text-o" size={12} color="#10B981" />
+              </View>
+              <View style={styles.streamChipInfo}>
+                <Text style={[styles.streamChipLabel, isDark && styles.textDarkSecondary]}>Docs</Text>
+                <Text style={[styles.streamChipValue, isDark && styles.textDarkPrimary]} numberOfLines={1}>
+                  {config.documentChannelTitle || config.targetChatTitle || 'Saved Messages'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      ) : (
+        <DestinationSelector onDestinationChanged={() => loadData()} />
+      )}
 
       {/* Action Buttons Grid */}
       <View style={styles.actionGrid}>
@@ -1311,6 +1420,7 @@ export default function UploadScreen() {
       <FileDetailsModal
         visible={!!selectedFileForDetails}
         file={selectedFileForDetails}
+        config={config}
         onClose={() => setSelectedFileForDetails(null)}
         onUploadNow={async (file) => {
           setSelectedFileForDetails(null);
@@ -1928,5 +2038,109 @@ const styles = StyleSheet.create({
     marginTop: 4,
     textAlign: 'center',
     paddingHorizontal: 20,
+  },
+  queueDestText: {
+    fontSize: 11,
+    color: '#208AEF',
+    fontWeight: '600',
+    maxWidth: '45%',
+  },
+  multiStreamCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  multiStreamCardDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+  },
+  multiStreamHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  multiStreamTitleGroup: {
+    flex: 1,
+    marginRight: 8,
+  },
+  multiStreamSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 3,
+  },
+  manageStreamsBtn: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  manageStreamsBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#208AEF',
+  },
+  streamChipsGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  streamChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  streamChipDark: {
+    backgroundColor: '#0F172A',
+    borderColor: '#334155',
+  },
+  streamChipIconCol: {
+    marginRight: 6,
+  },
+  streamChipInfo: {
+    flex: 1,
+  },
+  streamChipLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748B',
+    textTransform: 'uppercase',
+  },
+  streamChipValue: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#0F172A',
+    marginTop: 1,
+  },
+  pillBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  pillBadgeText: {
+    fontSize: 11,
+  },
+  textDarkPrimary: {
+    color: '#F8FAFC',
+  },
+  textDarkSecondary: {
+    color: '#94A3B8',
   },
 });

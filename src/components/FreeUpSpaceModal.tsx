@@ -8,12 +8,12 @@ import {
   FlatList,
   ActivityIndicator,
   Alert,
-  useColorScheme,
   Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { useAppTheme } from '@/context/ThemeContext';
 import {
   analyzeCleanableSpace,
   executeCleanSpace,
@@ -35,8 +35,7 @@ export function FreeUpSpaceModal({
   onCleanComplete,
 }: FreeUpSpaceModalProps) {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [loading, setLoading] = useState(true);
   const [analysis, setAnalysis] = useState<CleanerAnalysis | null>(null);

@@ -9,11 +9,11 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
-  useColorScheme,
   Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/context/ThemeContext';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { TelegramDestination } from '@/lib/tdlib/types';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
@@ -32,8 +32,7 @@ export const DestinationSelector = React.memo(function DestinationSelector({
   onDestinationChanged,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);

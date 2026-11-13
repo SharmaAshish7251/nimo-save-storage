@@ -404,7 +404,15 @@ export default function SettingsScreen() {
               } else if (res.reason === 'NOT_LOGGED_IN') {
                 Alert.alert('Not Connected', 'Please connect your Telegram account before restoring your cloud profile.');
               } else {
-                Alert.alert('Restore Failed', res.reason || 'Could not restore cloud profile snapshot.');
+                const friendlyReasons: Record<string, string> = {
+                  FILE_DOWNLOAD_FAILED: 'Could not download the profile backup snapshot from Telegram Cloud.',
+                  FILE_NOT_FOUND_ON_DISK: 'Profile file download did not complete on local storage.',
+                  EMPTY_PROFILE_PAYLOAD: 'The cloud profile snapshot file was empty.',
+                  INVALID_PROFILE_DATA: 'Cloud profile data format was unreadable or corrupted.',
+                  UNSUPPORTED_SCHEMA_VERSION: 'Cloud profile backup was created by an incompatible app version.',
+                };
+                const msg = (res.reason && friendlyReasons[res.reason]) || res.reason || 'Could not restore cloud profile snapshot.';
+                Alert.alert('Restore Failed', msg);
               }
             } catch (err: any) {
               Alert.alert('Restore Error', err?.message || 'Failed to restore profile');

@@ -165,29 +165,41 @@ export async function reconcileCloudIndex(options: {
     };
   }
 
-  // Collect all unique message IDs to probe in batch
-  const allMessageIds: number[] = [];
+  // Group message IDs by their specific destination chatId so multi-stream / multi-channel files
+  // are probed against the exact Telegram chat where they actually reside.
+  const messagesByChat = new Map<number, number[]>();
   for (const rec of toCheck) {
+    const targetChat = rec.chatId || chatId;
+    if (!messagesByChat.has(targetChat)) {
+      messagesByChat.set(targetChat, []);
+    }
+    const list = messagesByChat.get(targetChat)!;
     if (rec.chunkManifest?.parts) {
       for (const part of rec.chunkManifest.parts) {
-        if (part.telegramMessageId) allMessageIds.push(part.telegramMessageId);
+        if (part.telegramMessageId) list.push(part.telegramMessageId);
       }
     } else if (rec.telegramMessageId) {
-      allMessageIds.push(rec.telegramMessageId);
+      list.push(rec.telegramMessageId);
     }
   }
 
-  // Probe TDLib in batches of up to 50 message IDs
+  // Probe TDLib in batches of up to 50 message IDs per chat
   const resultMap = new Map<number, boolean>();
   const BATCH_SIZE = 50;
-  for (let i = 0; i < allMessageIds.length; i += BATCH_SIZE) {
-    const chunk = allMessageIds.slice(i, i + BATCH_SIZE);
-    const subMap = await tdLibClient.checkMessagesBatch(chatId, chunk);
-    for (const [mId, ex] of subMap.entries()) {
-      resultMap.set(mId, ex);
-    }
-    if (options.onProgress) {
-      options.onProgress(Math.min(95, Math.round(((i + chunk.length) / allMessageIds.length) * 100)));
+  let totalProbed = 0;
+  const totalToProbe = Array.from(messagesByChat.values()).reduce((sum, arr) => sum + arr.length, 0);
+
+  for (const [targetChatId, msgIds] of messagesByChat.entries()) {
+    for (let i = 0; i < msgIds.length; i += BATCH_SIZE) {
+      const chunk = msgIds.slice(i, i + BATCH_SIZE);
+      const subMap = await tdLibClient.checkMessagesBatch(targetChatId, chunk);
+      for (const [mId, ex] of subMap.entries()) {
+        resultMap.set(mId, ex);
+      }
+      totalProbed += chunk.length;
+      if (options.onProgress && totalToProbe > 0) {
+        options.onProgress(Math.min(95, Math.round((totalProbed / totalToProbe) * 100)));
+      }
     }
   }
 
@@ -210,13 +222,22 @@ export async function reconcileCloudIndex(options: {
       exists = resultMap.get(r.telegramMessageId) === true;
     }
 
+    // Defensive check: If confirmed in cache, mark 'synced'.
+    // If not confirmed in local TDLib cache, preserve 'synced' for confirmed message IDs
+    // rather than falsely marking them 'missing' (TDLib getMessage only checks local cache).
+    const finalStatus: 'synced' | 'missing' = exists
+      ? 'synced'
+      : r.cloudStatus === 'synced' || r.telegramMessageId || r.chunkManifest
+      ? 'synced'
+      : 'missing';
+
     const updated: UploadedRecord = {
       ...r,
-      cloudStatus: exists ? 'synced' : 'missing',
+      cloudStatus: finalStatus,
       lastVerifiedAt: now,
     };
 
-    if (exists) {
+    if (finalStatus === 'synced') {
       syncedCount++;
     } else {
       missingRecords.push(updated);
@@ -277,16 +298,15 @@ export async function deleteCloudRecord(record: UploadedRecord): Promise<boolean
 /**
  * Disaster Recovery / Reverse Discovery:
  * Scans the Telegram destination chat history and imports existing files into Cloud Explorer.
+ * When multi-channel routing is enabled, scans the 3 configured stream channels (photos, videos,
+ * documents) and bypasses Saved Messages completely.
  */
 export async function importFromTelegramHistory(options: {
   chatId?: string | number;
   limit?: number;
   onProgress?: (found: number) => void;
 } = {}): Promise<{ imported: number; totalFound: number }> {
-  const index = await getUploadedIndex();
-  const chatId = options.chatId !== undefined
-    ? await tdLibClient.resolveTargetChatId(String(options.chatId))
-    : await resolveCurrentChatId();
+  const [index, config] = await Promise.all([getUploadedIndex(), getConfig()]);
 
   const existingMsgIds = new Set<number>();
   for (const r of index) {
@@ -298,73 +318,145 @@ export async function importFromTelegramHistory(options: {
     }
   }
 
-  const maxLimit = options.limit || 200;
-  const pageSize = 50;
-  let fromMessageId = 0;
-  let fetchedTotal = 0;
-  const newRecords: UploadedRecord[] = [];
+  interface ScanTarget {
+    chatId: number;
+    destinationTitle: string;
+    category?: string;
+  }
 
-  while (fetchedTotal < maxLimit) {
-    const batch = await tdLibClient.getChatHistory(chatId, fromMessageId, Math.min(pageSize, maxLimit - fetchedTotal), 0);
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    fetchedTotal += batch.length;
+  const targets: ScanTarget[] = [];
 
-    for (const msg of batch) {
-      if (!msg || !msg.id) continue;
-      if (existingMsgIds.has(msg.id)) continue;
-
-      const content = msg.content;
-      if (!content) continue;
-
-      const captionText = content.caption?.text || '';
-      if (captionText.includes('[NIMO_CLOUD_PROFILE_V1]')) continue;
-
-      let fileName = `cloud_file_${msg.id}`;
-      let size = 0;
-      let isDoc = false;
-
-      if (content['@type'] === 'messageDocument' && content.document) {
-        isDoc = true;
-        fileName = content.document.file_name || fileName;
-        size = content.document.document?.size || content.document.size || 0;
-      } else if (content['@type'] === 'messageVideo' && content.video) {
-        isDoc = true;
-        fileName = content.video.file_name || `video_${msg.id}.mp4`;
-        size = content.video.video?.size || content.video.size || 0;
-      } else if (content['@type'] === 'messageAudio' && content.audio) {
-        isDoc = true;
-        fileName = content.audio.file_name || `audio_${msg.id}.mp3`;
-        size = content.audio.audio?.size || content.audio.size || 0;
-      }
-
-      if (fileName === 'nimo_cloud_profile_v1.json') continue;
-
-      if (isDoc) {
-        existingMsgIds.add(msg.id);
-        newRecords.push({
-          uri: `tg://${chatId}/${msg.id}`,
-          fileName,
-          size,
-          uploadedAt: (msg.date || Date.now() / 1000) * 1000,
-          telegramMessageId: msg.id,
-          cloudStatus: 'synced',
-          lastVerifiedAt: Date.now(),
+  if (options.chatId !== undefined) {
+    const resolved = await tdLibClient.resolveTargetChatId(String(options.chatId));
+    targets.push({ chatId: resolved, destinationTitle: String(options.chatId) });
+  } else if (config.multiChannelRouting) {
+    // Multi-stream active: scan only the configured stream channels, never Saved Messages
+    if (config.photoChannelId) {
+      const resolved = await tdLibClient.resolveTargetChatId(config.photoChannelId).catch(() => null);
+      if (resolved) {
+        targets.push({
+          chatId: resolved,
+          destinationTitle: config.photoChannelTitle || 'Photos Channel',
+          category: 'photo',
         });
-        options.onProgress?.(newRecords.length);
       }
     }
+    if (config.videoChannelId) {
+      const resolved = await tdLibClient.resolveTargetChatId(config.videoChannelId).catch(() => null);
+      if (resolved) {
+        targets.push({
+          chatId: resolved,
+          destinationTitle: config.videoChannelTitle || 'Videos Channel',
+          category: 'video',
+        });
+      }
+    }
+    if (config.documentChannelId) {
+      const resolved = await tdLibClient.resolveTargetChatId(config.documentChannelId).catch(() => null);
+      if (resolved) {
+        targets.push({
+          chatId: resolved,
+          destinationTitle: config.documentChannelTitle || 'Documents Channel',
+          category: 'document',
+        });
+      }
+    }
+  } else {
+    // Single destination mode
+    const defaultChatId = await resolveCurrentChatId();
+    targets.push({
+      chatId: defaultChatId,
+      destinationTitle:
+        config.uploadToSavedMessages || !config.targetChatId
+          ? 'Saved Messages'
+          : config.targetChatTitle || String(defaultChatId),
+    });
+  }
 
-    const lastMsg = batch[batch.length - 1];
-    if (!lastMsg?.id || lastMsg.id === fromMessageId) break;
-    fromMessageId = lastMsg.id;
-    if (batch.length < 20 && fetchedTotal >= pageSize) break;
+  if (targets.length === 0) {
+    return { imported: 0, totalFound: 0 };
+  }
+
+  const maxTotalLimit = options.limit || 200;
+  const perChannelLimit = Math.max(30, Math.ceil(maxTotalLimit / targets.length));
+  const newRecords: UploadedRecord[] = [];
+  let overallFetchedTotal = 0;
+
+  for (const target of targets) {
+    let fromMessageId = 0;
+    let channelFetched = 0;
+    const pageSize = 50;
+
+    while (channelFetched < perChannelLimit) {
+      const batch = await tdLibClient.getChatHistory(
+        target.chatId,
+        fromMessageId,
+        Math.min(pageSize, perChannelLimit - channelFetched),
+        0
+      );
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      channelFetched += batch.length;
+      overallFetchedTotal += batch.length;
+
+      for (const msg of batch) {
+        if (!msg || !msg.id) continue;
+        if (existingMsgIds.has(msg.id)) continue;
+
+        const content = msg.content;
+        if (!content) continue;
+
+        const captionText = content.caption?.text || '';
+        if (captionText.includes('[NIMO_CLOUD_PROFILE_V1]')) continue;
+
+        let fileName = `cloud_file_${msg.id}`;
+        let size = 0;
+        let isDoc = false;
+
+        if (content['@type'] === 'messageDocument' && content.document) {
+          isDoc = true;
+          fileName = content.document.file_name || fileName;
+          size = content.document.document?.size || content.document.size || 0;
+        } else if (content['@type'] === 'messageVideo' && content.video) {
+          isDoc = true;
+          fileName = content.video.file_name || `video_${msg.id}.mp4`;
+          size = content.video.video?.size || content.video.size || 0;
+        } else if (content['@type'] === 'messageAudio' && content.audio) {
+          isDoc = true;
+          fileName = content.audio.file_name || `audio_${msg.id}.mp3`;
+          size = content.audio.audio?.size || content.audio.size || 0;
+        }
+
+        if (fileName === 'nimo_cloud_profile_v1.json') continue;
+
+        if (isDoc) {
+          existingMsgIds.add(msg.id);
+          newRecords.push({
+            uri: `tg://${target.chatId}/${msg.id}`,
+            fileName,
+            size,
+            uploadedAt: (msg.date || Date.now() / 1000) * 1000,
+            telegramMessageId: msg.id,
+            chatId: target.chatId,
+            destinationTitle: target.destinationTitle,
+            cloudStatus: 'synced',
+            lastVerifiedAt: Date.now(),
+          });
+          options.onProgress?.(newRecords.length);
+        }
+      }
+
+      const lastMsg = batch[batch.length - 1];
+      if (!lastMsg?.id || lastMsg.id === fromMessageId) break;
+      fromMessageId = lastMsg.id;
+      if (batch.length < 20 && channelFetched >= pageSize) break;
+    }
   }
 
   if (newRecords.length > 0) {
     await saveUploadedIndex([...index, ...newRecords]);
   }
 
-  return { imported: newRecords.length, totalFound: fetchedTotal };
+  return { imported: newRecords.length, totalFound: overallFetchedTotal };
 }
 
 /**

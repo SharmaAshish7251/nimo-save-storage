@@ -66,12 +66,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     await saveConfig({ themeMode: mode });
   }, []);
 
-  const toggleTheme = useCallback(async () => {
-    const nextMode: ThemeMode =
-      themeMode === 'light' ? 'dark' : themeMode === 'dark' ? 'system' : 'dark';
-    await setThemeMode(nextMode);
-  }, [themeMode, setThemeMode]);
-
   const resolvedTheme: 'light' | 'dark' = useMemo(() => {
     if (themeMode === 'light') return 'light';
     if (themeMode === 'dark') return 'dark';
@@ -80,6 +74,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [themeMode, systemScheme, deviceScheme]);
 
   const isDark = resolvedTheme === 'dark';
+
+  const toggleTheme = useCallback(async () => {
+    // If currently dark (via explicit dark or system dark), switch to light.
+    // If currently light (via explicit light or system light), switch to dark.
+    const nextMode: ThemeMode = isDark ? 'light' : 'dark';
+    await setThemeMode(nextMode);
+  }, [isDark, setThemeMode]);
 
   const value = useMemo(
     () => ({

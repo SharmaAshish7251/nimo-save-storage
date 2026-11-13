@@ -211,6 +211,14 @@ export function scheduleCloudProfilePush(delayMs: number = 3000): void {
   }, delayMs);
 }
 
+let restoreInFlightPromise: Promise<{
+  restored: boolean;
+  profile?: NimoCloudProfileV1;
+  needsVaultUnlock?: boolean;
+  needsSafReauthorization?: boolean;
+  reason?: string;
+}> | null = null;
+
 /**
  * Downloads and restores user data, settings, vault metadata, and uploaded index
  * from Telegram Saved Messages on a fresh installation.
@@ -224,116 +232,158 @@ export async function restoreFromCloudProfile(options: {
   needsSafReauthorization?: boolean;
   reason?: string;
 }> {
-  try {
-    const isLoggedIn = await tdLibClient.isLoggedIn().catch(() => false);
-    if (!isLoggedIn) {
-      return { restored: false, reason: 'NOT_LOGGED_IN' };
-    }
+  if (restoreInFlightPromise && !options.force) {
+    console.log('[CloudProfileSync] Restore already in-flight, awaiting active operation...');
+    return restoreInFlightPromise;
+  }
 
-    const latest = await findLatestCloudProfileMessage();
-    if (!latest) {
-      return { restored: false, reason: 'NO_PROFILE_FOUND' };
-    }
+  const promise = (async () => {
+    try {
+      const isLoggedIn = await tdLibClient.isLoggedIn().catch(() => false);
+      if (!isLoggedIn) {
+        return { restored: false, reason: 'NOT_LOGGED_IN' };
+      }
 
-    console.log('[CloudProfileSync] Found profile message:', latest.messageId, 'Downloading file...');
-    const downloadedPath = await tdLibClient.downloadMessageFile(latest.chatId, latest.messageId);
-    if (!downloadedPath) {
-      return { restored: false, reason: 'FILE_DOWNLOAD_FAILED' };
-    }
+      const latest = await findLatestCloudProfileMessage();
+      if (!latest) {
+        return { restored: false, reason: 'NO_PROFILE_FOUND' };
+      }
 
-    const fileContent = await FileSystem.readAsStringAsync(downloadedPath, { encoding: 'utf8' });
-    const profile: NimoCloudProfileV1 = JSON.parse(fileContent);
+      console.log('[CloudProfileSync] Found profile message:', latest.messageId, 'Downloading file...');
+      const downloadedPath = await tdLibClient.downloadMessageFile(latest.chatId, latest.messageId);
+      if (!downloadedPath) {
+        return { restored: false, reason: 'FILE_DOWNLOAD_FAILED' };
+      }
 
-    if (profile.schemaVersion !== 1) {
-      return { restored: false, reason: 'UNSUPPORTED_SCHEMA_VERSION' };
-    }
+      const safeUri = downloadedPath.startsWith('file://') ? downloadedPath : `file://${downloadedPath}`;
+      console.log('[CloudProfileSync] Profile downloaded to:', safeUri);
 
-    // 1. Restore App Configuration
-    if (profile.config) {
-      await saveConfig(profile.config, { skipSync: true });
-    }
-
-    // 2. Restore Watched Folders with smart album re-matching and SAF flagging
-    let needsSafReauthorization = false;
-    if (Array.isArray(profile.watchedFolders)) {
-      let deviceAlbums: MediaLibrary.Album[] = [];
-      try {
-        const hasPerm = await MediaLibrary.getPermissionsAsync();
-        if (hasPerm.granted) {
-          deviceAlbums = await MediaLibrary.getAlbumsAsync();
+      // Verify file presence on disk
+      const info = await FileSystem.getInfoAsync(safeUri).catch(() => ({ exists: false } as any));
+      if (!info.exists) {
+        // Small grace pause for native filesystem flush
+        await new Promise((r) => setTimeout(r, 200));
+        const retry = await FileSystem.getInfoAsync(safeUri).catch(() => ({ exists: false } as any));
+        if (!retry.exists) {
+          console.error('[CloudProfileSync] Downloaded profile file not found on disk at:', safeUri);
+          return { restored: false, reason: 'FILE_NOT_FOUND_ON_DISK' };
         }
-      } catch {}
+      }
 
-      const restoredFolders: WatchedFolder[] = profile.watchedFolders.map((f) => {
-        if (f.type === 'album') {
-          const match = deviceAlbums.find(
-            (a) => a.title.toLowerCase() === f.title.toLowerCase()
-          );
-          if (match) {
+      const fileContent = await FileSystem.readAsStringAsync(safeUri, { encoding: 'utf8' });
+      if (!fileContent || !fileContent.trim()) {
+        console.error('[CloudProfileSync] Profile file is empty');
+        return { restored: false, reason: 'EMPTY_PROFILE_PAYLOAD' };
+      }
+
+      let profile: NimoCloudProfileV1;
+      try {
+        profile = JSON.parse(fileContent);
+      } catch (parseErr) {
+        console.error('[CloudProfileSync] Failed to parse profile JSON:', parseErr);
+        return { restored: false, reason: 'INVALID_PROFILE_DATA' };
+      }
+
+      if (profile.schemaVersion !== 1) {
+        return { restored: false, reason: 'UNSUPPORTED_SCHEMA_VERSION' };
+      }
+
+      // 1. Restore App Configuration
+      if (profile.config) {
+        await saveConfig(profile.config, { skipSync: true });
+      }
+
+      // 2. Restore Watched Folders with smart album re-matching and SAF flagging
+      let needsSafReauthorization = false;
+      if (Array.isArray(profile.watchedFolders)) {
+        let deviceAlbums: MediaLibrary.Album[] = [];
+        try {
+          const hasPerm = await MediaLibrary.getPermissionsAsync();
+          if (hasPerm.granted) {
+            deviceAlbums = await MediaLibrary.getAlbumsAsync();
+          }
+        } catch (albumErr) {
+          console.warn('[CloudProfileSync] MediaLibrary album listing warning:', albumErr);
+        }
+
+        const restoredFolders: WatchedFolder[] = profile.watchedFolders.map((f) => {
+          if (f.type === 'album') {
+            const match = deviceAlbums.find(
+              (a) => a.title.toLowerCase() === f.title.toLowerCase()
+            );
+            if (match) {
+              return {
+                ...f,
+                id: match.id,
+                assetCount: match.assetCount,
+              };
+            }
+          } else if (f.type === 'saf') {
+            needsSafReauthorization = true;
             return {
               ...f,
-              id: match.id,
-              assetCount: match.assetCount,
+              needsPermission: true,
             };
           }
-        } else if (f.type === 'saf') {
-          needsSafReauthorization = true;
-          return {
-            ...f,
-            needsPermission: true,
-          };
+          return f;
+        });
+
+        await saveWatchedFolders(restoredFolders);
+      }
+
+      // 3. Restore Vault Metadata
+      let needsVaultUnlock = false;
+      if (profile.vault) {
+        await vaultService.importVaultSyncMetadata(profile.vault);
+        if (profile.vault.enabled && profile.vault.keyVerifier) {
+          needsVaultUnlock = true;
         }
-        return f;
+      }
+
+      // 4. Restore Uploaded Index and Chunk Manifests
+      if (Array.isArray(profile.uploadedIndex)) {
+        await saveUploadedIndex(profile.uploadedIndex);
+      }
+
+      if (profile.chunkManifests) {
+        for (const [fileName, manifest] of Object.entries(profile.chunkManifests)) {
+          await saveChunkManifest(fileName, manifest);
+        }
+      }
+
+      // 5. Restore Onboarding Status
+      if (profile.onboardingDone) {
+        await AsyncStorage.setItem('nimo_onboarding_done', 'true');
+      }
+
+      // Mark as restored so automatic login check doesn't overwrite subsequent local edits
+      await AsyncStorage.setItem(PROFILE_RESTORED_FLAG, 'true');
+      await saveProfileSyncMeta({
+        lastRestoredAt: Date.now(),
+        lastProfileMessageId: latest.messageId,
       });
 
-      await saveWatchedFolders(restoredFolders);
+      // Run background cloud reconciliation against Telegram to confirm remote message existence
+      reconcileCloudIndex({ forceAll: false }).catch(() => {});
+
+      console.log('[CloudProfileSync] Cloud profile restored successfully!');
+      return {
+        restored: true,
+        profile,
+        needsVaultUnlock,
+        needsSafReauthorization,
+      };
+    } catch (err: any) {
+      console.error('[CloudProfileSync] restoreFromCloudProfile error:', err);
+      return { restored: false, reason: err?.message || 'Restore failed' };
     }
+  })();
 
-    // 3. Restore Vault Metadata
-    let needsVaultUnlock = false;
-    if (profile.vault) {
-      await vaultService.importVaultSyncMetadata(profile.vault);
-      if (profile.vault.enabled && profile.vault.keyVerifier) {
-        needsVaultUnlock = true;
-      }
-    }
-
-    // 4. Restore Uploaded Index and Chunk Manifests
-    if (Array.isArray(profile.uploadedIndex)) {
-      await saveUploadedIndex(profile.uploadedIndex);
-    }
-
-    if (profile.chunkManifests) {
-      for (const [fileName, manifest] of Object.entries(profile.chunkManifests)) {
-        await saveChunkManifest(fileName, manifest);
-      }
-    }
-
-    // 5. Restore Onboarding Status
-    if (profile.onboardingDone) {
-      await AsyncStorage.setItem('nimo_onboarding_done', 'true');
-    }
-
-    // Mark as restored so automatic login check doesn't overwrite subsequent local edits
-    await AsyncStorage.setItem(PROFILE_RESTORED_FLAG, 'true');
-    await saveProfileSyncMeta({
-      lastRestoredAt: Date.now(),
-      lastProfileMessageId: latest.messageId,
-    });
-
-    // Run background cloud reconciliation against Telegram to confirm remote message existence
-    reconcileCloudIndex({ forceAll: false }).catch(() => {});
-
-    console.log('[CloudProfileSync] Cloud profile restored successfully!');
-    return {
-      restored: true,
-      profile,
-      needsVaultUnlock,
-      needsSafReauthorization,
-    };
-  } catch (err: any) {
-    console.error('[CloudProfileSync] restoreFromCloudProfile error:', err);
-    return { restored: false, reason: err?.message || 'Restore failed' };
+  restoreInFlightPromise = promise;
+  try {
+    return await promise;
+  } finally {
+    restoreInFlightPromise = null;
   }
 }
 

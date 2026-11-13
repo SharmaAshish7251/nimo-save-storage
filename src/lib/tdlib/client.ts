@@ -214,6 +214,13 @@ class TdLibClientService {
 
   public onAuthStateChange(listener: AuthStateListener): () => void {
     this.authListeners.add(listener);
+    if (this.currentAuthState) {
+      try {
+        listener(this.currentAuthState);
+      } catch (err) {
+        console.error('[TdLibClientService] Error in immediate onAuthStateChange callback:', err);
+      }
+    }
     return () => {
       this.authListeners.delete(listener);
     };
@@ -1378,7 +1385,8 @@ class TdLibClientService {
 
     // If already downloaded and file exists
     if (localPath) {
-      const exists = await LegacyFileSystem.getInfoAsync(localPath).catch(() => ({ exists: false }));
+      const safeCheck = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+      const exists = await LegacyFileSystem.getInfoAsync(safeCheck).catch(() => ({ exists: false }));
       if (exists.exists) {
         if (onProgress) onProgress(1, expectedSize, expectedSize);
         return localPath;

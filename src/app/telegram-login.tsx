@@ -20,7 +20,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import QRCode from 'react-native-qrcode-svg';
-import { saveApiCredentials } from '@/lib/storage/secure';
+import { saveApiCredentials, getApiCredentials } from '@/lib/storage/secure';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { cleanupCachedQrImages, QrSvgRef, saveQrCodeToGallery, shareQrCodeImage } from '@/lib/telegram/qrExport';
 import { restoreFromCloudProfile } from '@/lib/storage/cloudProfileSync';
@@ -51,6 +51,7 @@ export default function TelegramLoginScreen() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
+  const [hasStoredCreds, setHasStoredCreds] = useState<boolean | null>(null);
   const [savingCreds, setSavingCreds] = useState(false);
   const customCredsDirtyRef = useRef(false);
   const foregroundCheckInFlightRef = useRef(false);
@@ -64,6 +65,19 @@ export default function TelegramLoginScreen() {
     } catch {}
     router.replace('/');
   };
+
+  useEffect(() => {
+    getApiCredentials().then((creds) => {
+      if (creds.apiId && creds.apiHash) {
+        setApiId(creds.apiId);
+        setApiHash(creds.apiHash);
+        setHasStoredCreds(true);
+      } else {
+        setHasStoredCreds(false);
+        setShowAdvanced(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     tdLibClient.isLoggedIn().then((loggedIn) => {
@@ -102,6 +116,18 @@ export default function TelegramLoginScreen() {
     qrSvgRef.current = null;
     setQrLoading(true);
     setQrError(null);
+
+    const creds = await getApiCredentials();
+    const activeId = apiId.trim() || creds.apiId;
+    const activeHash = apiHash.trim() || creds.apiHash;
+    if (!activeId || !activeHash) {
+      if (qrSessionIdRef.current !== sessionId) return;
+      setShowAdvanced(true);
+      setQrError('Telegram API credentials required. Please enter your API ID and API Hash below.');
+      setQrLoading(false);
+      return;
+    }
+
     try {
       console.log('[AUTH] Requesting QR code login link...');
       const link = await tdLibClient.requestQrLogin(forceRefresh);
@@ -327,6 +353,7 @@ export default function TelegramLoginScreen() {
     }
 
     await saveApiCredentials(trimmedId, trimmedHash);
+    setHasStoredCreds(true);
     customCredsDirtyRef.current = false;
     setQrLink(null);
     setQrError(null);
@@ -350,6 +377,15 @@ export default function TelegramLoginScreen() {
     }
     if (!trimmedPhone.startsWith('+')) {
       setError('Include your country code starting with + (e.g., +919876543210).');
+      return;
+    }
+
+    const creds = await getApiCredentials();
+    const activeId = apiId.trim() || creds.apiId;
+    const activeHash = apiHash.trim() || creds.apiHash;
+    if (!activeId || !activeHash) {
+      setShowAdvanced(true);
+      setError('Telegram API credentials required. Please enter your API ID and API Hash below.');
       return;
     }
 
@@ -686,7 +722,7 @@ export default function TelegramLoginScreen() {
                 </Animated.View>
               </TouchableOpacity>
 
-              {/* Advanced / Custom Credentials */}
+              {/* Telegram API Credentials */}
               <TouchableOpacity
                 style={styles.advancedToggle}
                 onPress={() => setShowAdvanced(!showAdvanced)}
@@ -699,7 +735,9 @@ export default function TelegramLoginScreen() {
                     style={{ marginRight: 6 }}
                   />
                   <Text style={[styles.advancedToggleText, isDark && styles.textDarkSecondary]}>
-                    {showAdvanced ? 'Hide Custom API Credentials' : 'Custom API Credentials (Optional)'}
+                    {hasStoredCreds
+                      ? (showAdvanced ? 'Hide Telegram API Credentials' : 'Telegram API Credentials (Configured ✓)')
+                      : (showAdvanced ? 'Hide Telegram API Credentials' : 'Configure Telegram API Credentials (Required)')}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -707,8 +745,20 @@ export default function TelegramLoginScreen() {
               {showAdvanced && (
                 <View style={[styles.advancedCard, isDark && styles.cardDark]}>
                   <Text style={[styles.advancedNote, isDark && styles.textDarkSecondary]}>
-                    Default official credentials are used automatically. You only need to change this if you have your own app from my.telegram.org.
+                    Telegram requires every third-party app to connect with an API ID and API Hash:
+                    {'\n'}1. Log in to <Text style={{ color: '#208AEF', fontWeight: 'bold' }}>my.telegram.org</Text>
+                    {'\n'}2. Go to &ldquo;API development tools&rdquo;
+                    {'\n'}3. Create an app (e.g. &ldquo;Nimo Save&rdquo;) and copy your credentials below:
                   </Text>
+                  <TouchableOpacity
+                    style={{ marginVertical: 8, flexDirection: 'row', alignItems: 'center' }}
+                    onPress={() => Linking.openURL('https://my.telegram.org')}
+                  >
+                    <FontAwesome name="external-link" size={12} color="#208AEF" style={{ marginRight: 6 }} />
+                    <Text style={{ color: '#208AEF', fontWeight: '600', fontSize: 13 }}>
+                      Open my.telegram.org in browser
+                    </Text>
+                  </TouchableOpacity>
                   <Text style={[styles.label, isDark && styles.textDarkPrimary]}>API ID</Text>
                   <TextInput
                     style={[styles.input, isDark && styles.inputDark]}
@@ -717,7 +767,7 @@ export default function TelegramLoginScreen() {
                       customCredsDirtyRef.current = true;
                       setApiId(text);
                     }}
-                    placeholder="e.g. 2040"
+                    placeholder="e.g. 12345678"
                     placeholderTextColor={isDark ? '#64748B' : '#999'}
                     keyboardType="numeric"
                   />
@@ -729,7 +779,7 @@ export default function TelegramLoginScreen() {
                       customCredsDirtyRef.current = true;
                       setApiHash(text);
                     }}
-                    placeholder="32 character hash"
+                    placeholder="32 character hex hash"
                     placeholderTextColor={isDark ? '#64748B' : '#999'}
                     autoCapitalize="none"
                   />
@@ -743,7 +793,7 @@ export default function TelegramLoginScreen() {
                     disabled={savingCreds}
                   >
                     <Text style={[styles.secondaryButtonText, isDark && styles.textDarkPrimary]}>
-                      {savingCreds ? 'Applying Credentials...' : 'Save Custom Credentials'}
+                      {savingCreds ? 'Applying Credentials...' : 'Save API Credentials'}
                     </Text>
                   </TouchableOpacity>
                 </View>

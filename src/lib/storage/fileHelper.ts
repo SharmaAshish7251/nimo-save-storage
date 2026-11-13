@@ -436,7 +436,7 @@ export async function resolveLocalFileTarget(params: {
           size: stat.size > 0 ? stat.size : size,
           resolvedUri: candidateUri,
           mediaAssetId: params.mediaAssetId,
-          canAutoDelete: true,
+          canAutoDelete: false, // BUG-12: guessing path from content:// is not guaranteed, disable unsafe auto-delete
           isContentOnly: false,
         };
       }
@@ -662,8 +662,9 @@ export async function copyToLocalPath(uri: string, fileName: string): Promise<st
 /**
  * Computes a fast signature hash for a file using up to the first 256 KB.
  * Avoids loading multi-gigabyte files into RAM.
+ * Returns null if the file cannot be hashed reliably (BUG-10 fix: never return fake collision strings).
  */
-export async function computeFastFileHash(uri: string, size: number): Promise<string> {
+export async function computeFastFileHash(uri: string, size: number): Promise<string | null> {
   try {
     const sampleLength = Math.min(Math.max(size, 0), 256 * 1024);
     const chunk = await LegacyFileSystem.readAsStringAsync(uri, {
@@ -678,9 +679,9 @@ export async function computeFastFileHash(uri: string, size: number): Promise<st
         const full = await LegacyFileSystem.readAsStringAsync(uri, { encoding: 'base64' });
         return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `${size}_${full}`);
       }
-      return `${size}_${uri.split('/').pop() || 'unknown'}`;
+      return null;
     } catch {
-      return `${size}_unknown`;
+      return null;
     }
   }
 }

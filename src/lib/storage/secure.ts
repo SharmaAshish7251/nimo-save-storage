@@ -17,11 +17,16 @@ export async function saveApiCredentials(apiId: string, apiHash: string): Promis
 }
 
 export async function getApiCredentials(): Promise<{ apiId: string | null; apiHash: string | null }> {
-  const [apiId, apiHash] = await Promise.all([
+  const [storedId, storedHash] = await Promise.all([
     SecureStore.getItemAsync(KEYS.TELEGRAM_API_ID),
     SecureStore.getItemAsync(KEYS.TELEGRAM_API_HASH),
   ]);
-  return { apiId, apiHash };
+  const envId = process.env.EXPO_PUBLIC_TELEGRAM_API_ID || null;
+  const envHash = process.env.EXPO_PUBLIC_TELEGRAM_API_HASH || null;
+  return {
+    apiId: storedId || envId,
+    apiHash: storedHash || envHash,
+  };
 }
 
 export async function saveSession(session: string): Promise<void> {
@@ -42,4 +47,14 @@ export async function savePhone(phone: string): Promise<void> {
 
 export async function getPhone(): Promise<string | null> {
   return await SecureStore.getItemAsync(KEYS.TELEGRAM_PHONE);
+}
+
+export async function hasApiCredentials(): Promise<boolean> {
+  const { apiId, apiHash } = await getApiCredentials();
+  return Boolean(apiId && apiHash);
+}
+
+export async function clearApiCredentials(): Promise<void> {
+  await SecureStore.deleteItemAsync(KEYS.TELEGRAM_API_ID).catch(() => {});
+  await SecureStore.deleteItemAsync(KEYS.TELEGRAM_API_HASH).catch(() => {});
 }

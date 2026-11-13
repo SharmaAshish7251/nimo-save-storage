@@ -37,7 +37,7 @@ const FREE_TIER_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Free Telegram limit
 const PREMIUM_TIER_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4GB - Telegram Premium limit
 
 export class UploadManager {
-  private queue: any;
+  private queue: InstanceType<typeof PQueue>;
   private isRunning = false;
   private isPaused = false;
   private activeControllers: Map<string, AbortController> = new Map();
@@ -210,7 +210,14 @@ export class UploadManager {
   
   async processQueue(options: { forceManual?: boolean } = {}): Promise<ProcessQueueResult> {
     if (this.isRunning) {
-      throw new Error('Upload is already in progress.');
+      return {
+        total: 0,
+        uploaded: 0,
+        failed: 0,
+        paused: 0,
+        errors: ['Upload already in progress'],
+        uploadedBytes: 0,
+      };
     }
     this.isRunning = true;
     this.isPaused = false;
@@ -384,7 +391,7 @@ export class UploadManager {
       const destName = resolvedDest.destinationTitle;
 
       // Pre-upload Duplicate Conflict Check
-      const fastHash = await computeFastFileHash(item.uri, actualSize).catch(() => undefined);
+      const fastHash = (await computeFastFileHash(item.uri, actualSize).catch(() => null)) || undefined;
       const conflict = await findCloudConflict(
         {
           uri: item.uri,
@@ -489,6 +496,9 @@ export class UploadManager {
       if (config.vaultEnabled) {
         const hasKey = await vaultService.hasVaultKey().catch(() => false);
         if (hasKey) {
+          if (!vaultService.isUnlocked) {
+            throw new Error('VAULT_LOCKED: Zero-knowledge vault is locked. Unlock the vault to upload encrypted files.');
+          }
           const vaultDir = `${FileSystem.cacheDirectory}vault_upload/`;
           await FileSystem.makeDirectoryAsync(vaultDir, { intermediates: true }).catch(() => {});
           tempVaultPath = `${vaultDir}${Date.now()}_${item.fileName}.enc`;
@@ -498,8 +508,7 @@ export class UploadManager {
             uploadFileName = `${item.fileName}.enc`;
             console.log(`[UploadManager] Encrypted ${item.fileName} with AES-256 vault`);
           } catch (encErr) {
-            console.warn('[UploadManager] Encryption error, falling back to direct upload:', encErr);
-            tempVaultPath = null;
+            throw new Error(`VAULT_ENCRYPTION_FAILED: ${(encErr as any)?.message || 'Failed to encrypt file'}`);
           }
         }
       }

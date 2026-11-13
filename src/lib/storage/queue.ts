@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import type { ChunkManifest } from './reassembler';
 
 export interface WatchedFolder {
@@ -241,7 +242,7 @@ export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progre
     if (existing) return existing;
     const newItem: QueueItem = {
       ...item,
-      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: Crypto.randomUUID(),
       status: 'pending',
       progress: 0,
       retries: 0,
@@ -271,7 +272,6 @@ export async function addManyToQueue(
     );
 
     const now = Date.now();
-    let counter = 0;
     const newItems: QueueItem[] = [];
     let skipped = 0;
 
@@ -282,7 +282,7 @@ export async function addManyToQueue(
       }
       const newItem: QueueItem = {
         ...item,
-        id: `${now}_${counter++}_${Math.random().toString(36).substr(2, 9)}`,
+        id: Crypto.randomUUID(),
         status: 'pending',
         progress: 0,
         retries: 0,
@@ -301,17 +301,19 @@ export async function addManyToQueue(
 }
 
 export async function resetItemToPending(id: string): Promise<QueueItem | null> {
-  const queue = await getQueue();
-  const index = queue.findIndex((item) => item.id === id);
-  if (index >= 0) {
-    queue[index].status = 'pending';
-    queue[index].progress = 0;
-    delete queue[index].error;
-    queue[index].lastAttemptAt = undefined;
-    await saveQueue(queue);
-    return queue[index];
-  }
-  return null;
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    const index = queue.findIndex((item) => item.id === id);
+    if (index >= 0) {
+      queue[index].status = 'pending';
+      queue[index].progress = 0;
+      delete queue[index].error;
+      queue[index].lastAttemptAt = undefined;
+      await saveQueue(queue);
+      return queue[index];
+    }
+    return null;
+  });
 }
 
 export interface UploadedRecord {
@@ -433,7 +435,7 @@ export async function completeUploadAtomically(params: {
     });
 
     const newHistoryItem: ActionHistoryItem = {
-      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: Crypto.randomUUID(),
       fileName: params.fileName,
       uri: params.uri,
       size: params.size,
@@ -525,7 +527,7 @@ export async function recordActionHistory(
   const history = await getActionHistory();
   const newItem: ActionHistoryItem = {
     ...item,
-    id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    id: Crypto.randomUUID(),
     timestamp: Date.now(),
   };
   // Prepend to show most recent first, keep up to 10,000 items
@@ -543,39 +545,47 @@ export async function removeFromQueue(
   recordAsDismissed: boolean = true,
   destination?: string
 ): Promise<void> {
-  const queue = await getQueue();
-  const target = queue.find((i) => i.id === itemId);
-  const updated = queue.filter((i) => i.id !== itemId);
-  await saveQueue(updated);
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    const target = queue.find((i) => i.id === itemId);
+    const updated = queue.filter((i) => i.id !== itemId);
+    await saveQueue(updated);
 
-  if (target && recordAsDismissed) {
-    await recordActionHistory({
-      fileName: target.fileName,
-      uri: target.uri,
-      size: target.size,
-      status: 'dismissed',
-      destination,
-    });
-  }
+    if (target && recordAsDismissed) {
+      await recordActionHistory({
+        fileName: target.fileName,
+        uri: target.uri,
+        size: target.size,
+        status: 'dismissed',
+        destination,
+      });
+    }
+  });
 }
 
 export async function clearAllQueue(
   recordAsDismissed: boolean = false,
   destination?: string
 ): Promise<void> {
-  const queue = await getQueue();
-  if (recordAsDismissed) {
-    for (const item of queue) {
-      await recordActionHistory({
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    if (recordAsDismissed && queue.length > 0) {
+      const history = await getActionHistory();
+      const now = Date.now();
+      const newItems: ActionHistoryItem[] = queue.map((item) => ({
+        id: Crypto.randomUUID(),
         fileName: item.fileName,
         uri: item.uri,
         size: item.size,
         status: 'dismissed',
+        timestamp: now,
         destination,
-      });
+      }));
+      const updatedHistory = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
+      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory));
     }
-  }
-  await saveQueue([]);
+    await saveQueue([]);
+  });
 }
 
 

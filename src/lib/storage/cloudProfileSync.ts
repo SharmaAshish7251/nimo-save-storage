@@ -61,39 +61,97 @@ export async function saveProfileSyncMeta(meta: Partial<ProfileSyncMeta>): Promi
   } catch {}
 }
 
+function hasPrototypePollution(obj: any, depth = 0): boolean {
+  if (!obj || typeof obj !== 'object' || depth > 10) return false;
+  for (const key of Object.keys(obj)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      return true;
+    }
+    if (typeof obj[key] === 'object' && obj[key] !== null) {
+      if (hasPrototypePollution(obj[key], depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+export function validateCloudProfile(data: any): data is NimoCloudProfileV1 {
+  if (!data || typeof data !== 'object') return false;
+  if (hasPrototypePollution(data)) return false;
+  if (data.schemaVersion !== 1) return false;
+  if (typeof data.updatedAt !== 'number') return false;
+  if (typeof data.deviceId !== 'string') return false;
+  if (!data.config || typeof data.config !== 'object') return false;
+  return true;
+}
+
+const ALLOWED_CONFIG_KEYS: (keyof AppConfig)[] = [
+  'watchFolders',
+  'watchedFolders',
+  'wifiOnly',
+  'timeWindowStart',
+  'timeWindowEnd',
+  'concurrency',
+  'autoUploadEnabled',
+  'uploadToSavedMessages',
+  'targetChatId',
+  'targetChatTitle',
+  'targetChatType',
+  'scheduleMode',
+  'intervalMinutes',
+  'onlyWhenCharging',
+];
+
+function sanitizeConfig(config: any): AppConfig {
+  const sanitized: any = {};
+  for (const key of ALLOWED_CONFIG_KEYS) {
+    if (key in config) {
+      sanitized[key] = config[key];
+    }
+  }
+  return sanitized as AppConfig;
+}
+
 /**
  * Searches the user's Saved Messages chat for the latest cloud profile backup.
+ * Paginates up to 5 pages of 100 messages (QUAL-04).
  */
 export async function findLatestCloudProfileMessage(): Promise<{ messageId: number; chatId: number; docFile: any } | null> {
   try {
     const savedChatId = await tdLibClient.getSavedMessagesChatId();
     if (!savedChatId) return null;
 
-    // Search recent chat history in Saved Messages (up to 100 messages)
-    const messages = await tdLibClient.getChatHistory(savedChatId, 0, 100, 0);
-    if (!Array.isArray(messages)) return null;
+    let fromMessageId = 0;
+    const MAX_PAGES = 5;
 
-    for (const msg of messages) {
-      if (!msg || !msg.id) continue;
-      const content = msg.content;
-      if (!content) continue;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const messages = await tdLibClient.getChatHistory(savedChatId, fromMessageId, 100, 0);
+      if (!Array.isArray(messages) || messages.length === 0) break;
 
-      const caption = content.caption?.text || (typeof content.caption === 'string' ? content.caption : '');
-      const doc = content.document;
-      const fileName = doc?.file_name || doc?.fileName || '';
+      for (const msg of messages) {
+        if (!msg || !msg.id) continue;
+        const content = msg.content;
+        if (!content) continue;
 
-      const isProfile =
-        caption.includes('[NIMO_CLOUD_PROFILE_V1]') ||
-        fileName === PROFILE_FILE_NAME ||
-        fileName.toLowerCase().includes('nimo_cloud_profile');
+        const caption = content.caption?.text || (typeof content.caption === 'string' ? content.caption : '');
+        const doc = content.document;
+        const fileName = doc?.file_name || doc?.fileName || '';
 
-      if (isProfile) {
-        return {
-          messageId: msg.id,
-          chatId: savedChatId,
-          docFile: doc?.document || doc || null,
-        };
+        const isProfile =
+          caption.includes('[NIMO_CLOUD_PROFILE_V1]') ||
+          fileName === PROFILE_FILE_NAME ||
+          fileName.toLowerCase().includes('nimo_cloud_profile');
+
+        if (isProfile) {
+          return {
+            messageId: msg.id,
+            chatId: savedChatId,
+            docFile: doc?.document || doc || null,
+          };
+        }
       }
+
+      fromMessageId = messages[messages.length - 1]?.id || 0;
+      if (!fromMessageId) break;
     }
   } catch (err) {
     console.warn('[CloudProfileSync] findLatestCloudProfileMessage error:', err);
@@ -284,13 +342,14 @@ export async function restoreFromCloudProfile(options: {
         return { restored: false, reason: 'INVALID_PROFILE_DATA' };
       }
 
-      if (profile.schemaVersion !== 1) {
-        return { restored: false, reason: 'UNSUPPORTED_SCHEMA_VERSION' };
+      if (!validateCloudProfile(profile)) {
+        console.error('[CloudProfileSync] Profile validation failed (schema/type/prototype mismatch)');
+        return { restored: false, reason: 'INVALID_OR_UNSUPPORTED_PROFILE' };
       }
 
-      // 1. Restore App Configuration
+      // 1. Restore App Configuration (whitelist sanitized against unexpected keys)
       if (profile.config) {
-        await saveConfig(profile.config, { skipSync: true });
+        await saveConfig(sanitizeConfig(profile.config), { skipSync: true });
       }
 
       // 2. Restore Watched Folders with smart album re-matching and SAF flagging

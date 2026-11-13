@@ -13,6 +13,7 @@ import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
 import { recoverInterruptedUploads } from '@/lib/storage/queue';
+import { vaultService } from '@/lib/crypto/vault';
 import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -80,6 +81,9 @@ export default function RootLayout() {
         });
         await recoverInterruptedUploads().catch((err) => {
           console.warn('Queue recovery error:', err);
+        });
+        await vaultService.migrateLegacyKeyStore().catch((err) => {
+          console.warn('Vault legacy migration error:', err);
         });
         schedulerEngine.startActiveRunner();
       } catch (err) {

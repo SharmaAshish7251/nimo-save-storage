@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
+import PQueue from 'p-queue';
 import {
   getUploadedIndex,
   getQueue,
@@ -81,53 +82,59 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
   let totalBytes = 0;
   let restrictedBytes = 0;
 
-  for (const record of uploaded) {
-    // Safety Shield: Do NOT suggest cleaning local files whose cloud copies are marked missing
-    if (record.cloudStatus === 'missing') continue;
+  // PERF-01: Parallelize with PQueue concurrency 10
+  const pQueue = new PQueue({ concurrency: 10 });
+  const tasks = uploaded.map((record) =>
+    pQueue.add(async () => {
+      // Safety Shield: Do NOT suggest cleaning local files whose cloud copies are marked missing
+      if (record.cloudStatus === 'missing') return;
 
-    try {
-      const target = await resolveLocalFileTarget({
-        uri: record.uri,
-        fileName: record.fileName,
-        size: record.size,
-        mediaAssetId: record.mediaAssetId,
-        allowMediaMatch: true,
-        requestPermission: false,
-      });
+      try {
+        const target = await resolveLocalFileTarget({
+          uri: record.uri,
+          fileName: record.fileName,
+          size: record.size,
+          mediaAssetId: record.mediaAssetId,
+          allowMediaMatch: true,
+          requestPermission: false,
+        });
 
-      if (!target.exists) continue;
+        if (!target.exists) return;
 
-      const size = target.size > 0 ? target.size : record.size || 0;
-      const category = getFileCategory(record.fileName);
+        const size = target.size > 0 ? target.size : record.size || 0;
+        const category = getFileCategory(record.fileName);
 
-      const item: CleanableItem = {
-        uri: record.uri,
-        ...(target.resolvedUri && target.resolvedUri !== record.uri
-          ? { resolvedUri: target.resolvedUri }
-          : {}),
-        ...(target.mediaAssetId ? { mediaAssetId: target.mediaAssetId } : {}),
-        canAutoDelete: target.canAutoDelete,
-        fileName: record.fileName,
-        size,
-        uploadedAt: record.uploadedAt,
-        category,
-        telegramMessageId: record.telegramMessageId,
-        chatId: record.chatId,
-      };
+        const item: CleanableItem = {
+          uri: record.uri,
+          ...(target.resolvedUri && target.resolvedUri !== record.uri
+            ? { resolvedUri: target.resolvedUri }
+            : {}),
+          ...(target.mediaAssetId ? { mediaAssetId: target.mediaAssetId } : {}),
+          canAutoDelete: target.canAutoDelete,
+          fileName: record.fileName,
+          size,
+          uploadedAt: record.uploadedAt,
+          category,
+          telegramMessageId: record.telegramMessageId,
+          chatId: record.chatId,
+        };
 
-      if (target.canAutoDelete) {
-        candidates.push(item);
-        totalBytes += size;
-        categories[category].count += 1;
-        categories[category].bytes += size;
-      } else {
-        restrictedCandidates.push(item);
-        restrictedBytes += size;
+        if (target.canAutoDelete) {
+          candidates.push(item);
+          totalBytes += size;
+          categories[category].count += 1;
+          categories[category].bytes += size;
+        } else {
+          restrictedCandidates.push(item);
+          restrictedBytes += size;
+        }
+      } catch {
+        // If unable to query local file, skip to be safe
       }
-    } catch {
-      // If unable to query local file, skip to be safe
-    }
-  }
+    })
+  );
+
+  await Promise.all(tasks);
 
   return {
     candidates,

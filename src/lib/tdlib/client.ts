@@ -5,9 +5,6 @@ import { getApiCredentials } from '../storage/secure';
 import { resolveToLocalPath, cleanupTempFile } from './fileHelper';
 import { TdAuthState, TdFile, TdUploadProgress, TdUser, TelegramDestination } from './types';
 
-export const DEFAULT_API_ID = 2040;
-export const DEFAULT_API_HASH = 'b18441a1ff607e10a989891a5462e627';
-
 type AuthStateListener = (state: TdAuthState) => void;
 type UpdateListener = (type: string, raw: any) => void;
 
@@ -20,6 +17,7 @@ class TdLibClientService {
   private updateListeners: Set<UpdateListener> = new Set();
   private activeUploads: Map<number, (progress: TdUploadProgress) => void> = new Map();
   private myUserId: number | null = null;
+  private savedMessagesChatId: number | null = null; // BUG-08: separate field for chat ID vs user ID
   private hasWarnedMissing = false;
   private authResetPromise: Promise<void> | null = null;
   private latestQrLink: string | null = null;
@@ -129,63 +127,75 @@ class TdLibClientService {
       return this.initPromise;
     }
 
-    this.initPromise = (async () => {
-      this.isInitialized = false;
-      this.setupEventEmitter();
+    // BUG-01 FIX: initPromise is nulled in the outer finally AFTER the promise settles,
+    // not inside the IIFE — so concurrent callers correctly de-duplicate on the same promise.
+    this.initPromise = this._runInit();
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
 
-      const creds = await getApiCredentials();
-      const apiId = creds.apiId ? parseInt(creds.apiId, 10) : DEFAULT_API_ID;
-      const apiHash = creds.apiHash || DEFAULT_API_HASH;
+  private async _runInit(): Promise<void> {
+    this.isInitialized = false;
+    this.setupEventEmitter();
 
-      try {
-        console.log('[TdLibClientService] Starting TDLib with API ID:', apiId);
-        await TdLib.startTdLib({
+    const creds = await getApiCredentials();
+    const parsedId = creds.apiId ? parseInt(creds.apiId, 10) : null;
+    const apiId = parsedId && Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
+    const apiHash = creds.apiHash || null;
+
+    if (!apiId || !apiHash) {
+      throw new Error(
+        'Telegram API credentials not configured. Please enter your API ID and API Hash on the login screen under "Configure Telegram API Credentials" or in .env.'
+      );
+    }
+
+    try {
+      console.log('[TdLibClientService] Starting TDLib with API ID:', apiId);
+      await TdLib.startTdLib({
+        api_id: apiId,
+        api_hash: apiHash,
+        device_model: Platform.OS === 'android' ? 'Android Device' : 'iOS Device',
+        system_version: String(Platform.Version),
+        application_version: '1.0.0',
+        system_language_code: 'en',
+      });
+      this.isInitialized = true;
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (msg.includes('already started') || msg.includes('already initialized')) {
+        this.isInitialized = true;
+      } else {
+        throw err;
+      }
+    }
+
+    // Check if TDLib is still waiting for parameters (can happen across hot reloads)
+    try {
+      const rawState = await TdLib.getAuthorizationState();
+      const parsedState = typeof rawState === 'string' ? JSON.parse(rawState) : rawState;
+      const type = parsedState?.['@type'] || parsedState;
+      if (type === 'authorizationStateWaitTdlibParameters') {
+        console.log('[TdLibClientService] TDLib waiting for parameters, sending setTdlibParameters...');
+        await TdLib.td_json_client_send({
+          '@type': 'setTdlibParameters',
+          database_directory: `${(LegacyFileSystem.documentDirectory ?? '').replace(/^file:\/\//, '')}tdlib`,
+          use_message_database: true,
+          use_secret_chats: true,
           api_id: apiId,
           api_hash: apiHash,
+          system_language_code: 'en',
           device_model: Platform.OS === 'android' ? 'Android Device' : 'iOS Device',
           system_version: String(Platform.Version),
           application_version: '1.0.0',
-          system_language_code: 'en',
-        });
-        this.isInitialized = true;
-      } catch (err: any) {
-        const msg = String(err?.message || err);
-        if (msg.includes('already started') || msg.includes('already initialized')) {
-          this.isInitialized = true;
-        } else {
-          throw err;
-        }
+          use_file_database: true,
+        }).catch((e) => console.warn('[TdLibClientService] setTdlibParameters send:', e));
       }
-
-      // Check if TDLib is still waiting for parameters (can happen across hot reloads)
-      try {
-        const rawState = await TdLib.getAuthorizationState();
-        const parsed = typeof rawState === 'string' ? JSON.parse(rawState) : rawState;
-        const type = parsed?.['@type'] || parsed;
-        if (type === 'authorizationStateWaitTdlibParameters') {
-          console.log('[TdLibClientService] TDLib waiting for parameters, sending setTdlibParameters...');
-          await TdLib.td_json_client_send({
-            '@type': 'setTdlibParameters',
-            database_directory: `${(LegacyFileSystem.documentDirectory ?? '').replace(/^file:\/\//, '')}tdlib`,
-            use_message_database: true,
-            use_secret_chats: true,
-            api_id: apiId,
-            api_hash: apiHash,
-            system_language_code: 'en',
-            device_model: Platform.OS === 'android' ? 'Android Device' : 'iOS Device',
-            system_version: String(Platform.Version),
-            application_version: '1.0.0',
-            use_file_database: true,
-          }).catch((e) => console.warn('[TdLibClientService] setTdlibParameters send:', e));
-        }
-      } catch (e) {
-        console.warn('[TdLibClientService] Error verifying auth state post-init:', e);
-      } finally {
-        this.initPromise = null;
-      }
-    })();
-
-    return this.initPromise;
+    } catch (e) {
+      console.warn('[TdLibClientService] Error verifying auth state post-init:', e);
+    }
   }
 
   public async getAuthState(): Promise<TdAuthState> {
@@ -349,6 +359,7 @@ class TdLibClientService {
       this.initPromise = null;
       this.currentAuthState = 'authorizationStateClosed';
       this.myUserId = null;
+      this.savedMessagesChatId = null; // BUG-08: clear cached chat ID on auth reset
 
       await this.init(true);
 
@@ -653,17 +664,21 @@ class TdLibClientService {
   }
 
   public async getSavedMessagesChatId(): Promise<number> {
+    // BUG-08 FIX: Cache in separate field — savedMessagesChatId != myUserId (user ID)
+    if (this.savedMessagesChatId) return this.savedMessagesChatId;
     const me = await this.getMe();
     try {
       const res = await TdLib.createPrivateChat(me.id);
       const parsed = typeof res === 'string' ? JSON.parse(res) : res;
-      if (parsed?.id) {
-        this.myUserId = parsed.id;
+      if (parsed?.id && typeof parsed.id === 'number') {
+        this.savedMessagesChatId = parsed.id; // correct field — not myUserId
         return parsed.id;
       }
     } catch (e) {
       console.warn('[TdLib] createPrivateChat for Saved Messages failed:', e);
     }
+    // Fallback: in TDLib, the saved messages chat ID is the same as the user's own ID
+    this.savedMessagesChatId = me.id;
     return me.id;
   }
 
@@ -1633,6 +1648,7 @@ class TdLibClientService {
     this.initPromise = null;
     this.isInitialized = false;
     this.myUserId = null;
+    this.savedMessagesChatId = null; // BUG-08: clear cached chat ID on logout
     try {
       const state = await this.readRawAuthState();
       if (state && state !== 'authorizationStateClosed') {

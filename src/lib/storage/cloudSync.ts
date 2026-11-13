@@ -103,12 +103,10 @@ export async function verifyCloudRecord(
   };
 
   // Persist updated status
-  const index = await getUploadedIndex();
-  const idx = index.findIndex((r) => r.uri === record.uri);
-  if (idx >= 0) {
-    index[idx] = updated;
-    await saveUploadedIndex(index);
-  }
+  await updateUploadedRecord(record.uri, {
+    cloudStatus: finalStatus,
+    lastVerifiedAt: Date.now(),
+  });
 
   return { exists: finalStatus === 'synced', record: updated };
 }

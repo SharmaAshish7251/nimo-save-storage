@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
+import PQueue from 'p-queue';
 import { computeFastFileHash, extractMediaStoreAssetId } from './fileHelper';
 
 export { computeFastFileHash };
@@ -36,30 +37,35 @@ export async function findLocalDuplicates(
   const sizeMap: Map<number, string[]> = new Map();
   let scannedCount = 0;
 
-  // Phase 1: Size grouping
-  for (const uri of fileUris) {
-    try {
-      const info = await FileSystem.getInfoAsync(uri);
-      if (info.exists && !info.isDirectory) {
-        const size = (info as any).size ?? 0;
-        if (size > 0) {
-          const list = sizeMap.get(size) || [];
-          list.push(uri);
-          sizeMap.set(size, list);
+  // Phase 1: Size grouping (parallelized with PQueue concurrency 10 - PERF-03)
+  const pQueue = new PQueue({ concurrency: 10 });
+  const tasks = fileUris.map((uri) =>
+    pQueue.add(async () => {
+      try {
+        const info = await FileSystem.getInfoAsync(uri);
+        if (info.exists && !info.isDirectory) {
+          const size = (info as any).size ?? 0;
+          if (size > 0) {
+            const list = sizeMap.get(size) || [];
+            list.push(uri);
+            sizeMap.set(size, list);
+          }
+        }
+      } catch {
+        // Inaccessible or deleted file
+      } finally {
+        scannedCount++;
+        if (scannedCount % 10 === 0 || scannedCount === fileUris.length) {
+          onProgress?.({
+            scanned: scannedCount,
+            total: fileUris.length,
+            duplicatesFound: 0,
+          });
         }
       }
-    } catch {
-      // Inaccessible or deleted file
-    }
-    scannedCount++;
-    if (scannedCount % 10 === 0) {
-      onProgress?.({
-        scanned: scannedCount,
-        total: fileUris.length,
-        duplicatesFound: 0,
-      });
-    }
-  }
+    })
+  );
+  await Promise.all(tasks);
 
   // Phase 2: Hash verification on potential candidates
   const duplicateGroups: DuplicateGroup[] = [];
@@ -76,6 +82,7 @@ export async function findLocalDuplicates(
         const name = uri.split('/').pop() || 'unknown';
         const modifiedAt = (info as any).modificationTime ? (info as any).modificationTime * 1000 : Date.now();
         const hash = await computeFastFileHash(uri, size);
+        if (!hash) continue; // Skip if hash computation failed (BUG-10)
 
         const groupFiles = hashMap.get(hash) || [];
         groupFiles.push({ uri, name, size, modifiedAt });

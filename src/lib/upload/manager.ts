@@ -49,6 +49,8 @@ export class UploadManager {
   private completedBatchItems = 0;
   private totalBatchBytes = 0;
   private uploadedBatchBytes = 0;
+  private netInfoUnsubscribe: (() => void) | null = null;
+  private wasInterruptedByNetwork = false;
 
   /**
    * Returns live progress for all currently-uploading items.
@@ -115,6 +117,7 @@ export class UploadManager {
    */
   public async resumeQueue(): Promise<ProcessQueueResult | null> {
     this.isPaused = false;
+    this.wasInterruptedByNetwork = false;
     this.pausedItemIds.clear();
 
     const queue = await getQueue();
@@ -186,8 +189,54 @@ export class UploadManager {
   
   constructor(concurrency: number = 3) {
     this.queue = new PQueue({ concurrency });
+    this.initNetworkListener();
   }
-  
+
+  private initNetworkListener(): void {
+    if (this.netInfoUnsubscribe) return;
+    try {
+      this.netInfoUnsubscribe = NetInfo.addEventListener(async (state) => {
+        const isConnected = !!state.isConnected && state.isInternetReachable !== false;
+        const isWifi = state.type === 'wifi';
+
+        if (!isConnected) {
+          if (this.isRunning) {
+            console.log('[UploadManager] Network dropped mid-upload. Gracefully auto-pausing queue...');
+            this.wasInterruptedByNetwork = true;
+            await this.pauseQueue();
+          }
+        } else {
+          if (this.wasInterruptedByNetwork || (!this.isRunning && !this.isPaused)) {
+            const config = await getConfig().catch(() => null);
+            if (config?.wifiOnly && !isWifi) {
+              console.log('[UploadManager] Network restored (cellular), but wifiOnly is active. Waiting for Wi-Fi.');
+              return;
+            }
+
+            const queue = await getQueue().catch(() => []);
+            const hasWork = queue.some(
+              (q) => q.status === 'pending' || (this.wasInterruptedByNetwork && q.status === 'paused')
+            );
+
+            if (hasWork) {
+              console.log('[UploadManager] Internet connection restored! Auto-resuming upload queue...');
+              this.wasInterruptedByNetwork = false;
+              setTimeout(() => {
+                if (this.isPaused) {
+                  this.resumeQueue().catch(() => {});
+                } else if (!this.isRunning) {
+                  this.processQueue().catch(() => {});
+                }
+              }, 1200);
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('[UploadManager] Failed to attach NetInfo listener:', err);
+    }
+  }
+
   async setConcurrency(concurrency: number) {
     this.queue.concurrency = concurrency;
   }
@@ -195,12 +244,14 @@ export class UploadManager {
   async checkNetworkConditions(forceManual = false): Promise<{ canUpload: boolean; reason?: string }> {
     const netInfo = await NetInfo.fetch();
     if (!(netInfo as any).isConnected) {
+      this.wasInterruptedByNetwork = true;
       return { canUpload: false, reason: 'NO_INTERNET: No internet connection detected. Please check WiFi or mobile data.' };
     }
     
     if (!forceManual) {
       const config = await getConfig();
       if (config.wifiOnly && (netInfo as any).type !== 'wifi') {
+        this.wasInterruptedByNetwork = true;
         return { canUpload: false, reason: 'WIFI_ONLY: Upload paused because WiFi-only is enabled in Settings.' };
       }
     }

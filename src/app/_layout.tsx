@@ -3,7 +3,7 @@ import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { Text, TouchableOpacity, StyleSheet, View } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet, View, StatusBar as RNStatusBar, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
@@ -33,12 +33,55 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => voi
 
 function RootLayoutNav() {
   const { isDark } = useAppTheme();
+  const themeBg = isDark ? '#0F172A' : '#FFFFFF';
+  const themeText = isDark ? '#F8FAFC' : '#0F172A';
+
+  const customDarkTheme = {
+    ...DarkTheme,
+    colors: {
+      ...DarkTheme.colors,
+      background: '#0F172A',
+      card: '#0F172A',
+      border: '#1E293B',
+      text: '#F8FAFC',
+    },
+  };
+
+  const customDefaultTheme = {
+    ...DefaultTheme,
+    colors: {
+      ...DefaultTheme.colors,
+      background: '#F8FAFC',
+      card: '#FFFFFF',
+      border: '#E2E8F0',
+      text: '#0F172A',
+    },
+  };
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      try {
+        (RNStatusBar as any).setBackgroundColor?.(themeBg, true);
+      } catch {}
+    }
+  }, [themeBg]);
 
   return (
-    <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={isDark ? customDarkTheme : customDefaultTheme}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <View style={{ flex: 1 }}>
-        <Stack>
+      <View style={{ flex: 1, backgroundColor: themeBg }}>
+        <Stack
+          screenOptions={{
+            headerStyle: {
+              backgroundColor: themeBg,
+            },
+            headerTintColor: themeText,
+            headerShadowVisible: false,
+            contentStyle: {
+              backgroundColor: isDark ? '#0F172A' : '#F8FAFC',
+            },
+          }}
+        >
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
           <Stack.Screen name="settings" options={{ title: 'Settings' }} />

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react';
 import PQueue from 'p-queue';
 import {
   View,
@@ -74,6 +74,7 @@ export default function CloudExplorerScreen() {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
   const [sortOption, setSortOption] = useState<SortOption>('newest');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -400,8 +401,8 @@ export default function CloudExplorerScreen() {
     let result = itemsInScope;
 
     // 1. Search Query Filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
+    if (deferredSearchQuery.trim()) {
+      const q = deferredSearchQuery.toLowerCase().trim();
       result = result.filter((it) => it.fileName.toLowerCase().includes(q));
     }
 
@@ -427,7 +428,7 @@ export default function CloudExplorerScreen() {
           return 0;
       }
     });
-  }, [itemsInScope, searchQuery, activeCategory, sortOption]);
+  }, [itemsInScope, deferredSearchQuery, activeCategory, sortOption]);
 
   const filteredBytes = useMemo(() => {
     return filteredAndSortedItems.reduce((acc, it) => acc + (it.size || 0), 0);
@@ -436,7 +437,7 @@ export default function CloudExplorerScreen() {
   // Reset pagination window whenever search, category, sort, or scope changes
   useEffect(() => {
     setDisplayLimit(60);
-  }, [searchQuery, activeCategory, sortOption, streamScope]);
+  }, [deferredSearchQuery, activeCategory, sortOption, streamScope]);
 
   // Paginated slice for 60fps virtualization window
   const paginatedItems = useMemo(() => {
@@ -1181,7 +1182,7 @@ export default function CloudExplorerScreen() {
               ) : null}
             </Text>
             <Text style={styles.heroSummaryHeadline}>
-              {formatFileSize(activeCategory === 'all' && !searchQuery ? totalScopeBytes : filteredBytes)}
+              {formatFileSize(activeCategory === 'all' && !deferredSearchQuery ? totalScopeBytes : filteredBytes)}
             </Text>
           </View>
           <View style={styles.heroSummaryBadge}>

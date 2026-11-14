@@ -692,6 +692,13 @@ export default function UploadScreen() {
                       • {formatSpeed(item.speedKbps * 1024)}
                     </Text>
                   ) : null}
+                  {typeof item.speedKbps === 'number' && item.speedKbps > 0 && item.size > 0 ? (
+                    <Text style={[styles.metaProgressText, { color: '#10B981', fontWeight: '600' }]}>
+                      • ~{Math.max(1, Math.round(((item.size * (1 - (item.progress || 0) / 100)) / 1024) / item.speedKbps)) < 60
+                        ? `${Math.max(1, Math.round(((item.size * (1 - (item.progress || 0) / 100)) / 1024) / item.speedKbps))}s left`
+                        : `${Math.ceil(Math.max(1, Math.round(((item.size * (1 - (item.progress || 0) / 100)) / 1024) / item.speedKbps)) / 60)}m left`}
+                    </Text>
+                  ) : null}
                 </>
               )}
               {item.uploadDurationMs && item.uploadDurationMs > 0 && item.status === 'completed' && (
@@ -1387,9 +1394,14 @@ export default function UploadScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['bottom', 'left', 'right']}>
       <Stack.Screen
         options={{
+          headerStyle: {
+            backgroundColor: bg,
+          },
+          headerTintColor: isDark ? '#FFFFFF' : '#111827',
+          headerShadowVisible: false,
           headerTitle: () => (
             <View style={styles.navHeaderTitleContainer}>
               <Image

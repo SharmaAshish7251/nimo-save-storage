@@ -169,6 +169,34 @@ export default function SettingsScreen() {
   const [timeEnd, setTimeEnd] = useState('06:00');
   const [concurrencyText, setConcurrencyText] = useState('3');
 
+  // Custom file types state
+  const [newExt, setNewExt] = useState('');
+  const [newCategory, setNewCategory] = useState<'document' | 'video' | 'audio' | 'image' | 'other'>('document');
+
+  const handleAddCustomFileType = async () => {
+    const trimmed = newExt.trim().toLowerCase().replace(/^\./, '');
+    if (!trimmed) {
+      Alert.alert('Invalid Extension', 'Please enter a valid file extension (e.g. epub, apk, psd).');
+      return;
+    }
+    const current = config?.customFileTypes || [];
+    if (current.some((c) => c.extension.toLowerCase() === trimmed)) {
+      Alert.alert('Duplicate Extension', `.${trimmed} is already in your custom file types.`);
+      return;
+    }
+    const updated = [...current, { extension: trimmed, category: newCategory }];
+    await updateConfig({ customFileTypes: updated });
+    setNewExt('');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  };
+
+  const handleRemoveCustomFileType = async (extToRemove: string) => {
+    const current = config?.customFileTypes || [];
+    const updated = current.filter((c) => c.extension.toLowerCase() !== extToRemove.toLowerCase());
+    await updateConfig({ customFileTypes: updated });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  };
+
   // Zero-Knowledge Encrypted Vault state
   const [hasVaultKey, setHasVaultKey] = useState(false);
   const [vaultPasswordModalVisible, setVaultPasswordModalVisible] = useState(false);
@@ -1357,6 +1385,85 @@ export default function SettingsScreen() {
                     <Text style={[styles.tagBadgeText, isDark && styles.textDarkPrimary]}>.{ext}</Text>
                   </View>
                 ))}
+              </View>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            {/* Custom File Types & Extensions */}
+            <View>
+              <Text style={[styles.filterTitle, isDark && styles.textDarkPrimary]}>Custom File Types</Text>
+              <Text style={[styles.filterSubtitle, isDark && styles.textDarkSecondary]}>
+                Add custom formats (e.g. epub, apk, psd, iso, blend) and assign their category for multi-stream routing
+              </Text>
+
+              {/* Add Custom File Type Input */}
+              <View style={styles.customTypeInputRow}>
+                <TextInput
+                  style={[styles.customTypeTextInput, isDark && styles.inputDark]}
+                  placeholder="Extension (e.g. epub, apk)"
+                  placeholderTextColor={isDark ? '#64748B' : '#9CA3AF'}
+                  value={newExt}
+                  onChangeText={setNewExt}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={[styles.addCustomTypeBtn, !newExt.trim() && { opacity: 0.5 }]}
+                  onPress={handleAddCustomFileType}
+                  disabled={!newExt.trim()}
+                >
+                  <FontAwesome name="plus" size={12} color="#FFFFFF" style={{ marginRight: 4 }} />
+                  <Text style={styles.addCustomTypeBtnText}>Add</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Category selector pills for the new extension */}
+              <View style={styles.categoryPillsRow}>
+                {(['document', 'video', 'audio', 'image', 'other'] as const).map((cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[
+                      styles.categoryPill,
+                      isDark && styles.categoryPillDark,
+                      newCategory === cat && styles.categoryPillActive,
+                    ]}
+                    onPress={() => setNewCategory(cat)}
+                  >
+                    <Text
+                      style={[
+                        styles.categoryPillText,
+                        isDark && styles.textDarkSecondary,
+                        newCategory === cat && styles.categoryPillTextActive,
+                      ]}
+                    >
+                      {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Badges of added custom types */}
+              <View style={[styles.tagsContainer, { marginTop: 10 }]}>
+                {(config.customFileTypes || []).length === 0 ? (
+                  <Text style={[styles.noCustomTypesText, isDark && styles.textDarkSecondary]}>
+                    No custom file types added yet. Default formats (photos, videos, audio, documents) are always included.
+                  </Text>
+                ) : (
+                  (config.customFileTypes || []).map((item) => (
+                    <View key={item.extension} style={[styles.customTagBadge, isDark && styles.customTagBadgeDark]}>
+                      <Text style={[styles.customTagBadgeText, isDark && styles.textDarkPrimary]}>
+                        .{item.extension} <Text style={styles.customTagCategory}>({item.category})</Text>
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => handleRemoveCustomFileType(item.extension)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <FontAwesome name="times" size={11} color={isDark ? '#94A3B8' : '#64748B'} style={{ marginLeft: 6 }} />
+                      </TouchableOpacity>
+                    </View>
+                  ))
+                )}
               </View>
             </View>
           </View>
@@ -2883,6 +2990,97 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: '#334155',
+  },
+  customTypeInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    gap: 8,
+  },
+  customTypeTextInput: {
+    flex: 1,
+    height: 40,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    fontSize: 13,
+    backgroundColor: '#FFFFFF',
+    color: '#0F172A',
+  },
+  addCustomTypeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#208AEF',
+    paddingHorizontal: 14,
+    height: 40,
+    borderRadius: 8,
+  },
+  addCustomTypeBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  categoryPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  categoryPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  categoryPillDark: {
+    backgroundColor: '#334155',
+    borderColor: '#475569',
+  },
+  categoryPillActive: {
+    backgroundColor: '#208AEF',
+    borderColor: '#208AEF',
+  },
+  categoryPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  categoryPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  noCustomTypesText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  customTagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  customTagBadgeDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#3B82F6',
+  },
+  customTagBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1D4ED8',
+  },
+  customTagCategory: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#60A5FA',
   },
   smallActionBtn: {
     paddingHorizontal: 12,

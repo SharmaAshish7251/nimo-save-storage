@@ -3,7 +3,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { getUploadedIndex, getWatchedFolders, getQueue, getConfig, WatchedFolder } from '../storage/queue';
-import { getFileInfo, getFileCategory, resolveLocalFileTarget } from '../storage/fileHelper';
+import { getFileInfo, getFileCategory, inferMimeType, resolveLocalFileTarget } from '../storage/fileHelper';
 
 export { getFileInfo, getFileCategory };
 
@@ -193,16 +193,21 @@ export async function scanSAFDirectory(
       let size = 0;
       try {
         const info = await FileSystem.getInfoAsync(fileUri);
-        // Fix 1.4: Skip sub-directories — only process actual files
+        // Fix 1.4: Skip sub-directories â€” only process actual files
         if (!info.exists || (info as any).isDirectory) continue;
         if (typeof (info as any).size === 'number') {
           size = (info as any).size;
         }
       } catch {}
+      // Infer MIME type from extension for documents/archives/custom types
+      const ext = name.split('.').pop()?.toLowerCase() || '';
+
+      const mimeType = inferMimeType(ext);
       files.push({
         uri: fileUri,
         fileName: name,
         size,
+        mimeType,
         source: 'document',
         folderName: folderTitle,
       });
@@ -245,7 +250,7 @@ export async function requestAndScanSAFDirectory(): Promise<{
     ) {
       Alert.alert(
         'Downloads Shortcut Restriction',
-        'Android does not permit reading files from the virtual "Downloads" sidebar shortcut.\n\nTo scan your Downloads folder:\n1. Tap "Add Folder" again\n2. Open the sidebar (tap ☰ top-left)\n3. Tap your phone\'s "Internal Storage" (device name)\n4. Select the "Download" folder and tap "Use this folder".',
+        'Android does not permit reading files from the virtual "Downloads" sidebar shortcut.\n\nTo scan your Downloads folder:\n1. Tap "Add Folder" again\n2. Open the sidebar (tap â˜° top-left)\n3. Tap your phone\'s "Internal Storage" (device name)\n4. Select the "Download" folder and tap "Use this folder".',
         [{ text: 'OK' }]
       );
       return null;
@@ -311,6 +316,9 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
   if (abortSignal?.aborted) return [];
 
   const config = await getConfig().catch(() => null);
+  const customExts = new Set(
+    (config?.customFileTypes || []).map((c) => c.extension.toLowerCase().replace(/^\./, '').trim())
+  );
   const excludedExts = new Set(
     (config?.excludedExtensions || ['nomedia', 'tmp', 'log', 'thumb', 'bak']).map((e) =>
       e.toLowerCase().replace(/^\./, '').trim()
@@ -321,7 +329,7 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
   const candidateFiles = allFiles.filter((f) => {
     if (uploadedUris.has(f.uri) || activeQueueUris.has(f.uri)) return false;
     const ext = f.fileName.split('.').pop()?.toLowerCase() || '';
-    if (ext && excludedExts.has(ext)) return false;
+    if (ext && excludedExts.has(ext) && !customExts.has(ext)) return false;
     if (f.fileName.startsWith('.') || f.fileName.toLowerCase() === 'thumbs.db') return false;
     return true;
   });

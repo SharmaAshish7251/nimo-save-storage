@@ -3,6 +3,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Crypto from 'expo-crypto';
 import { Buffer } from 'buffer';
+import type { CustomFileType } from '../storage/queue';
 
 export type FileCategory = 'image' | 'video' | 'audio' | 'document' | 'other';
 
@@ -15,12 +16,55 @@ export interface ResolvedLocalTarget {
   isContentOnly: boolean;
 }
 
+/**
+ * Infer MIME type string from a file extension for SAF-scanned files that lack one.
+ */
+export function inferMimeType(ext: string): string | undefined {
+  const e = ext.toLowerCase();
+  const map: Record<string, string> = {
+    // Images
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', bmp: 'image/bmp',
+    svg: 'image/svg+xml',
+    // Videos
+    mp4: 'video/mp4', mkv: 'video/x-matroska', mov: 'video/quicktime',
+    avi: 'video/x-msvideo', webm: 'video/webm', '3gp': 'video/3gpp', ts: 'video/mp2t',
+    // Audio
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac',
+    flac: 'audio/flac', ogg: 'audio/ogg', opus: 'audio/opus',
+    // Documents / Archives
+    pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    zip: 'application/zip', rar: 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed', tar: 'application/x-tar',
+    gz: 'application/gzip', epub: 'application/epub+zip',
+    apk: 'application/vnd.android.package-archive',
+    iso: 'application/x-iso9660-image',
+    json: 'application/json', xml: 'application/xml',
+    html: 'text/html', htm: 'text/html', md: 'text/markdown',
+    rtf: 'application/rtf',
+  };
+  return map[e];
+}
+
 export function getFileCategory(
   fileName: string,
-  mimeType?: string
+  mimeType?: string,
+  customFileTypes?: CustomFileType[]
 ): FileCategory {
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   const mime = (mimeType || '').toLowerCase();
+
+  // Check user-defined custom file types first
+  if (customFileTypes && customFileTypes.length > 0) {
+    const custom = customFileTypes.find((c) => c.extension.toLowerCase() === ext);
+    if (custom) return custom.category;
+  }
 
   if (
     mime.startsWith('image/') ||
@@ -58,6 +102,15 @@ export function getFileCategory(
       '7z',
       'tar',
       'gz',
+      'epub',
+      'apk',
+      'iso',
+      'json',
+      'xml',
+      'html',
+      'htm',
+      'md',
+      'rtf',
     ].includes(ext)
   ) {
     return 'document';

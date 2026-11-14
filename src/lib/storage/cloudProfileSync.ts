@@ -119,6 +119,8 @@ const ALLOWED_CONFIG_KEYS: (keyof AppConfig)[] = [
   'videoChannelTitle',
   'documentChannelId',
   'documentChannelTitle',
+  // Custom file types
+  'customFileTypes',
   // Security
   'vaultEnabled',
   'biometricLockEnabled',

@@ -18,17 +18,20 @@ import {
   getFilesFromAlbum,
   requestAndScanSAFDirectory,
   getFileCategory,
+  scanSAFDirectory,
 } from '@/lib/scanner/files';
 import {
   formatFileSize,
   WatchedFolder,
   getWatchedFolders,
   saveWatchedFolders,
+  getConfig,
+  CustomFileType,
 } from '@/lib/storage/queue';
 import { FileDetailsModal, FileDetailData } from './FileDetailsModal';
 import { useAppTheme } from '@/context/ThemeContext';
 
-type FileCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
+type FileCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document' | 'other';
 
 interface Props {
   visible: boolean;
@@ -63,15 +66,18 @@ export function FolderBrowserModal({
   const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
   const [activeFilter, setActiveFilter] = useState<FileCategoryFilter>('all');
   const [selectedFileForDetails, setSelectedFileForDetails] = useState<FileDetailData | null>(null);
+  const [customFileTypes, setCustomFileTypes] = useState<CustomFileType[]>([]);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [albumList, watched] = await Promise.all([
+      const [albumList, watched, appConfig] = await Promise.all([
         getMediaAlbums(),
         getWatchedFolders(),
+        getConfig(),
       ]);
       setAlbums(albumList);
+      setCustomFileTypes(appConfig.customFileTypes || []);
 
       const safs = watched.filter((w) => w.type === 'saf');
       setSafFolders(safs);
@@ -152,6 +158,23 @@ export function FolderBrowserModal({
     }
   };
 
+  // Handle opening an existing SAF (device storage) folder to browse all its files
+  const handleOpenSAFFolder = async (folder: WatchedFolder) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      setFolderName(`Folder: ${folder.title}`);
+      const files = await scanSAFDirectory(folder.id, folder.title);
+      setAllFiles(files);
+      setSelectedUris(new Set());
+      setStep('select_files');
+    } catch (e) {
+      console.error('Error opening SAF folder:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const toggleFolderSelection = (folder: WatchedFolder) => {
     const next = new Set(selectedFolderIds);
     if (next.has(folder.id)) {
@@ -215,7 +238,7 @@ export function FolderBrowserModal({
 
   const filteredFiles = allFiles.filter((f) => {
     if (activeFilter === 'all') return true;
-    return getFileCategory(f.fileName, f.mimeType) === activeFilter;
+    return getFileCategory(f.fileName, f.mimeType, customFileTypes) === activeFilter;
   });
 
   const selectedFiles = allFiles.filter((f) => selectedUris.has(f.uri));
@@ -223,7 +246,7 @@ export function FolderBrowserModal({
 
   const categoryCounts = allFiles.reduce(
     (acc, f) => {
-      const cat = getFileCategory(f.fileName, f.mimeType);
+      const cat = getFileCategory(f.fileName, f.mimeType, customFileTypes);
       if (cat in acc) acc[cat as keyof typeof acc]++;
       return acc;
     },
@@ -290,10 +313,17 @@ export function FolderBrowserModal({
                 <View style={styles.safButtonTexts}>
                   <Text style={styles.safButtonTitle}>+ Add Device Storage Folder</Text>
                   <Text style={[styles.safButtonSubtitle, { color: subtextColor }]}>
-                    Select a specific folder (e.g. DCIM, Movies, Pictures)
+                    Select any folder (e.g. Download, Documents, DCIM, custom folders)
                   </Text>
                 </View>
               </TouchableOpacity>
+
+              <View style={[styles.infoBanner, isDark && styles.infoBannerDark]}>
+                <FontAwesome name="info-circle" size={13} color="#208AEF" style={{ marginRight: 6, marginTop: 1 }} />
+                <Text style={[styles.infoBannerText, isDark && styles.infoBannerTextDark]}>
+                  Gallery albums below only index photos & videos. To watch or scan documents (PDF, Word, ZIP, APK) or custom file types, tap &ldquo;+ Add Device Storage Folder&rdquo; above.
+                </Text>
+              </View>
 
               <View style={styles.foldersHeaderRow}>
                 <Text style={[styles.sectionSubtitle, { color: textColor }]}>
@@ -344,6 +374,13 @@ export function FolderBrowserModal({
                               title: item.title,
                               assetCount: item.assetCount || 0,
                             });
+                          } else if (item.type === 'saf') {
+                            handleOpenSAFFolder({
+                              id: item.id,
+                              title: item.title,
+                              type: 'saf',
+                              assetCount: item.assetCount,
+                            });
                           }
                         }}
                       >
@@ -369,12 +406,10 @@ export function FolderBrowserModal({
                               ? 'Re-authorization required after reinstall'
                               : item.assetCount
                               ? `${item.assetCount} items`
-                              : 'Custom folder'}
+                              : item.type === 'saf' ? 'Device storage folder · tap to browse' : 'Custom folder'}
                           </Text>
                         </View>
-                        {item.type === 'album' && (
-                          <Text style={styles.openAlbumHint}>Browse files ›</Text>
-                        )}
+                        <Text style={styles.openAlbumHint}>Browse files ›</Text>
                       </TouchableOpacity>
                     </View>
                   );
@@ -489,6 +524,18 @@ export function FolderBrowserModal({
                     </Text>
                   </TouchableOpacity>
                 )}
+
+                {categoryCounts.other > 0 && (
+                  <TouchableOpacity
+                    style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'other' && styles.filterChipActive]}
+                    onPress={() => setActiveFilter('other')}
+                  >
+                    <FontAwesome name="file" size={11} color={activeFilter === "other" ? "#fff" : "#F59E0B"} style={{ marginRight: 4 }} />
+                    <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === "other" && styles.filterChipTextActive]}>
+                      Other ({categoryCounts.other})
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               {/* Batch Select Controls */}
@@ -518,7 +565,7 @@ export function FolderBrowserModal({
                 contentContainerStyle={{ paddingBottom: 16 }}
                 renderItem={({ item }) => {
                   const isSelected = selectedUris.has(item.uri);
-                  const category = getFileCategory(item.fileName, item.mimeType);
+                  const category = getFileCategory(item.fileName, item.mimeType, customFileTypes);
                   return (
                     <TouchableOpacity
                       style={[styles.fileItem, { backgroundColor: itemBg }, isSelected && styles.fileItemActive]}
@@ -757,6 +804,29 @@ const styles = StyleSheet.create({
     color: '#208AEF',
     fontWeight: '600',
     paddingHorizontal: 8,
+  },
+  infoBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#EFF6FF',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  infoBannerDark: {
+    backgroundColor: '#1E293B',
+    borderColor: '#3B82F6',
+  },
+  infoBannerText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    color: '#1E40AF',
+  },
+  infoBannerTextDark: {
+    color: '#93C5FD',
   },
   folderBottomActions: {
     paddingTop: 12,

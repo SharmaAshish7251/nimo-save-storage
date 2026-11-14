@@ -13,6 +13,15 @@ export interface WatchedFolder {
 export type ScheduleMode = 'interval' | 'window' | 'continuous';
 export type DuplicatePolicy = 'skip_if_cloud_match' | 'replace_cloud' | 'keep_both';
 
+export type CustomFileTypeCategory = 'image' | 'video' | 'audio' | 'document' | 'other';
+
+export interface CustomFileType {
+  /** Extension without dot, lowercase, e.g. 'epub', 'apk', 'psd', 'iso' */
+  extension: string;
+  /** How this extension is categorised for filtering and multi-stream routing */
+  category: CustomFileTypeCategory;
+}
+
 export interface AppConfig {
   watchFolders: string[]; // folder paths/URIs
   watchedFolders?: WatchedFolder[];
@@ -34,6 +43,8 @@ export interface AppConfig {
   minFileSizeKb?: number; // e.g. 50 (skip files < 50 KB), 0 = no min
   maxFileSizeBytes?: number; // e.g. 2147483648 (2 GB), 0 = no max
   excludedExtensions?: string[]; // e.g. ['tmp', 'log', 'nomedia', 'thumb']
+  /** User-defined custom file types with category mapping */
+  customFileTypes?: CustomFileType[];
   notifyOnComplete?: boolean;
   biometricLockEnabled?: boolean;
   biometricLockTimeout?: number; // in seconds: 0 (immediate), 60 (1m), 300 (5m)
@@ -648,6 +659,28 @@ export function resolveFileDestination(
 
   const ext = (fileName.split('.').pop() || '').toLowerCase();
   const mime = (mimeType || '').toLowerCase();
+
+  // Check user-defined custom file types first (e.g. epub, apk, psd, iso)
+  const customMatch = config?.customFileTypes?.find(
+    (c) => c.extension.toLowerCase() === ext
+  );
+  if (customMatch) {
+    if (customMatch.category === 'image') {
+      if (config!.photoChannelId) {
+        return { targetChat: config!.photoChannelId, destinationTitle: config!.photoChannelTitle || 'Photos Channel', category: 'photo', isMultiStream: true };
+      }
+    } else if (customMatch.category === 'video') {
+      if (config!.videoChannelId) {
+        return { targetChat: config!.videoChannelId, destinationTitle: config!.videoChannelTitle || 'Videos Channel', category: 'video', isMultiStream: true };
+      }
+    } else {
+      // audio, document, other → document channel
+      if (config!.documentChannelId) {
+        return { targetChat: config!.documentChannelId, destinationTitle: config!.documentChannelTitle || 'Documents Channel', category: 'document', isMultiStream: true };
+      }
+    }
+    return { targetChat: defaultTarget, destinationTitle: defaultTitle, category: 'document', isMultiStream: false };
+  }
 
   const isPhoto =
     mime.startsWith('image/') ||

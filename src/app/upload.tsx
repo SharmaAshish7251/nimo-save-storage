@@ -28,6 +28,7 @@ import {
   formatSpeed,
   getActionHistory,
   getQueue,
+  getUploadedIndex,
   getWatchedFolders,
   QueueItem,
   removeFromQueue,
@@ -93,20 +94,29 @@ export default function UploadScreen() {
   const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
   const [duplicateProgress, setDuplicateProgress] = useState<ScanDuplicatesProgress | null>(null);
 
-  const handleOpenDuplicateCleaner = async () => {
+  const handleOpenDuplicateCleaner = async (forceRefresh = false) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setDuplicateModalVisible(true);
     setIsScanningDuplicates(true);
     setDuplicateProgress(null);
     try {
-      const currentQueue = await getQueue();
-      const uris = Array.from(new Set(currentQueue.map((q) => q.uri).filter(Boolean)));
+      const [currentQueue, uploaded] = await Promise.all([
+        getQueue(),
+        getUploadedIndex(),
+      ]);
+      const uris = Array.from(
+        new Set([
+          ...currentQueue.map((q) => q.uri),
+          ...uploaded.map((u) => u.uri),
+        ].filter(Boolean))
+      );
+
       if (uris.length === 0) {
         setDuplicateGroups([]);
         setIsScanningDuplicates(false);
         return;
       }
-      const groups = await findLocalDuplicates(uris, (p) => setDuplicateProgress(p));
+      const groups = await findLocalDuplicates(uris, (p) => setDuplicateProgress(p), { forceRefresh });
       setDuplicateGroups(groups);
     } catch (err: any) {
       console.warn('Duplicate scan error:', err);
@@ -1068,7 +1078,7 @@ export default function UploadScreen() {
       <View style={styles.utilityActionRow}>
         <TouchableOpacity
           style={[styles.duplicateToolBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)', borderColor: '#334155' }]}
-          onPress={handleOpenDuplicateCleaner}
+          onPress={() => handleOpenDuplicateCleaner()}
         >
           <FontAwesome name="clone" size={12} color="#208AEF" style={{ marginRight: 6 }} />
           <Text style={styles.duplicateToolBtnText}>Duplicate Cleaner</Text>

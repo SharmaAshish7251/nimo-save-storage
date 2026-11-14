@@ -289,32 +289,25 @@ export async function findMatchingMediaLibraryAsset(params: {
   if (!mediaType || !params.fileName) return null;
 
   const expectedSize = params.size || 0;
-  let after: string | undefined;
-  const maxPages = 5;
   const nameMatches: { id: string; uri: string; size: number }[] = [];
 
   try {
-    for (let page = 0; page < maxPages; page++) {
-      const res = await MediaLibrary.getAssetsAsync({
-        mediaType,
-        first: 200,
-        after,
-        sortBy: ['modificationTime'],
-      });
+    // Single page lookup (first: 50) instead of unbounded 1,000-asset paging per file
+    const res = await MediaLibrary.getAssetsAsync({
+      mediaType,
+      first: 50,
+      sortBy: ['modificationTime'],
+    });
 
-      for (const asset of res.assets) {
-        if (asset.filename !== params.fileName) continue;
-        const stat = await statLocalFileUri(asset.uri);
-        if (!stat.exists) continue;
+    for (const asset of res.assets) {
+      if (asset.filename !== params.fileName) continue;
+      const stat = await statLocalFileUri(asset.uri);
+      if (!stat.exists) continue;
 
-        if (expectedSize > 0 && stat.size === expectedSize) {
-          return { id: asset.id, uri: asset.uri, size: stat.size };
-        }
-        nameMatches.push({ id: asset.id, uri: asset.uri, size: stat.size });
+      if (expectedSize > 0 && stat.size === expectedSize) {
+        return { id: asset.id, uri: asset.uri, size: stat.size };
       }
-
-      if (!res.hasNextPage || !res.endCursor) break;
-      after = res.endCursor;
+      nameMatches.push({ id: asset.id, uri: asset.uri, size: stat.size });
     }
   } catch {
     return null;
@@ -326,6 +319,16 @@ export async function findMatchingMediaLibraryAsset(params: {
   }
 
   return null;
+}
+
+interface CachedLocalTarget extends ResolvedLocalTarget {
+  timestamp: number;
+}
+const resolvedTargetCache = new Map<string, CachedLocalTarget>();
+const TARGET_CACHE_TTL_MS = 5 * 60 * 1000; // 5-minute TTL
+
+export function clearResolvedTargetCache(): void {
+  resolvedTargetCache.clear();
 }
 
 /**
@@ -353,9 +356,88 @@ export async function resolveLocalFileTarget(params: {
     };
   }
 
+  // 0. In-memory Cache Check (< 0.1ms instant return for previously verified items)
+  const cacheKey = `${uri}_${fileName}_${size}_${params.mediaAssetId || ''}`;
+  const cached = resolvedTargetCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < TARGET_CACHE_TTL_MS) {
+    return {
+      exists: cached.exists,
+      size: cached.size,
+      resolvedUri: cached.resolvedUri,
+      mediaAssetId: cached.mediaAssetId,
+      canAutoDelete: cached.canAutoDelete,
+      isContentOnly: cached.isContentOnly,
+    };
+  }
+
+  const cacheAndReturn = (result: ResolvedLocalTarget): ResolvedLocalTarget => {
+    resolvedTargetCache.set(cacheKey, { ...result, timestamp: Date.now() });
+    return result;
+  };
+
   const category = getFileCategory(fileName, mimeType);
 
-  // 1. If we already have a MediaLibrary asset ID, verify via MediaLibrary first
+  // 1. Direct Fast-path for non-content URIs (file://, raw local path)
+  // Check physical disk existence FIRST before attempting any expensive MediaLibrary calls!
+  if (!uri.startsWith('content://') && !uri.startsWith('ph://')) {
+    const normalizedUri = uri.startsWith('/') ? `file://${uri}` : uri;
+    const stat = await statLocalFileUri(normalizedUri);
+    if (stat.exists) {
+      return cacheAndReturn({
+        exists: true,
+        size: stat.size > 0 ? stat.size : size,
+        resolvedUri: normalizedUri,
+        mediaAssetId: params.mediaAssetId,
+        canAutoDelete: true,
+        isContentOnly: false,
+      });
+    }
+
+    return cacheAndReturn({
+      exists: false,
+      size: 0,
+      resolvedUri: normalizedUri,
+      canAutoDelete: false,
+      isContentOnly: false,
+    });
+  }
+
+  // 2. iOS ph:// URIs
+  if (uri.startsWith('ph://')) {
+    const permitted = await hasMediaLibraryPermission(false);
+    if (permitted) {
+      try {
+        const info = await MediaLibrary.getAssetInfoAsync(uri);
+        const localUri = info?.localUri || info?.uri;
+        if (info && localUri) {
+          const stat = localUri.startsWith('ph://')
+            ? { exists: true, size }
+            : await statLocalFileUri(localUri);
+          if (stat.exists) {
+            return cacheAndReturn({
+              exists: true,
+              size: stat.size > 0 ? stat.size : size,
+              resolvedUri: localUri,
+              mediaAssetId: info.id || uri,
+              canAutoDelete: true,
+              isContentOnly: false,
+            });
+          }
+        }
+      } catch {
+        // fall through
+      }
+    }
+    return cacheAndReturn({
+      exists: false,
+      size: 0,
+      resolvedUri: uri,
+      canAutoDelete: false,
+      isContentOnly: false,
+    });
+  }
+
+  // 3. If we already have a MediaLibrary asset ID, verify via MediaLibrary
   if (params.mediaAssetId) {
     const matchedById = await findMatchingMediaLibraryAsset({
       fileName,
@@ -365,73 +447,15 @@ export async function resolveLocalFileTarget(params: {
       requestPermission: false,
     });
     if (matchedById) {
-      return {
+      return cacheAndReturn({
         exists: true,
         size: matchedById.size > 0 ? matchedById.size : size,
         resolvedUri: matchedById.uri,
         mediaAssetId: matchedById.id,
         canAutoDelete: true,
         isContentOnly: false,
-      };
+      });
     }
-  }
-
-  // 2. Non-content URIs (file://, raw local path, iOS ph://)
-  if (!uri.startsWith('content://')) {
-    if (uri.startsWith('ph://')) {
-      const permitted = await hasMediaLibraryPermission(false);
-      if (permitted) {
-        try {
-          const info = await MediaLibrary.getAssetInfoAsync(uri);
-          const localUri = info?.localUri || info?.uri;
-          if (info && localUri) {
-            const stat = localUri.startsWith('ph://')
-              ? { exists: true, size }
-              : await statLocalFileUri(localUri);
-            if (stat.exists) {
-              return {
-                exists: true,
-                size: stat.size > 0 ? stat.size : size,
-                resolvedUri: localUri,
-                mediaAssetId: info.id || uri,
-                canAutoDelete: true,
-                isContentOnly: false,
-              };
-            }
-          }
-        } catch {
-          // fall through
-        }
-      }
-      return {
-        exists: false,
-        size: 0,
-        resolvedUri: uri,
-        canAutoDelete: false,
-        isContentOnly: false,
-      };
-    }
-
-    const normalizedUri = uri.startsWith('/') ? `file://${uri}` : uri;
-    const stat = await statLocalFileUri(normalizedUri);
-    if (stat.exists) {
-      return {
-        exists: true,
-        size: stat.size > 0 ? stat.size : size,
-        resolvedUri: normalizedUri,
-        mediaAssetId: params.mediaAssetId,
-        canAutoDelete: true,
-        isContentOnly: false,
-      };
-    }
-
-    return {
-      exists: false,
-      size: 0,
-      resolvedUri: normalizedUri,
-      canAutoDelete: false,
-      isContentOnly: false,
-    };
   }
 
   // 3. content:// URIs — attempt to resolve to a persistent, deletable target
@@ -445,14 +469,14 @@ export async function resolveLocalFileTarget(params: {
       requestPermission: params.requestPermission,
     });
     if (matchedMedia) {
-      return {
+      return cacheAndReturn({
         exists: true,
         size: matchedMedia.size > 0 ? matchedMedia.size : size,
         resolvedUri: matchedMedia.uri,
         mediaAssetId: matchedMedia.id,
         canAutoDelete: true,
         isContentOnly: false,
-      };
+      });
     }
   }
 
@@ -461,14 +485,14 @@ export async function resolveLocalFileTarget(params: {
   if (directFileUri) {
     const stat = await statLocalFileUri(directFileUri);
     if (stat.exists && (size <= 0 || stat.size <= 0 || stat.size === size)) {
-      return {
+      return cacheAndReturn({
         exists: true,
         size: stat.size > 0 ? stat.size : size,
         resolvedUri: directFileUri,
         mediaAssetId: params.mediaAssetId,
         canAutoDelete: true,
         isContentOnly: false,
-      };
+      });
     }
   }
 
@@ -484,14 +508,14 @@ export async function resolveLocalFileTarget(params: {
       const candidateUri = `${dir}${fileName}`;
       const stat = await statLocalFileUri(candidateUri);
       if (stat.exists && (size <= 0 || stat.size <= 0 || stat.size === size)) {
-        return {
+        return cacheAndReturn({
           exists: true,
           size: stat.size > 0 ? stat.size : size,
           resolvedUri: candidateUri,
           mediaAssetId: params.mediaAssetId,
           canAutoDelete: false, // BUG-12: guessing path from content:// is not guaranteed, disable unsafe auto-delete
           isContentOnly: false,
-        };
+        });
       }
     }
   }
@@ -523,26 +547,26 @@ export async function resolveLocalFileTarget(params: {
   }
 
   if (!contentExists) {
-    return {
+    return cacheAndReturn({
       exists: false,
       size: 0,
       resolvedUri: uri,
       canAutoDelete: false,
       isContentOnly: true,
-    };
+    });
   }
 
   const isAutoDeletableContent =
     uri.includes('/tree/') || uri.includes('content://media/');
 
-  return {
+  return cacheAndReturn({
     exists: true,
     size: contentSize > 0 ? contentSize : size,
     resolvedUri: uri,
     mediaAssetId: extractMediaStoreAssetId(uri) || params.mediaAssetId,
     canAutoDelete: isAutoDeletableContent,
     isContentOnly: !isAutoDeletableContent,
-  };
+  });
 }
 
 const CACHE_DIR = new Directory(Paths.cache, 'nimo_upload');

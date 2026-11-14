@@ -1685,6 +1685,8 @@ export default function SettingsScreen() {
                     try {
                       const res = await LocalAuthentication.authenticateAsync({
                         promptMessage: 'Verify identity to enable App Lock',
+                        fallbackLabel: 'Use Device PIN / Passcode',
+                        disableDeviceFallback: false,
                       });
                       if (res.success) {
                         updateConfig({ biometricLockEnabled: true });

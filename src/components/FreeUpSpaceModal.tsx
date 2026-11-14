@@ -41,16 +41,17 @@ export function FreeUpSpaceModal({
   const [analysis, setAnalysis] = useState<CleanerAnalysis | null>(null);
   const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
+  const [displayLimit, setDisplayLimit] = useState(40);
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanProgress, setCleanProgress] = useState<{ current: number; total: number }>({
     current: 0,
     total: 0,
   });
 
-  const loadCandidates = async () => {
+  const loadCandidates = async (forceRefresh = false) => {
     setLoading(true);
     try {
-      const result = await analyzeCleanableSpace();
+      const result = await analyzeCleanableSpace({ forceRefresh });
       setAnalysis(result);
       // Default to selecting all eligible files
       setSelectedUris(new Set(result.candidates.map((c) => c.uri)));
@@ -63,6 +64,7 @@ export function FreeUpSpaceModal({
 
   useEffect(() => {
     if (visible) {
+      setDisplayLimit(40);
       loadCandidates();
     }
   }, [visible]);
@@ -72,6 +74,15 @@ export function FreeUpSpaceModal({
     if (activeCategory === 'all') return analysis.candidates;
     return analysis.candidates.filter((c) => c.category === activeCategory);
   }, [analysis, activeCategory]);
+
+  const paginatedCandidates = useMemo(() => {
+    return filteredCandidates.slice(0, displayLimit);
+  }, [filteredCandidates, displayLimit]);
+
+  const handleCategoryChange = (cat: CategoryFilter) => {
+    setActiveCategory(cat);
+    setDisplayLimit(40);
+  };
 
   const selectedStats = useMemo(() => {
     if (!analysis) return { count: 0, bytes: 0 };
@@ -322,7 +333,7 @@ export function FreeUpSpaceModal({
                       key={cat}
                       onPress={() => {
                         Haptics.selectionAsync().catch(() => {});
-                        setActiveCategory(cat);
+                        handleCategoryChange(cat);
                       }}
                       style={[
                         styles.catChip,
@@ -347,10 +358,20 @@ export function FreeUpSpaceModal({
                 })}
               </View>
 
-              {/* Candidates List */}
+              {/* Paginated Candidates List */}
               <FlatList
-                data={filteredCandidates}
+                data={paginatedCandidates}
                 keyExtractor={(item) => item.uri}
+                initialNumToRender={15}
+                maxToRenderPerBatch={15}
+                windowSize={5}
+                removeClippedSubviews={Platform.OS === 'android'}
+                onEndReachedThreshold={0.5}
+                onEndReached={() => {
+                  if (displayLimit < filteredCandidates.length) {
+                    setDisplayLimit((prev) => Math.min(prev + 40, filteredCandidates.length));
+                  }
+                }}
                 contentContainerStyle={[
                   styles.listContent,
                   { paddingBottom: 100 + Math.max(insets.bottom, 16) },

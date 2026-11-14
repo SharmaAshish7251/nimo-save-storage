@@ -11,7 +11,7 @@ import {
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { getConfig } from '@/lib/storage/queue';
+import { getConfig, onConfigSaved } from '@/lib/storage/queue';
 import { useAppTheme } from '@/context/ThemeContext';
 
 export function BiometricLockOverlay() {
@@ -22,36 +22,51 @@ export function BiometricLockOverlay() {
   const lastBackgroundTime = useRef<number | null>(null);
   const isAuthenticating = useRef<boolean>(false);
   const lastAuthAttemptAt = useRef<number>(0);
+  const lastUnlockedAt = useRef<number>(0);
 
-  const triggerAuth = useCallback(async () => {
+  const triggerAuth = useCallback(async (isManualTap = false) => {
     const now = Date.now();
-    // Guard against rapid duplicate prompts within 2 seconds
-    if (isAuthenticating.current || now - lastAuthAttemptAt.current < 2000) return;
+    // Guard against rapid duplicate prompts, but allow manual user taps to retry
+    if (isAuthenticating.current) return;
+    if (!isManualTap && now - lastAuthAttemptAt.current < 2000) return;
+
     isAuthenticating.current = true;
     lastAuthAttemptAt.current = now;
     setAuthError(null);
 
     try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      const [securityLevel, isEnrolled] = await Promise.all([
+        LocalAuthentication.getEnrolledLevelAsync().catch(
+          () => LocalAuthentication.SecurityLevel.NONE
+        ),
+        LocalAuthentication.isEnrolledAsync().catch(() => false),
+      ]);
 
-      if (!hasHardware || !isEnrolled) {
-        // Device has no enrolled biometrics/passcode, safely unlock
+      const hasSecurity =
+        securityLevel !== LocalAuthentication.SecurityLevel.NONE || isEnrolled;
+
+      if (!hasSecurity) {
+        // Device has no screen lock (no PIN, pattern, passcode, or biometrics), safely unlock
         setIsLocked(false);
+        lastUnlockedAt.current = Date.now();
         return;
       }
 
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock Nimo Save Storage',
-        fallbackLabel: 'Use Device Passcode',
+        fallbackLabel: 'Use Device PIN / Passcode',
         cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
       });
 
       lastAuthAttemptAt.current = Date.now();
 
       if (result.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        lastUnlockedAt.current = Date.now();
+        lastBackgroundTime.current = null;
         setIsLocked(false);
+        setAuthError(null);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
         setAuthError(result.error || 'Authentication required');
@@ -59,7 +74,11 @@ export function BiometricLockOverlay() {
     } catch (err: any) {
       setAuthError(err?.message || 'Authentication error');
     } finally {
-      isAuthenticating.current = false;
+      // Delay clearing isAuthenticating slightly to ensure the system BiometricPrompt dismiss
+      // does not trigger a false AppState background/active re-lock loop
+      setTimeout(() => {
+        isAuthenticating.current = false;
+      }, 600);
     }
   }, []);
 
@@ -68,7 +87,7 @@ export function BiometricLockOverlay() {
       const appConfig = await getConfig();
       if (appConfig.biometricLockEnabled) {
         setIsLocked(true);
-        triggerAuth();
+        triggerAuth(false);
       }
     } catch (err) {
       console.warn('[Biometric] Failed to check initial lock state:', err);
@@ -78,28 +97,51 @@ export function BiometricLockOverlay() {
   useEffect(() => {
     checkLockState();
 
+    const unsubConfig = onConfigSaved((newCfg) => {
+      if (!newCfg.biometricLockEnabled) {
+        setIsLocked(false);
+        setAuthError(null);
+      }
+    });
+
     const subscription = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       const currentConfig = await getConfig().catch(() => null);
-      if (!currentConfig?.biometricLockEnabled) return;
+      if (!currentConfig?.biometricLockEnabled) {
+        setIsLocked(false);
+        return;
+      }
+
+      // CRITICAL: When the system BiometricPrompt dialog opens on Android, Android fires
+      // AppState 'inactive'/'background', and when it closes it fires 'active'.
+      // If we are currently in the middle of authenticating, DO NOT record background time or re-lock!
+      if (isAuthenticating.current) {
+        return;
+      }
 
       if (nextState.match(/inactive|background/)) {
         lastBackgroundTime.current = Date.now();
       } else if (nextState === 'active') {
+        // If user unlocked within the last 5 seconds, ignore active event to prevent infinite re-lock
+        if (Date.now() - lastUnlockedAt.current < 5000) {
+          return;
+        }
+
         const timeoutSec = currentConfig.biometricLockTimeout ?? 0;
         const lastBg = lastBackgroundTime.current || 0;
-        const elapsedSec = (Date.now() - lastBg) / 1000;
-        const timeSinceLastPrompt = Date.now() - lastAuthAttemptAt.current;
+        const elapsedSec = lastBg > 0 ? (Date.now() - lastBg) / 1000 : 0;
 
-        // Prevent infinite re-prompt loops when biometric dialog dismisses and AppState becomes active
-        if ((timeoutSec === 0 || elapsedSec >= timeoutSec) && timeSinceLastPrompt > 2500) {
+        // Only lock if the app was genuinely backgrounded for longer than timeoutSec
+        if (lastBg > 0 && (timeoutSec === 0 || elapsedSec >= timeoutSec)) {
+          lastBackgroundTime.current = null;
           setIsLocked(true);
-          triggerAuth();
+          triggerAuth(false);
         }
       }
     });
 
     return () => {
       subscription.remove();
+      unsubConfig();
     };
   }, [checkLockState, triggerAuth]);
 
@@ -126,7 +168,7 @@ export function BiometricLockOverlay() {
 
         <Text style={[styles.title, { color: textColor }]}>Nimo Save Storage</Text>
         <Text style={[styles.subtitle, { color: subtextColor }]}>
-          Protected by Biometric Security
+          Protected by Biometric & Device Passcode
         </Text>
 
         {authError ? (
@@ -140,7 +182,7 @@ export function BiometricLockOverlay() {
           style={styles.unlockBtn}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            triggerAuth();
+            triggerAuth(true);
           }}
           activeOpacity={0.8}
         >

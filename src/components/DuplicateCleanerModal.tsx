@@ -1,11 +1,13 @@
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   StyleSheet,
   Text,
   Modal,
   TouchableOpacity,
-  ScrollView,
+  FlatList,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -45,10 +47,75 @@ export function DuplicateCleanerModal({
   const subtextColor = isDark ? '#94A3B8' : '#64748B';
   const border = isDark ? '#334155' : '#E2E8F0';
 
+  const [displayLimit, setDisplayLimit] = useState(30);
+
+  useEffect(() => {
+    if (visible) {
+      setDisplayLimit(30);
+    }
+  }, [visible]);
+
+  const paginatedGroups = useMemo(() => {
+    return groups.slice(0, displayLimit);
+  }, [groups, displayLimit]);
+
   const handleClean = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     await onClean('oldest');
   };
+
+  const renderGroupItem = ({ item: group }: { item: DuplicateGroup }) => {
+    const primaryFile = group.files[0];
+    return (
+      <View
+        key={group.id}
+        style={[styles.groupCard, { backgroundColor: cardBg, borderColor: border }]}
+      >
+        <View style={styles.groupCardHeader}>
+          <View style={styles.fileIconBox}>
+            <FontAwesome name="file" size={16} color="#208AEF" />
+          </View>
+          <View style={styles.groupCardInfo}>
+            <Text style={[styles.fileName, { color: textColor }]} numberOfLines={1}>
+              {primaryFile.name}
+            </Text>
+            <Text style={[styles.fileMeta, { color: subtextColor }]}>
+              {formatFileSize(group.size)} each • {group.files.length} identical copies
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.actionTagsRow}>
+          <View style={styles.preserveTag}>
+            <FontAwesome name="shield" size={10} color="#059669" />
+            <Text style={styles.preserveTagText}>
+              Keep: {primaryFile.name}
+            </Text>
+          </View>
+          <View style={styles.deleteTag}>
+            <FontAwesome name="trash-o" size={10} color="#DC2626" />
+            <Text style={styles.deleteTagText}>
+              Remove {group.files.length - 1} {group.files.length - 1 === 1 ? 'copy' : 'copies'}
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderHeader = () => (
+    <View style={[styles.summaryBanner, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A', marginBottom: 12 }]}>
+      <FontAwesome name="info-circle" size={16} color="#D97706" style={{ marginTop: 2 }} />
+      <View style={styles.summaryTextCol}>
+        <Text style={styles.summaryTitle}>
+          {totalDuplicates} duplicate {totalDuplicates === 1 ? 'file' : 'files'} detected
+        </Text>
+        <Text style={styles.summarySub}>
+          You can free up ~{formatFileSize(totalWastedBytes)} by removing duplicate copies. The original file will always be preserved.
+        </Text>
+      </View>
+    </View>
+  );
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -101,60 +168,25 @@ export function DuplicateCleanerModal({
           </View>
         ) : (
           <View style={styles.mainContent}>
-            {/* Summary Banner */}
-            <View style={[styles.summaryBanner, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
-              <FontAwesome name="info-circle" size={16} color="#D97706" style={{ marginTop: 2 }} />
-              <View style={styles.summaryTextCol}>
-                <Text style={styles.summaryTitle}>
-                  {totalDuplicates} duplicate {totalDuplicates === 1 ? 'file' : 'files'} detected
-                </Text>
-                <Text style={styles.summarySub}>
-                  You can free up ~{formatFileSize(totalWastedBytes)} by removing duplicate copies. The original file will always be preserved.
-                </Text>
-              </View>
-            </View>
-
-            {/* List of Duplicate Groups */}
-            <ScrollView style={styles.scrollList} contentContainerStyle={styles.scrollContent}>
-              {groups.map((group) => {
-                const primaryFile = group.files[0];
-                return (
-                  <View
-                    key={group.id}
-                    style={[styles.groupCard, { backgroundColor: cardBg, borderColor: border }]}
-                  >
-                    <View style={styles.groupCardHeader}>
-                      <View style={styles.fileIconBox}>
-                        <FontAwesome name="file" size={16} color="#208AEF" />
-                      </View>
-                      <View style={styles.groupCardInfo}>
-                        <Text style={[styles.fileName, { color: textColor }]} numberOfLines={1}>
-                          {primaryFile.name}
-                        </Text>
-                        <Text style={[styles.fileMeta, { color: subtextColor }]}>
-                          {formatFileSize(group.size)} each • {group.files.length} identical copies
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.actionTagsRow}>
-                      <View style={styles.preserveTag}>
-                        <FontAwesome name="shield" size={10} color="#059669" />
-                        <Text style={styles.preserveTagText}>
-                          Keep: {primaryFile.name}
-                        </Text>
-                      </View>
-                      <View style={styles.deleteTag}>
-                        <FontAwesome name="trash-o" size={10} color="#DC2626" />
-                        <Text style={styles.deleteTagText}>
-                          Remove {group.files.length - 1} {group.files.length - 1 === 1 ? 'copy' : 'copies'}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                );
-              })}
-            </ScrollView>
+            {/* Paginated List of Duplicate Groups */}
+            <FlatList
+              data={paginatedGroups}
+              keyExtractor={(item) => item.id}
+              renderItem={renderGroupItem}
+              ListHeaderComponent={renderHeader}
+              initialNumToRender={10}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              removeClippedSubviews={Platform.OS === 'android'}
+              onEndReachedThreshold={0.5}
+              onEndReached={() => {
+                if (displayLimit < groups.length) {
+                  setDisplayLimit((prev) => Math.min(prev + 30, groups.length));
+                }
+              }}
+              style={styles.scrollList}
+              contentContainerStyle={styles.scrollContent}
+            />
 
             {/* Footer Action Bar */}
             <View

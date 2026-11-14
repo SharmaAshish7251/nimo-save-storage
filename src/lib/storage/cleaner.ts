@@ -12,6 +12,7 @@ import {
   resolveLocalFileTarget,
   findMatchingMediaLibraryAsset,
   extractMediaStoreAssetId,
+  clearResolvedTargetCache,
 } from './fileHelper';
 import { verifyCloudRecord } from './cloudSync';
 
@@ -57,11 +58,26 @@ export interface CleanResult {
   blockedCount: number;
 }
 
+let cachedCleanerAnalysis: CleanerAnalysis | null = null;
+let lastCleanerAnalysisAt = 0;
+const CLEANER_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+export function invalidateCleanerAnalysisCache(): void {
+  cachedCleanerAnalysis = null;
+  lastCleanerAnalysisAt = 0;
+}
+
 /**
  * Scans all confirmed cloud-uploaded files and checks which ones still
  * consume physical space on the local device.
+ * Employs a 2-minute in-memory cache to make repeated modal openings instant (0ms).
  */
-export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
+export async function analyzeCleanableSpace(options: { forceRefresh?: boolean } = {}): Promise<CleanerAnalysis> {
+  const now = Date.now();
+  if (!options.forceRefresh && cachedCleanerAnalysis && (now - lastCleanerAnalysisAt < CLEANER_CACHE_TTL_MS)) {
+    return cachedCleanerAnalysis;
+  }
+
   const [uploaded, queue] = await Promise.all([
     getUploadedIndex(),
     getQueue().catch(() => []),
@@ -136,7 +152,7 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
 
   await Promise.all(tasks);
 
-  return {
+  const result: CleanerAnalysis = {
     candidates,
     totalBytes,
     totalCount: candidates.length,
@@ -146,6 +162,11 @@ export async function analyzeCleanableSpace(): Promise<CleanerAnalysis> {
     restrictedCount: restrictedCandidates.length,
     pendingQueueCount,
   };
+
+  cachedCleanerAnalysis = result;
+  lastCleanerAnalysisAt = Date.now();
+
+  return result;
 }
 
 /**
@@ -300,6 +321,12 @@ export async function executeCleanSpace(
     if (onProgress) {
       onProgress(i + 1, items.length);
     }
+  }
+
+  // Invalidate cleaner analysis and target caches when files were cleaned
+  if (freedCount > 0) {
+    invalidateCleanerAnalysisCache();
+    clearResolvedTargetCache();
   }
 
   return {

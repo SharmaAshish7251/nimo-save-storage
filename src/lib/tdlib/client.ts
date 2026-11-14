@@ -727,11 +727,20 @@ class TdLibClientService {
       let fileId: number | null = null;
       let sentMessageId: number | null = null;
       let timeoutId: any = null;
+      let stallIntervalId: any = null;
       let isDone = false;
+      let lastActivityAt = Date.now();
+
+      // Correlate TDLib request and its immediate response using a unique @extra
+      const sendExtra = `send_file_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+      const touchActivity = () => {
+        lastActivityAt = Date.now();
+      };
 
       const handleAbort = () => {
         if (isDone) return;
-        console.log('[TdLib sendFile] Aborting upload due to pause signal', { fileId, sentMessageId });
+        console.log('[TdLib sendFile] Aborting upload due to pause signal', { fileId, sentMessageId, sendExtra });
         if (sentMessageId !== null) {
           TdLib.deleteMessages(targetChatId, [sentMessageId], true).catch(() => {});
         }
@@ -756,30 +765,58 @@ class TdLibClientService {
         if (timeoutId) {
           clearTimeout(timeoutId);
         }
+        if (stallIntervalId) {
+          clearInterval(stallIntervalId);
+        }
         this.updateListeners.delete(updateHandler);
         if (isTemp) {
           await cleanupTempFile(localPath);
         }
       };
 
-      // 15 minute upload timeout safety
+      // 10-minute maximum upload safety window
       timeoutId = setTimeout(() => {
         cleanup();
-        reject(new Error('TDLib upload timed out after 15 minutes'));
-      }, 15 * 60 * 1000);
+        reject(new Error('TDLib upload timed out after 10 minutes'));
+      }, 10 * 60 * 1000);
+
+      // Active Stall Watchdog: Detects dead/frozen transfers without waiting 10 minutes.
+      // If no progress event or message response arrives for 90 seconds, treat as stalled.
+      stallIntervalId = setInterval(() => {
+        if (isDone) return;
+        const idleMs = Date.now() - lastActivityAt;
+        if (idleMs > 90_000) {
+          console.warn(`[TdLib sendFile] Stalled transfer detected for ${fileName} (idle ${Math.round(idleMs / 1000)}s)`);
+          cleanup();
+          reject(new Error(`TDLib upload stalled: no activity detected for 90s`));
+        }
+      }, 15_000);
 
       const updateHandler = (rawType: string, data: any) => {
         if (isDone) return;
         const type = (rawType || '').toLowerCase();
 
-        // 0. Immediate error response from TDLib (e.g. Chat not found, File error)
-        if (type === 'error' && data) {
-          const errCode = data.code ?? data['@extra'] ?? 400;
-          const errMsg = data.message || 'TDLib operation failed';
-          console.error('[TdLib sendFile] Received TDLib error:', errCode, errMsg);
-          cleanup();
-          reject(new Error(`TDLib error [${errCode}]: ${errMsg}`));
-          return;
+        // 0. Immediate response to our specific sendMessage request via @extra correlation
+        if (data && data['@extra'] === sendExtra) {
+          touchActivity();
+          if (type === 'error' || data['@type'] === 'error') {
+            const errCode = data.code ?? 400;
+            const errMsg = data.message || 'TDLib operation failed';
+            console.error(`[TdLib sendFile] Received TDLib error for ${sendExtra}:`, errCode, errMsg);
+            cleanup();
+            reject(new Error(`TDLib error [${errCode}]: ${errMsg}`));
+            return;
+          }
+
+          if (type === 'message' || data['@type'] === 'message') {
+            sentMessageId = data.id;
+            const doc = data.content?.document;
+            const docFileId = doc?.document?.id;
+            if (docFileId) {
+              fileId = docFileId;
+            }
+            console.log(`[TdLib sendFile] Linked sentMessageId directly via @extra:`, sentMessageId, 'fileId:', fileId);
+          }
         }
 
         // 1. Track file upload progress via updateFile
@@ -789,10 +826,11 @@ class TdLibClientService {
 
           if (fileId === null && filePath && pathsMatch(filePath, localPath)) {
             fileId = file.id;
-            console.log('[TdLib sendFile] Linked fileId from updateFile:', fileId);
+            console.log('[TdLib sendFile] Linked fileId from updateFile path match:', fileId);
           }
 
           if (fileId !== null && file.id === fileId) {
+            touchActivity();
             const uploadedSize = file.remote?.uploaded_size ?? (file.remote as any)?.uploadedSize ?? 0;
             const totalSize = file.expected_size ?? (file as any)?.expectedSize ?? file.size ?? 1;
             const progress = Math.min(1, Math.max(0, uploadedSize / totalSize));
@@ -807,7 +845,7 @@ class TdLibClientService {
           }
         }
 
-        // 2. Track outgoing message creation (via direct result or updateNewMessage)
+        // 2. Fallback tracking for outgoing message creation via updateNewMessage
         const isMsg = type === 'message' || type === 'updatenewmessage';
         const msg = type === 'message' ? data : data?.message;
         if (isMsg && msg) {
@@ -822,15 +860,16 @@ class TdLibClientService {
             const matchesDoc =
               (docPath && pathsMatch(docPath, localPath)) ||
               (docFileName && docFileName === fileName) ||
-              (captionText && captionText === fileName) ||
+              (captionText && (captionText === fileName || (caption && captionText === caption))) ||
               (fileId !== null && docFileId === fileId);
 
             if (matchesDoc) {
+              touchActivity();
               sentMessageId = msg.id;
               if (docFileId) {
                 fileId = docFileId;
               }
-              console.log('[TdLib sendFile] Found outgoing message id:', sentMessageId, 'fileId:', fileId);
+              console.log('[TdLib sendFile] Confirmed outgoing message id:', sentMessageId, 'fileId:', fileId);
             }
           }
         }
@@ -841,12 +880,13 @@ class TdLibClientService {
           const oldId = data.old_message_id ?? data.oldMessageId;
           const doc = msg.content?.document;
           const docFileId = doc?.document?.id;
+          const docPath = doc?.document?.local?.path;
 
           const matchesSentId = sentMessageId !== null && (msg.id === sentMessageId || oldId === sentMessageId);
           const matchesFileId = fileId !== null && docFileId === fileId;
+          const matchesPath = docPath && pathsMatch(docPath, localPath);
 
-          // Fix 1.3: Only resolve on sentMessageId or fileId — no ambiguous filename-only matching
-          if (matchesSentId || matchesFileId) {
+          if (matchesSentId || matchesFileId || matchesPath) {
             console.log('[TdLib sendFile] Message send succeeded!', msg.id);
             if (onProgress) onProgress(1);
             cleanup();
@@ -881,11 +921,11 @@ class TdLibClientService {
         abortSignal.addEventListener('abort', handleAbort, { once: true });
       }
 
-      // Send the document directly using inputFileLocal!
-      // TDLib C++ MTProto uploads and sends it in a single native pipeline.
-      console.log('[TdLib sendFile] Dispatching sendMessage to targetChatId:', targetChatId, 'path:', localPath);
+      // Send the document directly using inputFileLocal with explicit @extra
+      console.log('[TdLib sendFile] Dispatching sendMessage to targetChatId:', targetChatId, 'path:', localPath, 'extra:', sendExtra);
       TdLib.td_json_client_send({
         '@type': 'sendMessage',
+        '@extra': sendExtra,
         chat_id: targetChatId,
         input_message_content: {
           '@type': 'inputMessageDocument',

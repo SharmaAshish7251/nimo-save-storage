@@ -290,33 +290,68 @@ export class UploadManager {
             await this.updateItemStatus(item.id, 'paused', item.progress ?? 0);
             return;
           }
-          try {
-            await this.uploadItem(item);
-            if (!this.pausedItemIds.has(item.id) && !this.isPaused) {
-              uploadedCount++;
-              this.completedBatchItems++;
-              this.uploadedBatchBytes += (item.size || 0);
-              const batchPercent = this.totalBatchBytes > 0
-                ? Math.round((this.uploadedBatchBytes / this.totalBatchBytes) * 100)
-                : Math.round((this.completedBatchItems / this.totalBatchItems) * 100);
-              uploadNotificationService.showUploadProgress(
-                this.completedBatchItems,
-                this.totalBatchItems,
-                batchPercent,
-                0,
-                0
-              ).catch(() => {});
-            }
-          } catch (err: any) {
-            if (err?.message === 'UPLOAD_PAUSED') {
+
+          let attempts = 0;
+          const maxAttempts = 3;
+          let lastErr: any = null;
+
+          while (attempts < maxAttempts) {
+            if (this.isPaused || this.pausedItemIds.has(item.id)) {
               pausedCount++;
+              await this.updateItemStatus(item.id, 'paused', item.progress ?? 0);
               return;
             }
+
+            try {
+              await this.uploadItem(item);
+              lastErr = null;
+              break;
+            } catch (err: any) {
+              lastErr = err;
+              if (err?.message === 'UPLOAD_PAUSED') {
+                pausedCount++;
+                return;
+              }
+
+              attempts++;
+
+              // Check if rate limited by Telegram MTProto (FLOOD_WAIT)
+              const floodMatch = String(err?.message || '').match(/FLOOD_WAIT_(\d+)/i);
+              if (floodMatch && floodMatch[1]) {
+                const waitSec = Math.min(60, parseInt(floodMatch[1], 10) + 1);
+                console.warn(`[UploadManager] Flood wait encountered for ${item.fileName}: waiting ${waitSec}s`);
+                await new Promise((r) => setTimeout(r, waitSec * 1000));
+                continue;
+              }
+
+              // Transient error (stall, socket reset, network drop) — retry with backoff
+              if (attempts < maxAttempts) {
+                console.warn(`[UploadManager] Auto-retrying ${item.fileName} (attempt ${attempts + 1}/${maxAttempts}) after error:`, err?.message);
+                await new Promise((r) => setTimeout(r, 2000 * attempts));
+              }
+            }
+          }
+
+          if (lastErr) {
             failedCount++;
-            const msg = err.message || 'Upload failed';
+            const msg = lastErr.message || 'Upload failed';
             if (!errorMessages.includes(msg)) {
               errorMessages.push(msg);
             }
+          } else if (!this.pausedItemIds.has(item.id) && !this.isPaused) {
+            uploadedCount++;
+            this.completedBatchItems++;
+            this.uploadedBatchBytes += (item.size || 0);
+            const batchPercent = this.totalBatchBytes > 0
+              ? Math.round((this.uploadedBatchBytes / this.totalBatchBytes) * 100)
+              : Math.round((this.completedBatchItems / this.totalBatchItems) * 100);
+            uploadNotificationService.showUploadProgress(
+              this.completedBatchItems,
+              this.totalBatchItems,
+              batchPercent,
+              0,
+              0
+            ).catch(() => {});
           }
         });
       }

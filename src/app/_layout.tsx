@@ -3,7 +3,7 @@ import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
@@ -12,6 +12,7 @@ import { ThemeProvider as AppThemeProvider, useAppTheme } from '@/context/ThemeC
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
+import { BottomNavBar } from '@/components/BottomNavBar';
 import { recoverInterruptedUploads } from '@/lib/storage/queue';
 import { vaultService } from '@/lib/crypto/vault';
 import '@/app/logs'; // Initialize log capture
@@ -36,16 +37,19 @@ function RootLayoutNav() {
   return (
     <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <Stack>
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
-        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-        <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
-        <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
-        <Stack.Screen name="logs" options={{ title: 'Logs' }} />
-        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      </Stack>
-      <BiometricLockOverlay />
+      <View style={{ flex: 1 }}>
+        <Stack>
+          <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="telegram-login" options={{ title: 'Connect Telegram' }} />
+          <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+          <Stack.Screen name="upload" options={{ title: 'Upload Queue' }} />
+          <Stack.Screen name="explore" options={{ title: 'Cloud Explorer' }} />
+          <Stack.Screen name="logs" options={{ title: 'Logs' }} />
+          <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+        </Stack>
+        <BottomNavBar />
+        <BiometricLockOverlay />
+      </View>
     </ThemeProvider>
   );
 }

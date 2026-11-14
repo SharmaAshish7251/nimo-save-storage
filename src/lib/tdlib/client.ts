@@ -955,9 +955,10 @@ class TdLibClientService {
     const numId = Number(chatId);
     if (!Number.isFinite(numId) || numId === 0) return false;
 
-    // Check if it's saved messages
+    // Check if it's saved messages or user's own account
     const savedId = await this.getSavedMessagesChatId().catch(() => null);
-    if (savedId && numId === savedId) return true;
+    const me = await this.getMe().catch(() => null);
+    if ((savedId && numId === savedId) || (me && numId === me.id)) return true;
 
     console.log(`[TdLib] Ensuring chat is loaded in memory: ${numId}...`);
 
@@ -975,6 +976,21 @@ class TdLibClientService {
         return true;
       }
     } catch {}
+
+    // 1b. If it's a positive number (user/private chat), try createPrivateChat
+    if (numId > 0) {
+      try {
+        const privChat = await this.sendTdRequest<any>(
+          { '@type': 'createPrivateChat', user_id: numId, force: false },
+          (type, data) => type === 'chat' || data?.['@type'] === 'chat',
+          2500
+        );
+        if (privChat && privChat.id) {
+          console.log(`[TdLib] Private chat ${numId} loaded via createPrivateChat`);
+          return true;
+        }
+      } catch {}
+    }
 
     // 2. If it's a supergroup/channel (-100...), try createSupergroupChat
     const chatIdStr = String(numId);
@@ -1301,22 +1317,43 @@ class TdLibClientService {
    */
   public async resolveTargetChatId(targetChat: string = 'me'): Promise<number> {
     await this.init();
-    if (targetChat === 'me' || !targetChat) {
+    const targetChatStr = typeof targetChat === 'string' ? targetChat.trim() : String(targetChat ?? 'me').trim();
+    if (targetChatStr === 'me' || !targetChatStr) {
       return await this.getSavedMessagesChatId();
-    } else if (typeof targetChat === 'string' && targetChat.startsWith('@')) {
-      const rawChat = await TdLib.searchPublicChat(targetChat.replace(/^@/, ''));
+    }
+
+    // Check if targetChat matches Saved Messages or user's own ID
+    const me = await this.getMe().catch(() => null);
+    const savedId = await this.getSavedMessagesChatId().catch(() => null);
+    if (
+      (me && (targetChatStr === String(me.id) || Number(targetChatStr) === me.id)) ||
+      (savedId && (targetChatStr === String(savedId) || Number(targetChatStr) === savedId))
+    ) {
+      return savedId || me!.id;
+    }
+
+    if (targetChatStr.startsWith('@')) {
+      const rawChat = await TdLib.searchPublicChat(targetChatStr.replace(/^@/, ''));
       const chat = typeof rawChat === 'string' ? JSON.parse(rawChat) : rawChat;
       if (!chat?.id) throw new Error(`Could not resolve channel: ${targetChat}`);
       return chat.id;
-    } else {
-      let rawStr = typeof targetChat === 'string' ? targetChat.trim() : String(targetChat);
-      if (/^\d{9,}$/.test(rawStr)) {
-        rawStr = `-100${rawStr}`;
-      }
-      const parsed = parseInt(rawStr, 10);
+    }
+
+    if (targetChatStr.startsWith('-')) {
+      const parsed = parseInt(targetChatStr, 10);
       if (isNaN(parsed)) throw new Error(`Invalid chat ID: ${targetChat}`);
       return parsed;
     }
+
+    const rawNum = parseInt(targetChatStr, 10);
+    if (!isNaN(rawNum)) {
+      if (/^\d{9,}$/.test(targetChatStr)) {
+        return parseInt(`-100${targetChatStr}`, 10);
+      }
+      return rawNum;
+    }
+
+    throw new Error(`Invalid chat ID: ${targetChat}`);
   }
 
   /**

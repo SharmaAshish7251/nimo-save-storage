@@ -156,6 +156,91 @@ export async function getFilesFromAlbum(
       });
     }
 
+    if (abortSignal?.aborted) return files;
+
+    // Scan physical folder directory for all file types (documents, archives, custom user extensions)
+    let resolvedDirUri: string | null = null;
+
+    // 1. Try resolving physical directory URI from sample assets in this album
+    for (const asset of assets.assets.slice(0, 5)) {
+      let fileUri = asset.uri;
+      if (!fileUri.startsWith('file://')) {
+        try {
+          const assetInfo = await MediaLibrary.getAssetInfoAsync(asset.id).catch(() => null);
+          if (assetInfo?.localUri && assetInfo.localUri.startsWith('file://')) {
+            fileUri = assetInfo.localUri;
+          }
+        } catch {}
+      }
+      if (fileUri.startsWith('file://')) {
+        const cleanUri = fileUri.split('?')[0];
+        const lastSlash = cleanUri.lastIndexOf('/');
+        if (lastSlash > 7) {
+          resolvedDirUri = cleanUri.substring(0, lastSlash);
+          break;
+        }
+      }
+    }
+
+    // 2. Fallback: try common device directory paths matching folderTitle
+    if (!resolvedDirUri && folderTitle) {
+      const candidateDirs = [
+        `file:///storage/emulated/0/${folderTitle}`,
+        `file:///storage/emulated/0/Download/${folderTitle}`,
+        `file:///storage/emulated/0/Documents/${folderTitle}`,
+        `file:///storage/emulated/0/DCIM/${folderTitle}`,
+        `file:///storage/emulated/0/Pictures/${folderTitle}`,
+        `file:///storage/emulated/0/Movies/${folderTitle}`,
+        `file:///storage/emulated/0/Music/${folderTitle}`,
+      ];
+      for (const cand of candidateDirs) {
+        try {
+          const info = await FileSystem.getInfoAsync(cand);
+          if (info.exists && (info as any).isDirectory) {
+            resolvedDirUri = cand;
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    // 3. If directory resolved, read all entries and add any non-media / document / custom files
+    if (resolvedDirUri) {
+      try {
+        const dirEntries = await FileSystem.readDirectoryAsync(resolvedDirUri);
+        const existingNames = new Set(files.map((f) => f.fileName.toLowerCase()));
+
+        for (const entry of dirEntries) {
+          if (abortSignal?.aborted) break;
+          if (existingNames.has(entry.toLowerCase())) continue;
+          if (entry.startsWith('.') || entry.toLowerCase() === 'thumbs.db') continue;
+
+          const fullFileUri = `${resolvedDirUri}/${entry}`;
+          try {
+            const info = await FileSystem.getInfoAsync(fullFileUri);
+            if (!info.exists || (info as any).isDirectory) continue;
+
+            const ext = entry.split('.').pop()?.toLowerCase() || '';
+            const mimeType = inferMimeType(ext) || 'application/octet-stream';
+
+            files.push({
+              uri: fullFileUri,
+              fileName: entry,
+              size: (info as any).size || 0,
+              mimeType,
+              modificationTime: (info as any).modificationTime
+                ? (info as any).modificationTime * 1000
+                : undefined,
+              source: 'document',
+              folderName: folderTitle,
+            });
+          } catch {}
+        }
+      } catch (fsErr) {
+        console.warn(`[getFilesFromAlbum] Direct directory scan of ${resolvedDirUri} failed or restricted:`, fsErr);
+      }
+    }
+
     return files;
   } catch (error) {
     console.error(`Error loading album ${albumId}:`, error);

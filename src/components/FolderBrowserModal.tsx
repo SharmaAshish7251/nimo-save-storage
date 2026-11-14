@@ -108,9 +108,14 @@ export function FolderBrowserModal({
     if (loading) return;
     setLoading(true);
     try {
-      setFolderName(`Gallery: ${album.title}`);
+      setFolderName(`Folder: ${album.title}`);
       const files = await getFilesFromAlbum(album.id, album.title);
       setAllFiles(files);
+      if (files.length > 0) {
+        setAlbums((prev) =>
+          prev.map((a) => (a.id === album.id ? { ...a, assetCount: files.length } : a))
+        );
+      }
       // By default start unselected (user chooses what they want)
       setSelectedUris(new Set());
       setStep('select_files');
@@ -278,7 +283,7 @@ export function FolderBrowserModal({
       <View style={styles.modalOverlay}>
         <View style={[styles.modalContainer, { backgroundColor: modalBg }]}>
           {/* Header */}
-          <View style={styles.header}>
+          <View style={[styles.header, { borderBottomColor: borderColor }]}>
             <View>
               <Text style={[styles.headerTitle, { color: textColor }]}>
                 {step === 'pick_folder' ? 'Choose Folders to Scan' : folderName}
@@ -319,9 +324,9 @@ export function FolderBrowserModal({
               </TouchableOpacity>
 
               <View style={[styles.infoBanner, isDark && styles.infoBannerDark]}>
-                <FontAwesome name="info-circle" size={13} color="#208AEF" style={{ marginRight: 6, marginTop: 1 }} />
+                <FontAwesome name="check-circle" size={13} color="#10B981" style={{ marginRight: 6, marginTop: 1 }} />
                 <Text style={[styles.infoBannerText, isDark && styles.infoBannerTextDark]}>
-                  Gallery albums below only index photos & videos. To watch or scan documents (PDF, Word, ZIP, APK) or custom file types, tap &ldquo;+ Add Device Storage Folder&rdquo; above.
+                  All watched folders automatically scan all file types (photos, videos, audio, documents, and custom file types configured in Settings).
                 </Text>
               </View>
 
@@ -348,7 +353,20 @@ export function FolderBrowserModal({
                 renderItem={({ item }) => {
                   const isChecked = selectedFolderIds.has(item.id);
                   return (
-                    <View style={[styles.albumItem, { backgroundColor: itemBg }, isChecked && styles.albumItemActive]}>
+                    <View
+                      style={[
+                        styles.albumItem,
+                        {
+                          backgroundColor: isChecked
+                            ? isDark
+                              ? 'rgba(32, 138, 239, 0.22)'
+                              : '#EBF4FF'
+                            : itemBg,
+                          borderColor: isChecked ? '#208AEF' : isDark ? borderColor : 'transparent',
+                          borderWidth: 1,
+                        },
+                      ]}
+                    >
                       <TouchableOpacity
                         style={styles.checkboxTouch}
                         onPress={() =>
@@ -394,10 +412,16 @@ export function FolderBrowserModal({
                             </Text>
                             {(item as any).needsPermission && (
                               <TouchableOpacity
-                                style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 6 }}
+                                style={{
+                                  backgroundColor: isDark ? '#451A03' : '#FEF3C7',
+                                  paddingHorizontal: 6,
+                                  paddingVertical: 2,
+                                  borderRadius: 4,
+                                  marginLeft: 6,
+                                }}
                                 onPress={handleSelectSAFDirectory}
                               >
-                                <Text style={{ fontSize: 10, color: '#D97706', fontWeight: '700' }}>Re-authorize</Text>
+                                <Text style={{ fontSize: 10, color: isDark ? '#FBBF24' : '#D97706', fontWeight: '700' }}>Re-authorize</Text>
                               </TouchableOpacity>
                             )}
                           </View>
@@ -568,7 +592,17 @@ export function FolderBrowserModal({
                   const category = getFileCategory(item.fileName, item.mimeType, customFileTypes);
                   return (
                     <TouchableOpacity
-                      style={[styles.fileItem, { backgroundColor: itemBg }, isSelected && styles.fileItemActive]}
+                      style={[
+                        styles.fileItem,
+                        {
+                          backgroundColor: isSelected
+                            ? isDark
+                              ? 'rgba(32, 138, 239, 0.22)'
+                              : '#F0F7FF'
+                            : itemBg,
+                          borderBottomColor: borderColor,
+                        },
+                      ]}
                       onPress={() => toggleSelect(item.uri)}
                       activeOpacity={0.7}
                     >
@@ -611,26 +645,34 @@ export function FolderBrowserModal({
               <View
                 style={[
                   styles.bottomBar,
-                  { paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 34 : 16) + 14 },
+                  {
+                    backgroundColor: modalBg,
+                    borderTopColor: borderColor,
+                    paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 34 : 16) + 14,
+                  },
                 ]}
               >
                 <View style={styles.selectionSummary}>
-                  <Text style={styles.summaryCount}>
+                  <Text style={[styles.summaryCount, { color: textColor }]}>
                     {selectedFiles.length} files selected
                   </Text>
-                  <Text style={styles.summarySize}>
+                  <Text style={[styles.summarySize, { color: subtextColor }]}>
                     {formatFileSize(totalSelectedBytes)}
                   </Text>
                 </View>
                 <View style={styles.actionButtons}>
                   <TouchableOpacity
-                    style={[styles.queueBtn, selectedFiles.length === 0 && styles.disabledBtn]}
+                    style={[
+                      styles.queueBtn,
+                      isDark && { backgroundColor: itemBg, borderColor, borderWidth: 1 },
+                      selectedFiles.length === 0 && styles.disabledBtn,
+                    ]}
                     disabled={selectedFiles.length === 0}
                     onPress={() => confirmSelection(false)}
                   >
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                       <FontAwesome name="plus" size={13} color="#208AEF" style={{ marginRight: 6 }} />
-                      <Text style={styles.queueBtnText} numberOfLines={1}>Add to Queue</Text>
+                      <Text style={[styles.queueBtnText, isDark && { color: textColor }]} numberOfLines={1}>Add to Queue</Text>
                     </View>
                   </TouchableOpacity>
                   <TouchableOpacity

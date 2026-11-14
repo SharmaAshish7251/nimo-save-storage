@@ -256,7 +256,7 @@ export async function pushCloudProfileSnapshot(
     const result = await tdLibClient.sendFile(
       tempFilePath,
       PROFILE_FILE_NAME,
-      String(savedChatId),
+      'me',
       undefined,
       PROFILE_CAPTION
     );
@@ -277,7 +277,7 @@ export async function pushCloudProfileSnapshot(
     console.log('[CloudProfileSync] Successfully pushed profile snapshot. Message ID:', result.id);
     return { success: true, messageId: result.id };
   } catch (err: any) {
-    console.error('[CloudProfileSync] pushCloudProfileSnapshot error:', err);
+    console.error('[CloudProfileSync] pushCloudProfileSnapshot error:', err?.message || err);
     return { success: false, error: err?.message || 'Push failed' };
   }
 }

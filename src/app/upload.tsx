@@ -46,6 +46,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -1427,6 +1428,10 @@ export default function UploadScreen() {
         ListHeaderComponent={renderHeader()}
         ListFooterComponent={renderFooter() || undefined}
         ListEmptyComponent={renderEmpty()}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
       />
 
       {/* Folder Browser Modal */}

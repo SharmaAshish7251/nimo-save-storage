@@ -249,7 +249,19 @@ export class UploadManager {
       }
 
       const config = await getConfig();
-      this.setConcurrency(config.concurrency || 3);
+      // Adaptive concurrency: throttle on slow cellular to avoid socket drops; utilize full concurrency on Wi-Fi / 5G
+      const baseConcurrency = config.concurrency || 3;
+      try {
+        const netInfo = await NetInfo.fetch();
+        const cellGen = (netInfo as any)?.details?.cellularGeneration;
+        if ((netInfo as any).type === 'cellular' && (cellGen === '2g' || cellGen === '3g')) {
+          this.setConcurrency(1);
+        } else {
+          this.setConcurrency(baseConcurrency);
+        }
+      } catch {
+        this.setConcurrency(baseConcurrency);
+      }
       
       this.totalBatchItems = pendingItems.length;
       this.completedBatchItems = 0;

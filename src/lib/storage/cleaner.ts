@@ -309,3 +309,107 @@ export async function executeCleanSpace(
     blockedCount,
   };
 }
+
+export interface CacheAnalysis {
+  totalBytes: number;
+  fileCount: number;
+  chunkBytes: number;
+  previewBytes: number;
+  otherBytes: number;
+}
+
+/**
+ * Analyzes disk space consumed by temporary upload chunks, restored preview files, and cache.
+ */
+export async function analyzeCacheUsage(): Promise<CacheAnalysis> {
+  let totalBytes = 0;
+  let fileCount = 0;
+  let chunkBytes = 0;
+  let previewBytes = 0;
+  let otherBytes = 0;
+
+  try {
+    const cacheDir = FileSystem.cacheDirectory;
+    if (!cacheDir) return { totalBytes: 0, fileCount: 0, chunkBytes: 0, previewBytes: 0, otherBytes: 0 };
+
+    const topFiles = await FileSystem.readDirectoryAsync(cacheDir).catch(() => []);
+    for (const f of topFiles) {
+      const fullPath = `${cacheDir}${f}`;
+      const info = await FileSystem.getInfoAsync(fullPath).catch(() => ({ exists: false } as any));
+      if (!info.exists) continue;
+
+      if ((info as any).isDirectory) {
+        if (f === 'tdlib_upload') {
+          // Scan inside tdlib_upload directory (chunks, etc.)
+          const subFiles = await FileSystem.readDirectoryAsync(fullPath).catch(() => []);
+          for (const sf of subFiles) {
+            const subPath = `${fullPath}/${sf}`;
+            const subInfo = await FileSystem.getInfoAsync(subPath).catch(() => ({ exists: false } as any));
+            if (subInfo.exists && typeof (subInfo as any).size === 'number') {
+              const sz = (subInfo as any).size;
+              chunkBytes += sz;
+              totalBytes += sz;
+              fileCount += 1;
+            }
+          }
+        }
+      } else {
+        const sz = typeof (info as any).size === 'number' ? (info as any).size : 0;
+        if (f.startsWith('restored_')) {
+          previewBytes += sz;
+        } else {
+          otherBytes += sz;
+        }
+        totalBytes += sz;
+        fileCount += 1;
+      }
+    }
+  } catch (err) {
+    console.warn('[Cleaner] analyzeCacheUsage error:', err);
+  }
+
+  return { totalBytes, fileCount, chunkBytes, previewBytes, otherBytes };
+}
+
+/**
+ * Purges all temporary upload chunks, restored preview files, and cache from disk.
+ */
+export async function purgeAppCache(): Promise<{ freedBytes: number; freedFiles: number }> {
+  let freedBytes = 0;
+  let freedFiles = 0;
+
+  try {
+    const cacheDir = FileSystem.cacheDirectory;
+    if (!cacheDir) return { freedBytes: 0, freedFiles: 0 };
+
+    const topFiles = await FileSystem.readDirectoryAsync(cacheDir).catch(() => []);
+    for (const f of topFiles) {
+      const fullPath = `${cacheDir}${f}`;
+      const info = await FileSystem.getInfoAsync(fullPath).catch(() => ({ exists: false } as any));
+      if (!info.exists) continue;
+
+      if ((info as any).isDirectory) {
+        if (f === 'tdlib_upload') {
+          const subFiles = await FileSystem.readDirectoryAsync(fullPath).catch(() => []);
+          for (const sf of subFiles) {
+            const subPath = `${fullPath}/${sf}`;
+            const subInfo = await FileSystem.getInfoAsync(subPath).catch(() => ({ exists: false } as any));
+            const sz = subInfo.exists && typeof (subInfo as any).size === 'number' ? (subInfo as any).size : 0;
+            await FileSystem.deleteAsync(subPath, { idempotent: true }).catch(() => {});
+            freedBytes += sz;
+            freedFiles += 1;
+          }
+        }
+      } else if (f.startsWith('restored_') || f.startsWith('tdlib_qr_') || f.endsWith('.tmp')) {
+        const sz = typeof (info as any).size === 'number' ? (info as any).size : 0;
+        await FileSystem.deleteAsync(fullPath, { idempotent: true }).catch(() => {});
+        freedBytes += sz;
+        freedFiles += 1;
+      }
+    }
+  } catch (err) {
+    console.warn('[Cleaner] purgeAppCache error:', err);
+  }
+
+  return { freedBytes, freedFiles };
+}

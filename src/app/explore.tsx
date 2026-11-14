@@ -14,6 +14,7 @@ import {
   Dimensions,
   RefreshControl,
   Platform,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '@/context/ThemeContext';
@@ -748,6 +749,27 @@ export default function CloudExplorerScreen() {
     return safeEnsuredUri;
   }, [config?.targetChatId, cacheResolvedUri]);
 
+  const handleOpenInTelegram = async (item: CloudItem) => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      if (!item.chatId || !item.telegramMessageId) {
+        Alert.alert('Telegram Link', 'This file was uploaded to Saved Messages or a chat without a direct channel link.');
+        return;
+      }
+      const rawId = String(item.chatId);
+      const cleanId = rawId.startsWith('-100') ? rawId.slice(4) : rawId.startsWith('-') ? rawId.slice(1) : rawId;
+      const link = `https://t.me/c/${cleanId}/${item.telegramMessageId}`;
+      const canOpen = await Linking.canOpenURL(link).catch(() => false);
+      if (canOpen) {
+        await Linking.openURL(link);
+      } else {
+        await Linking.openURL(`https://t.me/c/${cleanId}/${item.telegramMessageId}`);
+      }
+    } catch {
+      Alert.alert('Telegram Link', 'Could not open Telegram directly.');
+    }
+  };
+
   const handleDownloadToDevice = async (item: CloudItem) => {
     if (downloadingItemUri) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -873,8 +895,8 @@ export default function CloudExplorerScreen() {
         delayLongPress={300}
         activeOpacity={0.8}
       >
-        {isImage && item.existsLocally ? (
-          <Image source={{ uri: item.uri }} style={styles.gridThumbImage} resizeMode="cover" />
+        {isImage && (item.existsLocally || item.cachedLocalUri) ? (
+          <Image source={{ uri: item.cachedLocalUri || item.uri }} style={styles.gridThumbImage} resizeMode="cover" />
         ) : (
           <View style={[styles.gridFallbackWrap, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
             <FontAwesome
@@ -1350,6 +1372,10 @@ export default function CloudExplorerScreen() {
             { paddingBottom: Math.max(insets.bottom, 20) + (isSelectMode ? 96 : 16) },
           ]}
           renderItem={viewMode === 'grid' ? renderGridItem : renderListItem}
+          initialNumToRender={viewMode === 'grid' ? 18 : 12}
+          maxToRenderPerBatch={viewMode === 'grid' ? 18 : 12}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
           onEndReachedThreshold={0.5}
           onEndReached={() => {
             if (displayLimit < filteredAndSortedItems.length) {
@@ -1748,8 +1774,21 @@ export default function CloudExplorerScreen() {
                     </TouchableOpacity>
                   </View>
 
+                  {selectedItem.chatId && selectedItem.telegramMessageId ? (
+                    <TouchableOpacity
+                      style={[styles.primaryActionBtn, { backgroundColor: '#0284C7', marginTop: 8 }]}
+                      onPress={() => handleOpenInTelegram(selectedItem)}
+                      activeOpacity={0.8}
+                    >
+                      <FontAwesome name="telegram" size={14} color="#FFFFFF" style={{ marginRight: 7 }} />
+                      <Text style={styles.primaryActionBtnText} numberOfLines={1}>
+                        Open in Telegram
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+
                   <TouchableOpacity
-                    style={[styles.secondaryActionBtn, { borderColor: border, marginTop: 4 }]}
+                    style={[styles.secondaryActionBtn, { borderColor: border, marginTop: 6 }]}
                     onPress={() => setSelectedItem(null)}
                   >
                     <Text style={[styles.secondaryActionBtnText, { color: textColor }]} numberOfLines={1}>

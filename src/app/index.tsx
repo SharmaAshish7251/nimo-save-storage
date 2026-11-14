@@ -37,6 +37,7 @@ import { schedulerEngine, calculateNextEstimatedRun } from '@/lib/scheduler/sche
 import { analyzeCleanableSpace } from '@/lib/storage/cleaner';
 import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
 import { restoreFromCloudProfile, PROFILE_RESTORED_FLAG } from '@/lib/storage/cloudProfileSync';
+import { getFileCategory } from '@/lib/scanner/files';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -55,6 +56,19 @@ export default function HomeScreen() {
   const [cloudStats, setCloudStats] = useState<{ count: number; totalBytes: number }>({
     count: 0,
     totalBytes: 0,
+  });
+  const [categoryBytes, setCategoryBytes] = useState<{
+    image: number;
+    video: number;
+    audio: number;
+    document: number;
+    other: number;
+  }>({
+    image: 0,
+    video: 0,
+    audio: 0,
+    document: 0,
+    other: 0,
   });
   const [cleanableBytes, setCleanableBytes] = useState<number | null>(null);
   const [recentUploads, setRecentUploads] = useState<ActionHistoryItem[]>([]);
@@ -133,6 +147,17 @@ export default function HomeScreen() {
         0
       );
       setCloudStats({ count: activeCloudItems.length, totalBytes: cBytes });
+
+      const breakdown = { image: 0, video: 0, audio: 0, document: 0, other: 0 };
+      for (const it of activeCloudItems) {
+        const cat = getFileCategory(it.fileName, (it as any).mimeType, appConfig?.customFileTypes);
+        if (cat in breakdown) {
+          breakdown[cat as keyof typeof breakdown] += (it.size || 0);
+        } else {
+          breakdown.other += (it.size || 0);
+        }
+      }
+      setCategoryBytes(breakdown);
 
       // Recent 3 uploaded items
       setRecentUploads(
@@ -352,6 +377,61 @@ export default function HomeScreen() {
             <View style={styles.heroBadge}>
               <FontAwesome name="cloud" size={16} color="#60A5FA" />
               <Text style={styles.heroBadgeText}>{cloudStats.count} files</Text>
+            </View>
+          </View>
+
+          {/* Interactive Categorical Storage Segmented Bar */}
+          <View style={styles.storageSegmentWrap}>
+            {cloudStats.totalBytes > 0 ? (
+              <View style={styles.storageSegmentTrack}>
+                {categoryBytes.image > 0 && (
+                  <View style={[styles.storageSegmentPart, { flex: Math.max(0.03, categoryBytes.image / cloudStats.totalBytes), backgroundColor: '#3B82F6' }]} />
+                )}
+                {categoryBytes.video > 0 && (
+                  <View style={[styles.storageSegmentPart, { flex: Math.max(0.03, categoryBytes.video / cloudStats.totalBytes), backgroundColor: '#8B5CF6' }]} />
+                )}
+                {categoryBytes.document > 0 && (
+                  <View style={[styles.storageSegmentPart, { flex: Math.max(0.03, categoryBytes.document / cloudStats.totalBytes), backgroundColor: '#10B981' }]} />
+                )}
+                {categoryBytes.audio > 0 && (
+                  <View style={[styles.storageSegmentPart, { flex: Math.max(0.03, categoryBytes.audio / cloudStats.totalBytes), backgroundColor: '#EC4899' }]} />
+                )}
+                {categoryBytes.other > 0 && (
+                  <View style={[styles.storageSegmentPart, { flex: Math.max(0.03, categoryBytes.other / cloudStats.totalBytes), backgroundColor: '#F59E0B' }]} />
+                )}
+              </View>
+            ) : (
+              <View style={[styles.storageSegmentTrack, { backgroundColor: '#334155' }]}>
+                <View style={[styles.storageSegmentPart, { flex: 1, backgroundColor: '#475569' }]} />
+              </View>
+            )}
+
+            {/* Category legend pills */}
+            <View style={styles.storageLegendRow}>
+              <TouchableOpacity
+                style={styles.legendPill}
+                onPress={() => router.push('/explore')}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.legendDot, { backgroundColor: '#3B82F6' }]} />
+                <Text style={styles.legendText}>Photos: {formatFileSize(categoryBytes.image)}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.legendPill}
+                onPress={() => router.push('/explore')}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.legendDot, { backgroundColor: '#8B5CF6' }]} />
+                <Text style={styles.legendText}>Videos: {formatFileSize(categoryBytes.video)}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.legendPill}
+                onPress={() => router.push('/explore')}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+                <Text style={styles.legendText}>Docs: {formatFileSize(categoryBytes.document)}</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -694,6 +774,41 @@ const styles = StyleSheet.create({
     color: '#93C5FD',
     fontSize: 12,
     fontWeight: '700',
+  },
+  storageSegmentWrap: {
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  storageSegmentTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#334155',
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+  storageSegmentPart: {
+    height: '100%',
+  },
+  storageLegendRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 10,
+  },
+  legendPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  legendDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  legendText: {
+    fontSize: 11,
+    color: '#93C5FD',
+    fontWeight: '500',
   },
   heroMetaDivider: {
     height: 1,

@@ -37,7 +37,7 @@ import {
 import { DestinationSelector } from '@/components/DestinationSelector';
 import { TimeDialerModal } from '@/components/TimeDialerModal';
 import { FreeUpSpaceModal } from '@/components/FreeUpSpaceModal';
-import { analyzeCleanableSpace } from '@/lib/storage/cleaner';
+import { analyzeCleanableSpace, analyzeCacheUsage, purgeAppCache } from '@/lib/storage/cleaner';
 import { tdLibClient } from '@/lib/tdlib/client';
 import * as SecureStoreLib from '@/lib/storage/secure';
 import { pushCloudProfileSnapshot, restoreFromCloudProfile } from '@/lib/storage/cloudProfileSync';
@@ -161,6 +161,9 @@ export default function SettingsScreen() {
   const [showFreeUpModal, setShowFreeUpModal] = useState(false);
   const [cleanableBytes, setCleanableBytes] = useState<number | null>(null);
   const [cleanableCount, setCleanableCount] = useState<number | null>(null);
+  const [cacheBytes, setCacheBytes] = useState<number | null>(null);
+  const [cacheFileCount, setCacheFileCount] = useState<number | null>(null);
+  const [isPurgingCache, setIsPurgingCache] = useState(false);
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
   const [isCharging, setIsCharging] = useState<boolean | null>(null);
 
@@ -195,6 +198,25 @@ export default function SettingsScreen() {
     const updated = current.filter((c) => c.extension.toLowerCase() !== extToRemove.toLowerCase());
     await updateConfig({ customFileTypes: updated });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  };
+
+  const handlePurgeCache = async () => {
+    if (isPurgingCache) return;
+    setIsPurgingCache(true);
+    try {
+      const res = await purgeAppCache();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      Alert.alert(
+        'Cache Cleared ✓',
+        `Successfully purged ${formatFileSize(res.freedBytes)} across ${res.freedFiles} temporary files.`
+      );
+      setCacheBytes(0);
+      setCacheFileCount(0);
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to purge cache');
+    } finally {
+      setIsPurgingCache(false);
+    }
   };
 
   // Zero-Knowledge Encrypted Vault state
@@ -281,6 +303,13 @@ export default function SettingsScreen() {
         .then((analysis) => {
           setCleanableBytes(analysis.totalBytes);
           setCleanableCount(analysis.totalCount);
+        })
+        .catch(() => {});
+
+      analyzeCacheUsage()
+        .then((analysis) => {
+          setCacheBytes(analysis.totalBytes);
+          setCacheFileCount(analysis.fileCount);
         })
         .catch(() => {});
     } catch (error) {
@@ -611,6 +640,44 @@ export default function SettingsScreen() {
               >
                 <FontAwesome name="trash" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
                 <Text style={styles.cleanActionBtnText}>Analyze & Clean</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            {/* Cache & Temp Janitor */}
+            <View style={styles.cleanerPromoRow}>
+              <View style={styles.cleanerPromoInfo}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[styles.rowTitleBold, isDark && styles.textDarkPrimary]}>
+                    App Cache & Temp Janitor
+                  </Text>
+                  {cacheBytes !== null && cacheBytes > 0 && (
+                    <View style={[styles.statusBadge, { backgroundColor: '#EFF6FF', borderColor: '#3B82F640', marginLeft: 6 }]}>
+                      <Text style={[styles.statusBadgeText, { color: '#2563EB', fontSize: 10 }]}>
+                        {formatFileSize(cacheBytes)} ({cacheFileCount || 0} items)
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={[styles.rowSubtitle, isDark && styles.textDarkSecondary]}>
+                  Purge temporary chunk uploads, restored preview files, and ephemeral cache
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.cleanActionBtn, { backgroundColor: '#4F46E5' }, isPurgingCache && styles.btnDisabled]}
+                onPress={handlePurgeCache}
+                disabled={isPurgingCache}
+                activeOpacity={0.8}
+              >
+                {isPurgingCache ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <FontAwesome name="eraser" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+                    <Text style={styles.cleanActionBtnText}>Purge Cache</Text>
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>

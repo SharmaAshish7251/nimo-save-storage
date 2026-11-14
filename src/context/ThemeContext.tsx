@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { Appearance, useColorScheme as useRNColorScheme } from 'react-native';
-import { getConfig, saveConfig } from '@/lib/storage/queue';
+import { getConfig, saveConfig, onConfigSaved } from '@/lib/storage/queue';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
@@ -43,7 +43,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Load saved theme from config on startup
+  // Load saved theme from config on startup & listen for live changes
   useEffect(() => {
     let mounted = true;
     getConfig()
@@ -55,8 +55,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .catch(() => {});
+
+    const unsubscribe = onConfigSaved((updatedConfig) => {
+      if (mounted && updatedConfig.themeMode) {
+        setThemeModeState(updatedConfig.themeMode);
+        applyAppearance(updatedConfig.themeMode);
+      }
+    });
+
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 

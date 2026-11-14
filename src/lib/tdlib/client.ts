@@ -1309,7 +1309,11 @@ class TdLibClientService {
       if (!chat?.id) throw new Error(`Could not resolve channel: ${targetChat}`);
       return chat.id;
     } else {
-      const parsed = typeof targetChat === 'string' ? parseInt(targetChat, 10) : targetChat;
+      let rawStr = typeof targetChat === 'string' ? targetChat.trim() : String(targetChat);
+      if (/^\d{9,}$/.test(rawStr)) {
+        rawStr = `-100${rawStr}`;
+      }
+      const parsed = parseInt(rawStr, 10);
       if (isNaN(parsed)) throw new Error(`Invalid chat ID: ${targetChat}`);
       return parsed;
     }

@@ -45,3 +45,4 @@ scratch/
 *.tgz
 NimoSaveStorage-standalone.apk
 NimoSaveStorage-release.apk
+.env

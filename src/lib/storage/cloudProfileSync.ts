@@ -85,20 +85,47 @@ export function validateCloudProfile(data: any): data is NimoCloudProfileV1 {
 }
 
 const ALLOWED_CONFIG_KEYS: (keyof AppConfig)[] = [
+  // Watched folders / paths
   'watchFolders',
   'watchedFolders',
+  // Upload behaviour
   'wifiOnly',
+  'onlyWhenCharging',
+  'batteryGuard',
+  'batteryGuardThreshold',
+  'syncOnPlug',
+  'autoUploadEnabled',
+  'concurrency',
+  'duplicatePolicy',
+  // File filters
+  'minFileSizeKb',
+  'maxFileSizeBytes',
+  'excludedExtensions',
+  // Schedule
+  'scheduleMode',
+  'intervalMinutes',
   'timeWindowStart',
   'timeWindowEnd',
-  'concurrency',
-  'autoUploadEnabled',
+  // Telegram destination (single-stream)
   'uploadToSavedMessages',
   'targetChatId',
   'targetChatTitle',
   'targetChatType',
-  'scheduleMode',
-  'intervalMinutes',
-  'onlyWhenCharging',
+  // Multi-channel categorical routing
+  'multiChannelRouting',
+  'photoChannelId',
+  'photoChannelTitle',
+  'videoChannelId',
+  'videoChannelTitle',
+  'documentChannelId',
+  'documentChannelTitle',
+  // Security
+  'vaultEnabled',
+  'biometricLockEnabled',
+  'biometricLockTimeout',
+  // UX
+  'notifyOnComplete',
+  'themeMode',
 ];
 
 function sanitizeConfig(config: any): AppConfig {

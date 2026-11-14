@@ -90,7 +90,11 @@ export default function RootLayout() {
         console.warn('App initialization error:', err);
       } finally {
         setAppIsReady(true);
-        SplashScreen.hideAsync().catch(() => {});
+        // Do not hide splash here: index.tsx or onboarding.tsx will dismiss it when their view is mounted.
+        // Safety fallback timer to prevent splash screen hanging indefinitely if a screen crashes:
+        setTimeout(() => {
+          SplashScreen.hideAsync().catch(() => {});
+        }, 4000);
       }
     }
 

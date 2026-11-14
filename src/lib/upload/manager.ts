@@ -390,6 +390,16 @@ export class UploadManager {
       const targetChat = resolvedDest.targetChat;
       const destName = resolvedDest.destinationTitle;
 
+      // Fail immediately if multi-stream routing is enabled but the required channel is missing
+      if (config.multiChannelRouting && resolvedDest.isMissingChannel) {
+        const catLabel = resolvedDest.category === 'photo' ? 'Photos' : resolvedDest.category === 'video' ? 'Videos' : 'Documents';
+        throw new Error(
+          `STREAM_CHANNEL_NOT_CONFIGURED: No ${catLabel} channel configured. Please select a ${catLabel} channel in Settings → Multi-Stream Routing.`
+        );
+      }
+
+      console.log(`[UploadManager] Target destination for ${item.fileName}: ${targetChat} (${destName})`);
+
       // Pre-upload Duplicate Conflict Check
       const fastHash = (await computeFastFileHash(item.uri, actualSize).catch(() => null)) || undefined;
       const conflict = await findCloudConflict(
@@ -405,7 +415,7 @@ export class UploadManager {
       if (conflict) {
         const policy = config.duplicatePolicy || 'skip_if_cloud_match';
         if (policy === 'skip_if_cloud_match') {
-          console.log(`[UploadManager] Cloud match found for ${item.fileName} (${conflict.conflictType}). Linking local copy to existing Telegram message ${conflict.record.telegramMessageId}`);
+          console.log(`[UploadManager] Cloud match found for ${item.fileName} (${conflict.conflictType}) in target chat ${targetChat}. Linking local copy to existing Telegram message ${conflict.record.telegramMessageId}`);
 
           const numericChatId = await tdLibClient.resolveTargetChatId(targetChat).catch(() => undefined);
           await completeUploadAtomically({

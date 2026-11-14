@@ -6,12 +6,12 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  useColorScheme,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import { formatFileSize } from '@/lib/storage/queue';
+import { useAppTheme } from '@/context/ThemeContext';
 import type { DuplicateGroup, ScanDuplicatesProgress } from '@/lib/storage/duplicates';
 
 interface DuplicateCleanerModalProps {
@@ -34,8 +34,7 @@ export function DuplicateCleanerModal({
   onClean,
 }: DuplicateCleanerModalProps) {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const totalDuplicates = groups.reduce((acc, g) => acc + (g.files.length - 1), 0);
   const totalWastedBytes = groups.reduce((acc, g) => acc + g.size * (g.files.length - 1), 0);

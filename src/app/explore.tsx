@@ -22,7 +22,7 @@ import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import { router, useFocusEffect, Stack } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   getUploadedIndex,
   UploadedRecord,
@@ -131,22 +131,17 @@ export default function CloudExplorerScreen() {
           const category = getFileCategory(rec.fileName);
           let destinationTitle = rec.destinationTitle;
 
-          if (appConfig?.multiChannelRouting) {
-            const streamTitles = new Set([
-              (appConfig.photoChannelTitle || '').toLowerCase().trim(),
-              (appConfig.videoChannelTitle || '').toLowerCase().trim(),
-              (appConfig.documentChannelTitle || '').toLowerCase().trim(),
-            ]);
-            if (!destinationTitle || !streamTitles.has(destinationTitle.toLowerCase().trim())) {
-              if (category === 'image') {
+          if (!destinationTitle) {
+            if (rec.chatId && appConfig?.multiChannelRouting) {
+              const strChatId = String(rec.chatId);
+              if (strChatId === String(appConfig.photoChannelId)) {
                 destinationTitle = appConfig.photoChannelTitle || 'Photos Channel';
-              } else if (category === 'video') {
+              } else if (strChatId === String(appConfig.videoChannelId)) {
                 destinationTitle = appConfig.videoChannelTitle || 'Videos Channel';
-              } else {
+              } else if (strChatId === String(appConfig.documentChannelId)) {
                 destinationTitle = appConfig.documentChannelTitle || 'Documents Channel';
               }
             }
-          } else {
             if (!destinationTitle) {
               destinationTitle =
                 appConfig?.uploadToSavedMessages || !appConfig?.targetChatId

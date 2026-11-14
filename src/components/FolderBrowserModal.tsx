@@ -26,6 +26,7 @@ import {
   saveWatchedFolders,
 } from '@/lib/storage/queue';
 import { FileDetailsModal, FileDetailData } from './FileDetailsModal';
+import { useAppTheme } from '@/context/ThemeContext';
 
 type FileCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
 
@@ -45,6 +46,13 @@ export function FolderBrowserModal({
   onScanFoldersRequested,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const { isDark } = useAppTheme();
+  const modalBg = isDark ? '#1E293B' : '#FFFFFF';
+  const itemBg = isDark ? '#0F172A' : '#f9f9f9';
+  const textColor = isDark ? '#F8FAFC' : '#111827';
+  const subtextColor = isDark ? '#94A3B8' : '#6B7280';
+  const borderColor = isDark ? '#334155' : '#E5E7EB';
+
   const [step, setStep] = useState<'pick_folder' | 'select_files'>('pick_folder');
   const [loading, setLoading] = useState(false);
   const [folderName, setFolderName] = useState('');
@@ -245,21 +253,21 @@ export function FolderBrowserModal({
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { backgroundColor: modalBg }]}>
           {/* Header */}
           <View style={styles.header}>
             <View>
-              <Text style={styles.headerTitle}>
+              <Text style={[styles.headerTitle, { color: textColor }]}>
                 {step === 'pick_folder' ? 'Choose Folders to Scan' : folderName}
               </Text>
               {step === 'pick_folder' && (
-                <Text style={styles.headerSubtitle}>
+                <Text style={[styles.headerSubtitle, { color: subtextColor }]}>
                   Check folders to watch, or tap to open and select files
                 </Text>
               )}
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <FontAwesome name="times" size={18} color="#6B7280" />
+              <FontAwesome name="times" size={18} color={subtextColor} />
             </TouchableOpacity>
           </View>
 
@@ -272,7 +280,7 @@ export function FolderBrowserModal({
             /* STEP 1: MULTI-FOLDER SELECTION & ALBUM BROWSING */
             <View style={styles.folderStepContainer}>
               <TouchableOpacity
-                style={[styles.safButton, loading && { opacity: 0.6 }]}
+                style={[styles.safButton, isDark && { backgroundColor: itemBg, borderColor }, loading && { opacity: 0.6 }]}
                 onPress={handleSelectSAFDirectory}
                 disabled={loading}
               >
@@ -281,14 +289,14 @@ export function FolderBrowserModal({
                 </View>
                 <View style={styles.safButtonTexts}>
                   <Text style={styles.safButtonTitle}>+ Add Device Storage Folder</Text>
-                  <Text style={styles.safButtonSubtitle}>
+                  <Text style={[styles.safButtonSubtitle, { color: subtextColor }]}>
                     Select a specific folder (e.g. DCIM, Movies, Pictures)
                   </Text>
                 </View>
               </TouchableOpacity>
 
               <View style={styles.foldersHeaderRow}>
-                <Text style={styles.sectionSubtitle}>
+                <Text style={[styles.sectionSubtitle, { color: textColor }]}>
                   Folders / Albums ({selectedFoldersCount} selected):
                 </Text>
               </View>
@@ -310,7 +318,7 @@ export function FolderBrowserModal({
                 renderItem={({ item }) => {
                   const isChecked = selectedFolderIds.has(item.id);
                   return (
-                    <View style={[styles.albumItem, isChecked && styles.albumItemActive]}>
+                    <View style={[styles.albumItem, { backgroundColor: itemBg }, isChecked && styles.albumItemActive]}>
                       <TouchableOpacity
                         style={styles.checkboxTouch}
                         onPress={() =>
@@ -344,7 +352,7 @@ export function FolderBrowserModal({
                         </View>
                         <View style={styles.albumInfo}>
                           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <Text style={styles.albumTitle} numberOfLines={1}>
+                            <Text style={[styles.albumTitle, { color: textColor }]} numberOfLines={1}>
                               {item.title}
                             </Text>
                             {(item as any).needsPermission && (
@@ -356,7 +364,7 @@ export function FolderBrowserModal({
                               </TouchableOpacity>
                             )}
                           </View>
-                          <Text style={styles.albumCount}>
+                          <Text style={[styles.albumCount, { color: subtextColor }]}>
                             {(item as any).needsPermission
                               ? 'Re-authorization required after reinstall'
                               : item.assetCount
@@ -372,7 +380,7 @@ export function FolderBrowserModal({
                   );
                 }}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No albums or folders found</Text>
+                  <Text style={[styles.emptyText, { color: subtextColor }]}>No albums or folders found</Text>
                 }
               />
 
@@ -400,12 +408,12 @@ export function FolderBrowserModal({
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.secondaryFolderBtn}
+                  style={[styles.secondaryFolderBtn, isDark && { backgroundColor: itemBg }]}
                   onPress={() => handleSaveWatchedFolders(false)}
                 >
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                     <FontAwesome name="floppy-o" size={14} color="#208AEF" style={{ marginRight: 6 }} />
-                    <Text style={styles.secondaryFolderBtnText} numberOfLines={1}>
+                    <Text style={[styles.secondaryFolderBtnText, isDark && { color: textColor }]} numberOfLines={1}>
                       Save Folders Only ({selectedFoldersCount})
                     </Text>
                   </View>
@@ -417,30 +425,30 @@ export function FolderBrowserModal({
             <View style={styles.selectStepContainer}>
               {/* Back to Folders */}
               <TouchableOpacity
-                style={styles.changeFolderRow}
+                style={[styles.changeFolderRow, isDark && { backgroundColor: itemBg }]}
                 onPress={() => setStep('pick_folder')}
               >
                 <Text style={styles.changeFolderText}>← Back to Folders List</Text>
               </TouchableOpacity>
 
               {/* Filter Chips Bar */}
-              <View style={styles.filterBar}>
+              <View style={[styles.filterBar, { borderBottomColor: borderColor }]}>
                 <TouchableOpacity
-                  style={[styles.filterChip, activeFilter === 'all' && styles.filterChipActive]}
+                  style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'all' && styles.filterChipActive]}
                   onPress={() => setActiveFilter('all')}
                 >
-                  <Text style={[styles.filterChipText, activeFilter === 'all' && styles.filterChipTextActive]}>
+                  <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === 'all' && styles.filterChipTextActive]}>
                     All ({allFiles.length})
                   </Text>
                 </TouchableOpacity>
 
                 {categoryCounts.image > 0 && (
                   <TouchableOpacity
-                    style={[styles.filterChip, activeFilter === 'image' && styles.filterChipActive]}
+                    style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'image' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('image')}
                   >
                     <FontAwesome name="picture-o" size={11} color={activeFilter === "image" ? "#fff" : "#208AEF"} style={{ marginRight: 4 }} />
-                    <Text style={[styles.filterChipText, activeFilter === "image" && styles.filterChipTextActive]}>
+                    <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === "image" && styles.filterChipTextActive]}>
                       Images ({categoryCounts.image})
                     </Text>
                   </TouchableOpacity>
@@ -448,11 +456,11 @@ export function FolderBrowserModal({
 
                 {categoryCounts.video > 0 && (
                   <TouchableOpacity
-                    style={[styles.filterChip, activeFilter === 'video' && styles.filterChipActive]}
+                    style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'video' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('video')}
                   >
                     <FontAwesome name="video-camera" size={11} color={activeFilter === "video" ? "#fff" : "#8B5CF6"} style={{ marginRight: 4 }} />
-                    <Text style={[styles.filterChipText, activeFilter === "video" && styles.filterChipTextActive]}>
+                    <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === "video" && styles.filterChipTextActive]}>
                       Videos ({categoryCounts.video})
                     </Text>
                   </TouchableOpacity>
@@ -460,11 +468,11 @@ export function FolderBrowserModal({
 
                 {categoryCounts.audio > 0 && (
                   <TouchableOpacity
-                    style={[styles.filterChip, activeFilter === 'audio' && styles.filterChipActive]}
+                    style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'audio' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('audio')}
                   >
                     <FontAwesome name="music" size={11} color={activeFilter === "audio" ? "#fff" : "#EC4899"} style={{ marginRight: 4 }} />
-                    <Text style={[styles.filterChipText, activeFilter === "audio" && styles.filterChipTextActive]}>
+                    <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === "audio" && styles.filterChipTextActive]}>
                       Audio ({categoryCounts.audio})
                     </Text>
                   </TouchableOpacity>
@@ -472,11 +480,11 @@ export function FolderBrowserModal({
 
                 {categoryCounts.document > 0 && (
                   <TouchableOpacity
-                    style={[styles.filterChip, activeFilter === 'document' && styles.filterChipActive]}
+                    style={[styles.filterChip, isDark && { backgroundColor: itemBg, borderColor }, activeFilter === 'document' && styles.filterChipActive]}
                     onPress={() => setActiveFilter('document')}
                   >
                     <FontAwesome name="file-text-o" size={11} color={activeFilter === "document" ? "#fff" : "#10B981"} style={{ marginRight: 4 }} />
-                    <Text style={[styles.filterChipText, activeFilter === "document" && styles.filterChipTextActive]}>
+                    <Text style={[styles.filterChipText, isDark && { color: subtextColor }, activeFilter === "document" && styles.filterChipTextActive]}>
                       Docs ({categoryCounts.document})
                     </Text>
                   </TouchableOpacity>
@@ -484,7 +492,7 @@ export function FolderBrowserModal({
               </View>
 
               {/* Batch Select Controls */}
-              <View style={styles.batchControls}>
+              <View style={[styles.batchControls, { borderBottomColor: borderColor }]}>
                 <TouchableOpacity onPress={selectAllFiltered} style={styles.batchBtn}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <FontAwesome name="check-square-o" size={13} color="#208AEF" style={{ marginRight: 4 }} />
@@ -493,11 +501,11 @@ export function FolderBrowserModal({
                 </TouchableOpacity>
                 <TouchableOpacity onPress={deselectAllFiltered} style={styles.batchBtn}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
-                    <FontAwesome name="square-o" size={13} color="#6B7280" style={{ marginRight: 4 }} />
-                    <Text style={styles.batchBtnText}>Clear All</Text>
+                    <FontAwesome name="square-o" size={13} color={subtextColor} style={{ marginRight: 4 }} />
+                    <Text style={[styles.batchBtnText, { color: subtextColor }]}>Clear All</Text>
                   </View>
                 </TouchableOpacity>
-                <Text style={styles.selectedCountText}>
+                <Text style={[styles.selectedCountText, { color: subtextColor }]}>
                   {selectedFiles.length} of {filteredFiles.length} selected
                 </Text>
               </View>
@@ -513,7 +521,7 @@ export function FolderBrowserModal({
                   const category = getFileCategory(item.fileName, item.mimeType);
                   return (
                     <TouchableOpacity
-                      style={[styles.fileItem, isSelected && styles.fileItemActive]}
+                      style={[styles.fileItem, { backgroundColor: itemBg }, isSelected && styles.fileItemActive]}
                       onPress={() => toggleSelect(item.uri)}
                       activeOpacity={0.7}
                     >
@@ -524,10 +532,10 @@ export function FolderBrowserModal({
                         {getCategoryIcon(category, 18)}
                       </View>
                       <View style={styles.fileInfo}>
-                        <Text style={styles.fileName} numberOfLines={1}>
+                        <Text style={[styles.fileName, { color: textColor }]} numberOfLines={1}>
                           {item.fileName}
                         </Text>
-                        <Text style={styles.fileMeta}>
+                        <Text style={[styles.fileMeta, { color: subtextColor }]}>
                           {item.size ? formatFileSize(item.size) : 'File'}
                         </Text>
                       </View>
@@ -548,7 +556,7 @@ export function FolderBrowserModal({
                   );
                 }}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No files match the selected filter</Text>
+                  <Text style={[styles.emptyText, { color: subtextColor }]}>No files match the selected filter</Text>
                 }
               />
 

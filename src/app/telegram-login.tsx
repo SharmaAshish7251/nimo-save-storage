@@ -11,7 +11,9 @@ import {
   Image,
   Animated,
   ActivityIndicator,
-  useColorScheme,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -20,14 +22,37 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import QRCode from 'react-native-qrcode-svg';
+import { useAppTheme } from '@/context/ThemeContext';
 import { saveApiCredentials, getApiCredentials } from '@/lib/storage/secure';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { cleanupCachedQrImages, QrSvgRef, saveQrCodeToGallery, shareQrCodeImage } from '@/lib/telegram/qrExport';
 import { restoreFromCloudProfile } from '@/lib/storage/cloudProfileSync';
 
 export default function TelegramLoginScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const scrollViewRef = useRef<React.ElementRef<typeof ScrollView> | null>(null);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setIsKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const scrollToActiveInput = (yOffset: number = 80) => {
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: yOffset, animated: true });
+    }, 120);
+  };
 
   const [authMethod, setAuthMethod] = useState<'phone' | 'qr'>('phone');
   const [step, setStep] = useState<'phone' | 'code' | '2fa'>('phone');
@@ -499,13 +524,29 @@ export default function TelegramLoginScreen() {
 
   return (
     <SafeAreaView style={[styles.container, isDark && styles.containerDark]}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.content}>
-          <Image
-            source={require('@/assets/images/app-logo.png')}
-            style={styles.logo}
-          />
-          <Text style={[styles.title, isDark && styles.textDarkPrimary]}>Telegram Login</Text>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: isKeyboardVisible ? 320 : 40 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.content}>
+            <Image
+              source={require('@/assets/images/app-logo.png')}
+              style={[styles.logo, isKeyboardVisible && styles.logoCompact]}
+            />
+            <Text style={[styles.title, isDark && styles.textDarkPrimary, isKeyboardVisible && styles.titleCompact]}>
+              Telegram Login
+            </Text>
 
           {/* Error banner */}
           {!!error && (
@@ -516,7 +557,7 @@ export default function TelegramLoginScreen() {
 
           {/* Method Tabs */}
           {step === 'phone' && (
-            <View style={[styles.tabPillRow, isDark && styles.tabPillRowDark]}>
+            <View style={[styles.tabPillRow, isDark && styles.tabPillRowDark, isKeyboardVisible && styles.tabPillRowCompact]}>
               <TouchableOpacity
                 style={[styles.tabPill, authMethod === 'phone' && styles.tabPillActive]}
                 onPress={switchToPhoneTab}
@@ -692,7 +733,7 @@ export default function TelegramLoginScreen() {
           {/* STEP 1: PHONE NUMBER */}
           {step === 'phone' && authMethod === 'phone' && (
             <View style={styles.form}>
-              <Text style={[styles.instruction, isDark && styles.textDarkSecondary]}>
+              <Text style={[styles.instruction, isDark && styles.textDarkSecondary, isKeyboardVisible && styles.instructionCompact]}>
                 Enter your mobile number to sign in with Telegram.
               </Text>
 
@@ -705,8 +746,9 @@ export default function TelegramLoginScreen() {
                 placeholderTextColor={isDark ? '#64748B' : '#999'}
                 keyboardType="phone-pad"
                 autoFocus
+                onFocus={() => scrollToActiveInput(80)}
               />
-              <Text style={[styles.helpText, isDark && styles.textDarkSecondary]}>
+              <Text style={[styles.helpText, isDark && styles.textDarkSecondary, isKeyboardVisible && { marginBottom: 12 }]}>
                 Include country code (e.g., +1 for US/Canada, +91 for India, +44 for UK).
               </Text>
 
@@ -770,6 +812,7 @@ export default function TelegramLoginScreen() {
                     placeholder="e.g. 12345678"
                     placeholderTextColor={isDark ? '#64748B' : '#999'}
                     keyboardType="numeric"
+                    onFocus={() => scrollToActiveInput(220)}
                   />
                   <Text style={[styles.label, isDark && styles.textDarkPrimary]}>API Hash</Text>
                   <TextInput
@@ -782,6 +825,7 @@ export default function TelegramLoginScreen() {
                     placeholder="32 character hex hash"
                     placeholderTextColor={isDark ? '#64748B' : '#999'}
                     autoCapitalize="none"
+                    onFocus={() => scrollToActiveInput(280)}
                   />
                   <TouchableOpacity
                     style={[
@@ -804,7 +848,7 @@ export default function TelegramLoginScreen() {
           {/* STEP 2: VERIFICATION CODE */}
           {step === 'code' && (
             <View style={styles.form}>
-              <Text style={[styles.instruction, isDark && styles.textDarkSecondary]}>
+              <Text style={[styles.instruction, isDark && styles.textDarkSecondary, isKeyboardVisible && styles.instructionCompact]}>
                 We sent a login code to your Telegram app on another device or via SMS.
               </Text>
 
@@ -817,6 +861,7 @@ export default function TelegramLoginScreen() {
                 placeholderTextColor={isDark ? '#64748B' : '#999'}
                 keyboardType="numeric"
                 autoFocus
+                onFocus={() => scrollToActiveInput(80)}
               />
 
               <TouchableOpacity
@@ -852,7 +897,7 @@ export default function TelegramLoginScreen() {
           {/* STEP 3: 2FA PASSWORD */}
           {step === '2fa' && (
             <View style={styles.form}>
-              <Text style={[styles.instruction, isDark && styles.textDarkSecondary]}>
+              <Text style={[styles.instruction, isDark && styles.textDarkSecondary, isKeyboardVisible && styles.instructionCompact]}>
                 Your account is protected with Two-Step Verification. Enter your password to continue.
               </Text>
 
@@ -865,6 +910,7 @@ export default function TelegramLoginScreen() {
                 placeholderTextColor={isDark ? '#64748B' : '#999'}
                 secureTextEntry
                 autoFocus
+                onFocus={() => scrollToActiveInput(80)}
               />
 
               <TouchableOpacity
@@ -899,14 +945,15 @@ export default function TelegramLoginScreen() {
           )}
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </KeyboardAvoidingView>
+  </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
   scrollContent: { flexGrow: 1 },
-  content: { flex: 1, padding: 24 },
+  content: { padding: 24 },
   title: {
     fontSize: 26, fontWeight: '700', marginBottom: 12,
     textAlign: 'center', color: '#111',
@@ -914,6 +961,26 @@ const styles = StyleSheet.create({
   logo: {
     width: 100, height: 100, borderRadius: 22,
     alignSelf: 'center', marginTop: 10, marginBottom: 4,
+  },
+  logoCompact: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  titleCompact: {
+    fontSize: 20,
+    marginBottom: 6,
+  },
+  tabPillRowCompact: {
+    marginBottom: 8,
+    padding: 2,
+  },
+  instructionCompact: {
+    marginBottom: 8,
+    fontSize: 13,
+    lineHeight: 18,
   },
   instruction: {
     fontSize: 15, color: '#555', textAlign: 'center',

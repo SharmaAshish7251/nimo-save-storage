@@ -617,6 +617,7 @@ export interface ResolvedDestination {
   destinationTitle: string;
   category: 'photo' | 'video' | 'document' | 'default';
   isMultiStream: boolean;
+  isMissingChannel?: boolean;
 }
 
 /**
@@ -655,36 +656,58 @@ export function resolveFileDestination(
     mime.startsWith('video/') ||
     ['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp', 'ts'].includes(ext);
 
-  if (isPhoto && config.photoChannelId) {
-    return {
-      targetChat: config.photoChannelId,
-      destinationTitle: config.photoChannelTitle || 'Photos Channel',
-      category: 'photo',
-      isMultiStream: true,
-    };
-  } else if (isVideo && config.videoChannelId) {
-    return {
-      targetChat: config.videoChannelId,
-      destinationTitle: config.videoChannelTitle || 'Videos Channel',
-      category: 'video',
-      isMultiStream: true,
-    };
-  } else if (!isPhoto && !isVideo && config.documentChannelId) {
-    return {
-      targetChat: config.documentChannelId,
-      destinationTitle: config.documentChannelTitle || 'Documents Channel',
-      category: 'document',
-      isMultiStream: true,
-    };
+  if (isPhoto) {
+    if (config.photoChannelId) {
+      return {
+        targetChat: config.photoChannelId,
+        destinationTitle: config.photoChannelTitle || 'Photos Channel',
+        category: 'photo',
+        isMultiStream: true,
+      };
+    } else {
+      return {
+        targetChat: defaultTarget,
+        destinationTitle: 'Saved Messages (Photos channel not set)',
+        category: 'photo',
+        isMultiStream: false,
+        isMissingChannel: true,
+      };
+    }
+  } else if (isVideo) {
+    if (config.videoChannelId) {
+      return {
+        targetChat: config.videoChannelId,
+        destinationTitle: config.videoChannelTitle || 'Videos Channel',
+        category: 'video',
+        isMultiStream: true,
+      };
+    } else {
+      return {
+        targetChat: defaultTarget,
+        destinationTitle: 'Saved Messages (Videos channel not set)',
+        category: 'video',
+        isMultiStream: false,
+        isMissingChannel: true,
+      };
+    }
+  } else {
+    if (config.documentChannelId) {
+      return {
+        targetChat: config.documentChannelId,
+        destinationTitle: config.documentChannelTitle || 'Documents Channel',
+        category: 'document',
+        isMultiStream: true,
+      };
+    } else {
+      return {
+        targetChat: defaultTarget,
+        destinationTitle: 'Saved Messages (Documents channel not set)',
+        category: 'document',
+        isMultiStream: false,
+        isMissingChannel: true,
+      };
+    }
   }
-
-  // Fallback to default destination when category-specific channel is not configured
-  return {
-    targetChat: defaultTarget,
-    destinationTitle: defaultTitle,
-    category: isPhoto ? 'photo' : isVideo ? 'video' : 'document',
-    isMultiStream: true,
-  };
 }
 
 /**

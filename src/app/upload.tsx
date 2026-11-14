@@ -62,6 +62,13 @@ const PAGE_SIZE = 20;
 
 export default function UploadScreen() {
   const insets = useSafeAreaInsets();
+  const { isDark } = useAppTheme();
+  const bg = isDark ? '#0F172A' : '#f5f5f5';
+  const cardBg = isDark ? '#1E293B' : '#FFFFFF';
+  const textColor = isDark ? '#F8FAFC' : '#111827';
+  const subtextColor = isDark ? '#94A3B8' : '#6B7280';
+  const borderColor = isDark ? '#334155' : '#E2E8F0';
+
   const [activeTab, setActiveTab] = useState<'queue' | 'history'>('queue');
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [history, setHistory] = useState<ActionHistoryItem[]>([]);
@@ -638,7 +645,7 @@ export default function UploadScreen() {
     const dest = resolveFileDestination(item.fileName, item.mimeType, config);
     return (
       <TouchableOpacity
-        style={styles.item}
+        style={[styles.item, { backgroundColor: cardBg, borderColor, borderWidth: isDark ? 1 : 0 }]}
         activeOpacity={0.7}
         onPress={() =>
           setSelectedFileForDetails({
@@ -661,11 +668,11 @@ export default function UploadScreen() {
             )}
           </View>
           <View style={styles.itemInfo}>
-            <Text style={styles.fileName} numberOfLines={1}>
+            <Text style={[styles.fileName, { color: textColor }]} numberOfLines={1}>
               {item.fileName}
             </Text>
             <View style={styles.metaRow}>
-              <Text style={styles.metaText}>{formatFileSize(item.size)}</Text>
+              <Text style={[styles.metaText, { color: subtextColor }]}>{formatFileSize(item.size)}</Text>
               {item.status === 'uploading' && (
                 <>
                   <Text style={styles.metaProgressText}>• {item.progress}%</Text>
@@ -681,7 +688,7 @@ export default function UploadScreen() {
                   • {formatDuration(item.uploadDurationMs)}
                 </Text>
               )}
-              <Text style={styles.queueDestText} numberOfLines={1}>
+              <Text style={[styles.queueDestText, isDark && { color: '#60A5FA' }]} numberOfLines={1}>
                 • → {dest.destinationTitle}
               </Text>
             </View>
@@ -694,7 +701,7 @@ export default function UploadScreen() {
             </View>
             {(item.status === 'pending' || (item.status === 'uploading' && !uploading)) && (
               <TouchableOpacity
-                style={styles.itemUploadBtn}
+                style={[styles.itemUploadBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)' }]}
                 onPress={(e) => {
                   e.stopPropagation();
                   handleUploadSingleQueueItem(item);
@@ -706,7 +713,7 @@ export default function UploadScreen() {
             )}
             {item.status === 'uploading' && uploading && (
               <TouchableOpacity
-                style={[styles.itemUploadBtn, { backgroundColor: '#FEF3C7' }]}
+                style={[styles.itemUploadBtn, { backgroundColor: isDark ? 'rgba(217, 119, 6, 0.2)' : '#FEF3C7' }]}
                 onPress={(e) => {
                   e.stopPropagation();
                   handlePauseItem(item);
@@ -718,7 +725,7 @@ export default function UploadScreen() {
             )}
             {item.status === 'paused' && (
               <TouchableOpacity
-                style={[styles.itemUploadBtn, { backgroundColor: '#DCFCE7' }]}
+                style={[styles.itemUploadBtn, { backgroundColor: isDark ? 'rgba(22, 163, 74, 0.2)' : '#DCFCE7' }]}
                 onPress={(e) => {
                   e.stopPropagation();
                   handleResumeItem(item);
@@ -730,7 +737,7 @@ export default function UploadScreen() {
             )}
             {item.status === 'failed' && (
               <TouchableOpacity
-                style={[styles.itemUploadBtn, { backgroundColor: '#FEE2E2' }]}
+                style={[styles.itemUploadBtn, { backgroundColor: isDark ? 'rgba(220, 38, 38, 0.2)' : '#FEE2E2' }]}
                 onPress={(e) => {
                   e.stopPropagation();
                   handleRetryItem(item);
@@ -749,13 +756,13 @@ export default function UploadScreen() {
                 }}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <FontAwesome name="times" size={13} color="#9CA3AF" />
+                <FontAwesome name="times" size={13} color={isDark ? "#94A3B8" : "#9CA3AF"} />
               </TouchableOpacity>
             )}
           </View>
         </View>
         {item.status === 'uploading' && (
-          <View style={styles.progressBar}>
+          <View style={[styles.progressBar, isDark && { backgroundColor: '#334155' }]}>
             <View style={[styles.progressFill, { width: `${item.progress}%` }]} />
           </View>
         )}
@@ -774,7 +781,7 @@ export default function UploadScreen() {
 
     return (
       <TouchableOpacity
-        style={styles.historyItem}
+        style={[styles.historyItem, { backgroundColor: cardBg, borderColor, borderWidth: isDark ? 1 : 0 }]}
         activeOpacity={0.7}
         onPress={() =>
           setSelectedFileForDetails({
@@ -797,21 +804,21 @@ export default function UploadScreen() {
             )}
           </View>
           <View style={styles.historyInfo}>
-            <Text style={styles.historyFileName} numberOfLines={1}>
+            <Text style={[styles.historyFileName, { color: textColor }]} numberOfLines={1}>
               {item.fileName}
             </Text>
             <View style={styles.historyMetaRow}>
-              <View style={styles.sizePill}>
-                <Text style={styles.sizePillText}>{formatFileSize(item.size)}</Text>
+              <View style={[styles.sizePill, isDark && { backgroundColor: '#0F172A', borderColor: '#334155' }]}>
+                <Text style={[styles.sizePillText, isDark && { color: '#93C5FD' }]}>{formatFileSize(item.size)}</Text>
               </View>
-              <Text style={styles.timeMetaText} numberOfLines={1}>
+              <Text style={[styles.timeMetaText, { color: subtextColor }]} numberOfLines={1}>
                 {formatTimestamp(item.timestamp)}
                 {item.uploadDurationMs && item.uploadDurationMs > 0
                   ? ` • ${formatDuration(item.uploadDurationMs)}`
                   : ''}
               </Text>
               {resolvedHistoryDest ? (
-                <Text style={styles.historyDestText} numberOfLines={1}>
+                <Text style={[styles.historyDestText, isDark && { color: '#60A5FA' }]} numberOfLines={1}>
                   → {resolvedHistoryDest}
                 </Text>
               ) : null}
@@ -826,7 +833,7 @@ export default function UploadScreen() {
         {item.status === 'failed' && (
           <View style={styles.retryRow}>
             <TouchableOpacity
-              style={styles.retryButton}
+              style={[styles.retryButton, isDark && { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}
               onPress={(e) => {
                 e.stopPropagation();
                 handleRetryItem(item);
@@ -834,7 +841,7 @@ export default function UploadScreen() {
             >
               <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
                 <FontAwesome name="refresh" size={12} color="#DC2626" style={{ marginRight: 6 }} />
-                <Text style={styles.retryButtonText}>Retry Upload</Text>
+                <Text style={[styles.retryButtonText, isDark && { color: '#F87171' }]}>Retry Upload</Text>
               </View>
             </TouchableOpacity>
           </View>
@@ -842,8 +849,6 @@ export default function UploadScreen() {
       </TouchableOpacity>
     );
   };
-
-  const { isDark } = useAppTheme();
 
   // Render unified header (replaces outer ScrollView)
   const renderHeader = () => (
@@ -864,7 +869,7 @@ export default function UploadScreen() {
               </Text>
             </View>
             <TouchableOpacity
-              style={styles.manageStreamsBtn}
+              style={[styles.manageStreamsBtn, isDark && { backgroundColor: 'rgba(32,138,239,0.18)', borderColor: '#334155' }]}
               onPress={() => router.push('/settings' as any)}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
@@ -918,28 +923,33 @@ export default function UploadScreen() {
       {/* Action Buttons Grid */}
       <View style={styles.actionGrid}>
         <TouchableOpacity
-          style={[styles.actionCard, styles.actionCardBlue]}
+          style={[styles.actionCard, styles.actionCardBlue, isDark && { backgroundColor: '#1E293B', borderColor: '#334155' }]}
           onPress={handlePickSingleFile}
         >
           <FontAwesome name="file-text-o" size={24} color="#208AEF" style={styles.actionCardIcon} />
-          <Text style={styles.actionCardTitle}>Pick Single File</Text>
-          <Text style={styles.actionCardSubtitle}>Photo, Video or Doc</Text>
+          <Text style={[styles.actionCardTitle, { color: textColor }]}>Pick Single File</Text>
+          <Text style={[styles.actionCardSubtitle, { color: subtextColor }]}>Photo, Video or Doc</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.actionCard, styles.actionCardGreen, watchedFolders.length === 0 ? { borderWidth: 2, borderColor: '#3B82F6' } : null]}
+          style={[
+            styles.actionCard,
+            styles.actionCardGreen,
+            isDark && { backgroundColor: '#1E293B', borderColor: '#334155' },
+            watchedFolders.length === 0 ? { borderWidth: 2, borderColor: '#3B82F6' } : null,
+          ]}
           onPress={() => setFolderModalVisible(true)}
         >
           <FontAwesome name="folder-open" size={24} color="#10B981" style={styles.actionCardIcon} />
-          <Text style={styles.actionCardTitle}>Browse Folder</Text>
-          <Text style={styles.actionCardSubtitle}>Filter & Multi-Select</Text>
+          <Text style={[styles.actionCardTitle, { color: textColor }]}>Browse Folder</Text>
+          <Text style={[styles.actionCardSubtitle, { color: subtextColor }]}>Filter & Multi-Select</Text>
         </TouchableOpacity>
       </View>
 
       {/* Watched Folders Row */}
-      <View style={styles.watchedFoldersContainer}>
+      <View style={[styles.watchedFoldersContainer, { backgroundColor: cardBg, borderColor }]}>
         <View style={styles.watchedFoldersHeader}>
-          <Text style={styles.watchedFoldersTitle}>
+          <Text style={[styles.watchedFoldersTitle, { color: textColor }]}>
             Watched Folders ({watchedFolders.length})
           </Text>
           <TouchableOpacity
@@ -964,9 +974,9 @@ export default function UploadScreen() {
             style={styles.watchedChipsScroll}
           >
             {watchedFolders.map((f) => (
-              <View key={f.id} style={styles.watchedChip}>
-                <FontAwesome name={f.type === "saf" ? "folder-open" : "folder"} size={12} color="#4B5563" style={{ marginRight: 5 }} />
-                <Text style={styles.watchedChipText} numberOfLines={1}>
+              <View key={f.id} style={[styles.watchedChip, isDark && { backgroundColor: '#0F172A', borderColor: '#334155' }]}>
+                <FontAwesome name={f.type === "saf" ? "folder-open" : "folder"} size={12} color={isDark ? "#93C5FD" : "#4B5563"} style={{ marginRight: 5 }} />
+                <Text style={[styles.watchedChipText, isDark && { color: '#93C5FD' }]} numberOfLines={1}>
                   {f.title}
                 </Text>
               </View>
@@ -988,7 +998,8 @@ export default function UploadScreen() {
           <TouchableOpacity
             style={[
               styles.secondaryButton,
-              watchedFolders.length === 0 && { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' },
+              { backgroundColor: cardBg, borderColor: '#208AEF' },
+              watchedFolders.length === 0 && { backgroundColor: isDark ? 'rgba(32,138,239,0.15)' : '#EFF6FF', borderColor: '#3B82F6' },
             ]}
             onPress={() => {
               if (watchedFolders.length === 0) { setFolderModalVisible(true); return; }
@@ -1046,7 +1057,7 @@ export default function UploadScreen() {
       </View>
 
       {scanning && !!scanStatusText && (
-        <View style={styles.scanningBanner}>
+        <View style={[styles.scanningBanner, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)' }]}>
           <ActivityIndicator size="small" color="#208AEF" />
           <Text style={styles.scanningBannerText}>{scanStatusText}</Text>
         </View>
@@ -1055,7 +1066,7 @@ export default function UploadScreen() {
       {/* Duplicate Cleaner Tool Row */}
       <View style={styles.utilityActionRow}>
         <TouchableOpacity
-          style={styles.duplicateToolBtn}
+          style={[styles.duplicateToolBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)', borderColor: '#334155' }]}
           onPress={handleOpenDuplicateCleaner}
         >
           <FontAwesome name="clone" size={12} color="#208AEF" style={{ marginRight: 6 }} />
@@ -1064,20 +1075,26 @@ export default function UploadScreen() {
       </View>
 
       {/* Tabs: Queue vs History */}
-      <View style={styles.tabContainer}>
+      <View style={[styles.tabContainer, { backgroundColor: isDark ? '#1E293B' : '#e5e7eb' }]}>
         <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'queue' && styles.tabButtonActive]}
+          style={[
+            styles.tabButton,
+            activeTab === 'queue' && (isDark ? { backgroundColor: '#0F172A', elevation: 2 } : styles.tabButtonActive),
+          ]}
           onPress={() => setActiveTab('queue')}
         >
-          <Text style={[styles.tabButtonText, activeTab === 'queue' && styles.tabButtonTextActive]}>
+          <Text style={[styles.tabButtonText, { color: subtextColor }, activeTab === 'queue' && styles.tabButtonTextActive]}>
             Queue ({queue.length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'history' && styles.tabButtonActive]}
+          style={[
+            styles.tabButton,
+            activeTab === 'history' && (isDark ? { backgroundColor: '#0F172A', elevation: 2 } : styles.tabButtonActive),
+          ]}
           onPress={() => setActiveTab('history')}
         >
-          <Text style={[styles.tabButtonText, activeTab === 'history' && styles.tabButtonTextActive]}>
+          <Text style={[styles.tabButtonText, { color: subtextColor }, activeTab === 'history' && styles.tabButtonTextActive]}>
             History ({history.length})
           </Text>
         </TouchableOpacity>
@@ -1086,23 +1103,23 @@ export default function UploadScreen() {
       {activeTab === 'queue' ? (
         <>
           {/* Total File Size & Queue Summary Banner */}
-          <View style={styles.statsBanner}>
+          <View style={[styles.statsBanner, { backgroundColor: cardBg, borderColor, borderWidth: isDark ? 1 : 0 }]}>
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>Total Queue Size</Text>
-              <Text style={styles.statsValue}>{formatFileSize(totalQueueBytes)}</Text>
-              <Text style={styles.statsSub}>{queue.length} files total</Text>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>Total Queue Size</Text>
+              <Text style={[styles.statsValue, { color: textColor }]}>{formatFileSize(totalQueueBytes)}</Text>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>{queue.length} files total</Text>
             </View>
-            <View style={styles.statsDivider} />
+            <View style={[styles.statsDivider, { backgroundColor: borderColor }]} />
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>Pending Upload</Text>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>Pending Upload</Text>
               <Text style={[styles.statsValue, { color: '#208AEF' }]}>
                 {formatFileSize(pendingBytes)}
               </Text>
-              <Text style={styles.statsSub}>{pendingItems.length} files left</Text>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>{pendingItems.length} files left</Text>
             </View>
-            <View style={styles.statsDivider} />
+            <View style={[styles.statsDivider, { backgroundColor: borderColor }]} />
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>
                 {activeUploadingSpeed > 0
                   ? 'Live Speed'
                   : queueAvgSpeed > 0
@@ -1116,7 +1133,7 @@ export default function UploadScreen() {
                   ? formatSpeed(queueAvgSpeed)
                   : formatFileSize(completedBytes)}
               </Text>
-              <Text style={styles.statsSub}>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>
                 {activeUploadingSpeed > 0 ? 'transfer rate' : `${completedItems.length} uploaded`}
               </Text>
             </View>
@@ -1129,42 +1146,42 @@ export default function UploadScreen() {
             contentContainerStyle={styles.filterChipScroll}
           >
             <TouchableOpacity
-              style={[styles.filterChip, queueFilter === 'all' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'all' && styles.filterChipActive]}
               onPress={() => setQueueFilter('all')}
             >
-              <Text style={[styles.filterChipText, queueFilter === 'all' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'all' && styles.filterChipTextActive]}>
                 All ({queue.length})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, queueFilter === 'image' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'image' && styles.filterChipActive]}
               onPress={() => setQueueFilter('image')}
             >
-              <Text style={[styles.filterChipText, queueFilter === 'image' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'image' && styles.filterChipTextActive]}>
                 Images ({queueCategoryCounts.image})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, queueFilter === 'video' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'video' && styles.filterChipActive]}
               onPress={() => setQueueFilter('video')}
             >
-              <Text style={[styles.filterChipText, queueFilter === 'video' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'video' && styles.filterChipTextActive]}>
                 Videos ({queueCategoryCounts.video})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, queueFilter === 'audio' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'audio' && styles.filterChipActive]}
               onPress={() => setQueueFilter('audio')}
             >
-              <Text style={[styles.filterChipText, queueFilter === 'audio' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'audio' && styles.filterChipTextActive]}>
                 Audio ({queueCategoryCounts.audio})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, queueFilter === 'document' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'document' && styles.filterChipActive]}
               onPress={() => setQueueFilter('document')}
             >
-              <Text style={[styles.filterChipText, queueFilter === 'document' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'document' && styles.filterChipTextActive]}>
                 Docs ({queueCategoryCounts.document})
               </Text>
             </TouchableOpacity>
@@ -1172,7 +1189,7 @@ export default function UploadScreen() {
 
           {/* Queue Section Header */}
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionHeaderTitle}>
+            <Text style={[styles.sectionHeaderTitle, { color: textColor }]}>
               Queue List ({filteredQueue.length}{filteredQueue.length !== queue.length ? ` of ${queue.length}` : ''})
             </Text>
             <View style={styles.headerBtnGroup}>
@@ -1199,29 +1216,29 @@ export default function UploadScreen() {
       ) : (
         <>
           {/* History Total Stats Banner */}
-          <View style={styles.statsBanner}>
+          <View style={[styles.statsBanner, { backgroundColor: cardBg, borderColor, borderWidth: isDark ? 1 : 0 }]}>
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>Total Uploaded</Text>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>Total Uploaded</Text>
               <Text style={[styles.statsValue, { color: '#4CAF50' }]}>
                 {formatFileSize(totalUploadedBytes)}
               </Text>
-              <Text style={styles.statsSub}>{uploadedHistoryItems.length} files saved</Text>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>{uploadedHistoryItems.length} files saved</Text>
             </View>
-            <View style={styles.statsDivider} />
+            <View style={[styles.statsDivider, { backgroundColor: borderColor }]} />
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>Time Taken</Text>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>Time Taken</Text>
               <Text style={[styles.statsValue, { color: '#D97706' }]}>
                 {formatDuration(totalUploadTimeMs) || '0s'}
               </Text>
-              <Text style={styles.statsSub}>total upload time</Text>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>total upload time</Text>
             </View>
-            <View style={styles.statsDivider} />
+            <View style={[styles.statsDivider, { backgroundColor: borderColor }]} />
             <View style={styles.statsCol}>
-              <Text style={styles.statsLabel}>Avg Speed</Text>
+              <Text style={[styles.statsLabel, { color: subtextColor }]}>Avg Speed</Text>
               <Text style={[styles.statsValue, { color: '#0284C7' }]}>
                 {formatSpeed(avgUploadSpeed)}
               </Text>
-              <Text style={styles.statsSub}>transfer rate</Text>
+              <Text style={[styles.statsSub, { color: subtextColor }]}>transfer rate</Text>
             </View>
           </View>
 
@@ -1232,44 +1249,44 @@ export default function UploadScreen() {
             contentContainerStyle={styles.filterChipScroll}
           >
             <TouchableOpacity
-              style={[styles.filterChip, historyFilter === 'all' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, historyFilter === 'all' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('all')}
             >
-              <Text style={[styles.filterChipText, historyFilter === 'all' && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, historyFilter === 'all' && styles.filterChipTextActive]}>
                 All ({history.length})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, historyFilter === 'uploaded' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, historyFilter === 'uploaded' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('uploaded')}
             >
               <FontAwesome name="check" size={11} color={historyFilter === "uploaded" ? "#fff" : "#10B981"} style={{ marginRight: 4 }} />
-              <Text style={[styles.filterChipText, historyFilter === "uploaded" && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, historyFilter === "uploaded" && styles.filterChipTextActive]}>
                 Uploaded ({uploadedHistoryItems.length})
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, historyFilter === 'failed' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, historyFilter === 'failed' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('failed')}
             >
               <FontAwesome name="times" size={11} color={historyFilter === "failed" ? "#fff" : "#EF4444"} style={{ marginRight: 4 }} />
-              <Text style={[styles.filterChipText, historyFilter === "failed" && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, historyFilter === "failed" && styles.filterChipTextActive]}>
                 Failed
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.filterChip, historyFilter === 'dismissed' && styles.filterChipActive]}
+              style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, historyFilter === 'dismissed' && styles.filterChipActive]}
               onPress={() => setHistoryFilter('dismissed')}
             >
               <FontAwesome name="ban" size={11} color={historyFilter === "dismissed" ? "#fff" : "#F59E0B"} style={{ marginRight: 4 }} />
-              <Text style={[styles.filterChipText, historyFilter === "dismissed" && styles.filterChipTextActive]}>
+              <Text style={[styles.filterChipText, { color: subtextColor }, historyFilter === "dismissed" && styles.filterChipTextActive]}>
                 Dismissed
               </Text>
             </TouchableOpacity>
           </ScrollView>
 
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionHeaderTitle}>
+            <Text style={[styles.sectionHeaderTitle, { color: textColor }]}>
               History Records ({filteredHistory.length})
             </Text>
             <View style={styles.headerBtnGroup}>
@@ -1295,15 +1312,15 @@ export default function UploadScreen() {
   const renderFooter = () => {
     if (activeTab === 'queue' && filteredQueue.length > PAGE_SIZE) {
       return (
-        <View style={styles.paginationFooter}>
-          <Text style={styles.paginationText}>
+        <View style={[styles.paginationFooter, { borderTopColor: borderColor }]}>
+          <Text style={[styles.paginationText, { color: subtextColor }]}>
             Showing {displayedQueue.length} of {filteredQueue.length} files
           </Text>
           <TouchableOpacity
-            style={styles.paginationBtn}
+            style={[styles.paginationBtn, isDark && { backgroundColor: '#1E293B', borderColor: '#334155' }]}
             onPress={() => setQueueShowAll(!queueShowAll)}
           >
-            <Text style={styles.paginationBtnText}>
+            <Text style={[styles.paginationBtnText, isDark && { color: '#818CF8' }]}>
               {queueShowAll ? "Show 20 by default" : `Show All (${filteredQueue.length} files)`}
             </Text>
           </TouchableOpacity>
@@ -1313,15 +1330,15 @@ export default function UploadScreen() {
 
     if (activeTab === 'history' && filteredHistory.length > PAGE_SIZE) {
       return (
-        <View style={styles.paginationFooter}>
-          <Text style={styles.paginationText}>
+        <View style={[styles.paginationFooter, { borderTopColor: borderColor }]}>
+          <Text style={[styles.paginationText, { color: subtextColor }]}>
             Showing {displayedHistory.length} of {filteredHistory.length} records
           </Text>
           <TouchableOpacity
-            style={styles.paginationBtn}
+            style={[styles.paginationBtn, isDark && { backgroundColor: '#1E293B', borderColor: '#334155' }]}
             onPress={() => setHistoryShowAll(!historyShowAll)}
           >
-            <Text style={styles.paginationBtnText}>
+            <Text style={[styles.paginationBtnText, isDark && { color: '#818CF8' }]}>
               {historyShowAll ? "Show 20 by default" : `Show All (${filteredHistory.length} records)`}
             </Text>
           </TouchableOpacity>
@@ -1336,9 +1353,9 @@ export default function UploadScreen() {
     if (activeTab === 'queue') {
       return (
         <View style={styles.emptyContainer}>
-          <FontAwesome name="inbox" size={44} color="#9CA3AF" style={{ alignSelf: "center", marginBottom: 12 }} />
-          <Text style={styles.emptyText}>No files in upload queue</Text>
-          <Text style={styles.emptySubtext}>
+          <FontAwesome name="inbox" size={44} color={isDark ? "#64748B" : "#9CA3AF"} style={{ alignSelf: "center", marginBottom: 12 }} />
+          <Text style={[styles.emptyText, { color: textColor }]}>No files in upload queue</Text>
+          <Text style={[styles.emptySubtext, { color: subtextColor }]}>
             {queueFilter !== 'all'
               ? `No ${queueFilter} files match the current filter.`
               : 'Use the buttons above to select files or a folder to upload.'}
@@ -1349,9 +1366,9 @@ export default function UploadScreen() {
 
     return (
       <View style={styles.emptyContainer}>
-        <FontAwesome name="history" size={44} color="#9CA3AF" style={{ alignSelf: "center", marginBottom: 12 }} />
-        <Text style={styles.emptyText}>No history records</Text>
-        <Text style={styles.emptySubtext}>
+        <FontAwesome name="history" size={44} color={isDark ? "#64748B" : "#9CA3AF"} style={{ alignSelf: "center", marginBottom: 12 }} />
+        <Text style={[styles.emptyText, { color: textColor }]}>No history records</Text>
+        <Text style={[styles.emptySubtext, { color: subtextColor }]}>
           Actions like uploaded, failed, and dismissed files will appear here.
         </Text>
       </View>
@@ -1359,7 +1376,7 @@ export default function UploadScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <Stack.Screen
         options={{
           headerTitle: () => (
@@ -1399,7 +1416,7 @@ export default function UploadScreen() {
 
       {/* Top-level FlatList: Eliminates nested VirtualizedList inside ScrollView error */}
       <FlatList
-        style={styles.container}
+        style={[styles.container, { backgroundColor: bg }]}
         contentContainerStyle={[
           styles.content,
           { paddingBottom: Math.max(insets.bottom, 20) + 28 },

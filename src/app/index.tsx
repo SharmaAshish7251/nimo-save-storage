@@ -167,15 +167,31 @@ export default function HomeScreen() {
   // Guard: check onboarding completion status
   useEffect(() => {
     let active = true;
-    AsyncStorage.getItem('nimo_onboarding_done').then((val) => {
-      if (!active) return;
-      const isDone = val === '1' || val === 'true';
-      if (!isDone) {
-        setOnboardingStatus('needed');
-      } else {
-        setOnboardingStatus('done');
+
+    async function evaluateOnboarding() {
+      try {
+        const val = await AsyncStorage.getItem('nimo_onboarding_done');
+        let isDone = val === '1' || val === 'true';
+
+        if (!isDone) {
+          // If the user is already authenticated with Telegram, they have already configured the app.
+          // Bypass onboarding and mark it done so they don't get kicked into the onboarding carousel.
+          const isLoggedIn = await tdLibClient.isLoggedIn().catch(() => false);
+          if (isLoggedIn) {
+            isDone = true;
+            await AsyncStorage.setItem('nimo_onboarding_done', '1').catch(() => {});
+          }
+        }
+
+        if (!active) return;
+        setOnboardingStatus(isDone ? 'done' : 'needed');
+      } catch {
+        if (active) setOnboardingStatus('done');
       }
-    });
+    }
+
+    evaluateOnboarding();
+
     return () => {
       active = false;
     };
@@ -226,7 +242,7 @@ export default function HomeScreen() {
   };
 
   if (onboardingStatus === 'checking') {
-    return null;
+    return <View style={{ flex: 1, backgroundColor: '#000000' }} />;
   }
 
   if (onboardingStatus === 'needed') {

@@ -45,6 +45,7 @@ async function resolveCurrentChatId(): Promise<number> {
 export async function verifyCloudRecord(
   record: UploadedRecord,
   providedChatId?: number,
+  strictProvidedChatOnly: boolean = false,
 ): Promise<{ exists: boolean; record: UploadedRecord }> {
   // If record has no message ID at all, it's not in cloud
   if (!record.telegramMessageId && (!record.chunkManifest || record.chunkManifest.parts.length === 0)) {
@@ -53,22 +54,25 @@ export async function verifyCloudRecord(
 
   // Determine candidate chat IDs to probe:
   // 1. Explicitly provided chatId
-  // 2. record.chatId where the file was uploaded
-  // 3. Current active destination chatId
-  // 4. Saved Messages chatId
+  // 2. record.chatId where the file was uploaded (if not strict)
+  // 3. Current active destination chatId (if not strict)
+  // 4. Saved Messages chatId (if not strict)
   const candidateChatIds: number[] = [];
   if (providedChatId) candidateChatIds.push(providedChatId);
-  if (record.chatId && !candidateChatIds.includes(record.chatId)) candidateChatIds.push(record.chatId);
 
-  try {
-    const currentChatId = await resolveCurrentChatId();
-    if (!candidateChatIds.includes(currentChatId)) candidateChatIds.push(currentChatId);
-  } catch {}
+  if (!strictProvidedChatOnly) {
+    if (record.chatId && !candidateChatIds.includes(record.chatId)) candidateChatIds.push(record.chatId);
 
-  try {
-    const savedMessagesId = await tdLibClient.getSavedMessagesChatId();
-    if (!candidateChatIds.includes(savedMessagesId)) candidateChatIds.push(savedMessagesId);
-  } catch {}
+    try {
+      const currentChatId = await resolveCurrentChatId();
+      if (!candidateChatIds.includes(currentChatId)) candidateChatIds.push(currentChatId);
+    } catch {}
+
+    try {
+      const savedMessagesId = await tdLibClient.getSavedMessagesChatId();
+      if (!candidateChatIds.includes(savedMessagesId)) candidateChatIds.push(savedMessagesId);
+    } catch {}
+  }
 
   let exists = false;
   for (const chatId of candidateChatIds) {
@@ -601,11 +605,28 @@ export async function findCloudConflict(
   try {
     const hash = file.hash || (file.uri && file.size > 0 ? await computeFastFileHash(file.uri, file.size) : undefined);
     const index = await getUploadedIndex();
+
+    const chatId = targetChat
+      ? await tdLibClient.resolveTargetChatId(targetChat).catch(() => null)
+      : await resolveCurrentChatId().catch(() => null);
+
+    // Filter index to only consider records from the target chat if targetChat is specified.
+    // Files existing in Saved Messages are NOT conflicts when uploading to a Stream Channel.
+    const relevantIndex = (chatId && targetChat !== 'me')
+      ? index.filter((r) => {
+          if (r.cloudStatus === 'missing') return false;
+          if (r.chatId !== undefined && r.chatId !== null) {
+            return Number(r.chatId) === Number(chatId);
+          }
+          return false;
+        })
+      : index.filter((r) => r.cloudStatus !== 'missing');
+
     const candidates: { conflictType: CloudConflictMatch['conflictType']; record: UploadedRecord }[] = [];
 
     if (hash) {
-      const exactMatch = index.find(
-        (r) => r.cloudStatus !== 'missing' && r.size === file.size && r.hash === hash
+      const exactMatch = relevantIndex.find(
+        (r) => r.size === file.size && r.hash === hash
       );
       if (exactMatch) {
         candidates.push({ conflictType: 'exact_hash', record: exactMatch });
@@ -613,9 +634,8 @@ export async function findCloudConflict(
     }
 
     const lowerName = file.fileName.toLowerCase();
-    const nameSizeMatch = index.find(
+    const nameSizeMatch = relevantIndex.find(
       (r) =>
-        r.cloudStatus !== 'missing' &&
         r.fileName.toLowerCase() === lowerName &&
         r.size === file.size &&
         !candidates.some((c) => c.record.uri === r.uri)
@@ -626,13 +646,10 @@ export async function findCloudConflict(
 
     if (candidates.length === 0) return null;
 
-    const chatId = targetChat
-      ? await tdLibClient.resolveTargetChatId(targetChat)
-      : await resolveCurrentChatId();
-
     for (const candidate of candidates) {
       if (!candidate.record.telegramMessageId) continue;
-      const verified = await verifyCloudRecord(candidate.record, chatId);
+      // When targetChat is provided, strictly verify against that chatId only
+      const verified = await verifyCloudRecord(candidate.record, chatId ?? undefined, Boolean(targetChat));
       if (verified.exists) {
         // Backfill hash if missing on the existing record and matched by name+size
         if (hash && !verified.record.hash) {

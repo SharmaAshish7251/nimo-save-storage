@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Modal,
-  View,
   Text,
   TouchableOpacity,
   StyleSheet,
@@ -173,6 +172,117 @@ function resolveAlertType(payload: AlertPayload): {
   };
 }
 
+interface AnimatedAlertButtonProps {
+  button: AppAlertButton;
+  index: number;
+  isDual: boolean;
+  type: AlertType;
+  color: string;
+  cancelBg: string;
+  cancelBorder: string;
+  cancelText: string;
+  totalButtons: number;
+  onPress: () => void;
+}
+
+function AnimatedAlertButton({
+  button,
+  index,
+  isDual,
+  type,
+  color,
+  cancelBg,
+  cancelBorder,
+  cancelText,
+  totalButtons,
+  onPress,
+}: AnimatedAlertButtonProps) {
+  const [pressScale] = useState(() => new Animated.Value(1));
+
+  const isDestructive =
+    button.style === 'destructive' ||
+    (type === 'destructive' && index === totalButtons - 1 && button.style !== 'cancel');
+  const isCancel =
+    button.style === 'cancel' ||
+    (isDual && index === 0 && button.style !== 'destructive');
+
+  let btnBg = color;
+  let btnTextColor = '#FFFFFF';
+  let btnBorderColor = 'transparent';
+
+  if (isCancel) {
+    btnBg = cancelBg;
+    btnTextColor = cancelText;
+    btnBorderColor = cancelBorder;
+  } else if (isDestructive) {
+    btnBg = '#EF4444';
+    btnTextColor = '#FFFFFF';
+  } else if (type === 'success') {
+    btnBg = '#10B981';
+    btnTextColor = '#FFFFFF';
+  } else if (type === 'warning') {
+    btnBg = '#F59E0B';
+    btnTextColor = '#FFFFFF';
+  }
+
+  const handlePressIn = () => {
+    Animated.spring(pressScale, {
+      toValue: 0.95,
+      speed: 50,
+      bounciness: 0,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(pressScale, {
+      toValue: 1,
+      speed: 40,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <Animated.View
+      style={[
+        isDual ? styles.dualButton : styles.stackedButton,
+        {
+          transform: [{ scale: pressScale }],
+        },
+      ]}
+    >
+      <TouchableOpacity
+        activeOpacity={0.88}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={onPress}
+        style={[
+          styles.buttonBase,
+          {
+            backgroundColor: btnBg,
+            borderColor: btnBorderColor,
+            borderWidth: isCancel ? 1 : 0,
+          },
+        ]}
+      >
+        <Text
+          style={[
+            styles.buttonText,
+            {
+              color: btnTextColor,
+              fontWeight: isCancel ? '600' : '700',
+            },
+          ]}
+          numberOfLines={1}
+        >
+          {button.text}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
 /**
  * Root Host component for displaying AppAlerts.
  * Mount this once in the root app navigator (`src/app/_layout.tsx`).
@@ -181,126 +291,216 @@ export function AppAlertHost() {
   const { isDark } = useAppTheme();
   const [currentAlert, setCurrentAlert] = useState<AlertPayload | null>(null);
 
-  // Backdrop (scrim) fades independently for a layered feel
+  // Motion states for multi-layer cascade
   const [backdropAnim] = useState(() => new Animated.Value(0));
-  // Card: scale + translateY + opacity — all three for Apple-like spring entry
-  const [fadeAnim] = useState(() => new Animated.Value(0));
-  const [scaleAnim] = useState(() => new Animated.Value(0.88));
-  const [translateYAnim] = useState(() => new Animated.Value(32));
-  // Icon pops in with its own spring after the card settles
-  const [iconScaleAnim] = useState(() => new Animated.Value(0.6));
-  const [iconOpacityAnim] = useState(() => new Animated.Value(0));
+  const [cardFadeAnim] = useState(() => new Animated.Value(0));
+  const [cardScaleAnim] = useState(() => new Animated.Value(0.90));
+  const [cardTranslateYAnim] = useState(() => new Animated.Value(24));
 
-  // ─── Entrance ────────────────────────────────────────────────────────────────
-  const runEnterAnimation = useCallback(() => {
-    // Reset all to initial state
+  const [iconScaleAnim] = useState(() => new Animated.Value(0.4));
+  const [iconRotateAnim] = useState(() => new Animated.Value(0));
+
+  const [contentFadeAnim] = useState(() => new Animated.Value(0));
+  const [contentTranslateYAnim] = useState(() => new Animated.Value(10));
+
+  const [buttonsFadeAnim] = useState(() => new Animated.Value(0));
+  const [buttonsTranslateYAnim] = useState(() => new Animated.Value(12));
+
+  const [specularWidthAnim] = useState(() => new Animated.Value(0.3));
+
+  // ─── Entrance Motion Choreography ──────────────────────────────────────────
+  const runEnterAnimation = useCallback((alertType: AlertType) => {
+    // Reset all motion values to start positions
     backdropAnim.setValue(0);
-    fadeAnim.setValue(0);
-    scaleAnim.setValue(0.88);
-    translateYAnim.setValue(32);
-    iconScaleAnim.setValue(0.6);
-    iconOpacityAnim.setValue(0);
+    cardFadeAnim.setValue(0);
+    cardScaleAnim.setValue(0.90);
+    cardTranslateYAnim.setValue(24);
 
-    // Phase 1 — backdrop + card in parallel
+    iconScaleAnim.setValue(0.4);
+    iconRotateAnim.setValue(0);
+
+    contentFadeAnim.setValue(0);
+    contentTranslateYAnim.setValue(10);
+
+    buttonsFadeAnim.setValue(0);
+    buttonsTranslateYAnim.setValue(12);
+
+    specularWidthAnim.setValue(0.3);
+
+    // Parallel multi-layer cascade
     Animated.parallel([
-      // Backdrop: smooth linear fade
+      // 1. Scrim fade
       Animated.timing(backdropAnim, {
         toValue: 1,
         duration: 220,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
-      // Card opacity: short fade
-      Animated.timing(fadeAnim, {
+
+      // 2. Card spring-up & opacity
+      Animated.timing(cardFadeAnim, {
         toValue: 1,
-        duration: 200,
-        easing: Easing.out(Easing.cubic),
+        duration: 180,
+        easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
-      // Card scale: spring overshoot (feels "alive")
-      Animated.spring(scaleAnim, {
+      Animated.spring(cardScaleAnim, {
         toValue: 1,
-        damping: 16,
-        stiffness: 300,
-        mass: 0.9,
-        useNativeDriver: true,
-      }),
-      // Card slide-up from slightly below
-      Animated.spring(translateYAnim, {
-        toValue: 0,
-        damping: 18,
-        stiffness: 320,
+        damping: 17,
+        stiffness: 280,
         mass: 0.85,
         useNativeDriver: true,
       }),
-    ]).start(() => {
-      // Phase 2 — icon badge pops in after card settles
-      Animated.parallel([
-        Animated.spring(iconScaleAnim, {
-          toValue: 1,
-          damping: 10,
-          stiffness: 400,
-          mass: 0.7,
-          useNativeDriver: true,
-        }),
-        Animated.timing(iconOpacityAnim, {
-          toValue: 1,
-          duration: 100,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-  }, [backdropAnim, fadeAnim, scaleAnim, translateYAnim, iconScaleAnim, iconOpacityAnim]);
+      Animated.spring(cardTranslateYAnim, {
+        toValue: 0,
+        damping: 19,
+        stiffness: 300,
+        mass: 0.85,
+        useNativeDriver: true,
+      }),
 
-  // ─── Exit ─────────────────────────────────────────────────────────────────
+      // 3. Specular highlight expand & shimmer
+      Animated.timing(specularWidthAnim, {
+        toValue: 1,
+        duration: 320,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+
+      // 4. Icon spring pop + optional alert twitch
+      Animated.sequence([
+        Animated.delay(40),
+        Animated.parallel([
+          Animated.spring(iconScaleAnim, {
+            toValue: 1,
+            damping: 11,
+            stiffness: 360,
+            mass: 0.65,
+            useNativeDriver: true,
+          }),
+          ...(alertType === 'error' || alertType === 'destructive' || alertType === 'warning'
+            ? [
+                Animated.sequence([
+                  Animated.timing(iconRotateAnim, { toValue: -1, duration: 60, useNativeDriver: true }),
+                  Animated.timing(iconRotateAnim, { toValue: 1, duration: 80, useNativeDriver: true }),
+                  Animated.timing(iconRotateAnim, { toValue: -0.4, duration: 60, useNativeDriver: true }),
+                  Animated.timing(iconRotateAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
+                ]),
+              ]
+            : []),
+        ]),
+      ]),
+
+      // 5. Content slide-in (staggered)
+      Animated.sequence([
+        Animated.delay(50),
+        Animated.parallel([
+          Animated.timing(contentFadeAnim, {
+            toValue: 1,
+            duration: 190,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.spring(contentTranslateYAnim, {
+            toValue: 0,
+            damping: 18,
+            stiffness: 320,
+            useNativeDriver: true,
+          }),
+        ]),
+      ]),
+
+      // 6. Action buttons float in (staggered)
+      Animated.sequence([
+        Animated.delay(80),
+        Animated.parallel([
+          Animated.timing(buttonsFadeAnim, {
+            toValue: 1,
+            duration: 200,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.spring(buttonsTranslateYAnim, {
+            toValue: 0,
+            damping: 18,
+            stiffness: 320,
+            useNativeDriver: true,
+          }),
+        ]),
+      ]),
+    ]).start();
+  }, [
+    backdropAnim,
+    cardFadeAnim,
+    cardScaleAnim,
+    cardTranslateYAnim,
+    iconScaleAnim,
+    iconRotateAnim,
+    contentFadeAnim,
+    contentTranslateYAnim,
+    buttonsFadeAnim,
+    buttonsTranslateYAnim,
+    specularWidthAnim,
+  ]);
+
+  // ─── Exit Motion Choreography ─────────────────────────────────────────────
   const runExitAnimation = useCallback((onDone: () => void) => {
     Animated.parallel([
-      // Backdrop fades out cleanly
+      // Backdrop dissolves
       Animated.timing(backdropAnim, {
         toValue: 0,
-        duration: 180,
+        duration: 170,
         easing: Easing.in(Easing.quad),
         useNativeDriver: true,
       }),
-      // Card fades
-      Animated.timing(fadeAnim, {
+      // Card gracefully sinks and fades
+      Animated.timing(cardFadeAnim, {
         toValue: 0,
-        duration: 160,
+        duration: 150,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
-      // Card shrinks & slides down slightly (feels like gravity pulling it away)
-      Animated.timing(scaleAnim, {
+      Animated.timing(cardScaleAnim, {
         toValue: 0.92,
-        duration: 160,
+        duration: 150,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.timing(translateYAnim, {
-        toValue: 16,
-        duration: 160,
+      Animated.timing(cardTranslateYAnim, {
+        toValue: 14,
+        duration: 150,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
-      // Icon fades out first
-      Animated.timing(iconOpacityAnim, {
+      // Quick content fade
+      Animated.timing(contentFadeAnim, {
         toValue: 0,
         duration: 100,
-        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(buttonsFadeAnim, {
+        toValue: 0,
+        duration: 100,
         useNativeDriver: true,
       }),
     ]).start(() => onDone());
-  }, [backdropAnim, fadeAnim, scaleAnim, translateYAnim, iconOpacityAnim]);
+  }, [
+    backdropAnim,
+    cardFadeAnim,
+    cardScaleAnim,
+    cardTranslateYAnim,
+    contentFadeAnim,
+    buttonsFadeAnim,
+  ]);
 
   useEffect(() => {
     const unsubscribe = alertEmitter.subscribe((payload) => {
       if (payload) {
         setCurrentAlert(payload);
-        // Run enter after state flushes (next frame)
-        requestAnimationFrame(() => runEnterAnimation());
-
         const { type } = resolveAlertType(payload);
+        // Run enter after state flushes (next frame)
+        requestAnimationFrame(() => runEnterAnimation(type));
+
         if (type === 'destructive') {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
         } else if (type === 'success') {
@@ -351,6 +551,11 @@ export function AppAlertHost() {
 
   const isDual = buttons.length === 2;
 
+  const iconRotate = iconRotateAnim.interpolate({
+    inputRange: [-1, 0, 1],
+    outputRange: ['-5deg', '0deg', '5deg'],
+  });
+
   return (
     <Modal
       transparent
@@ -380,100 +585,89 @@ export function AppAlertHost() {
             {
               backgroundColor: cardBg,
               borderColor: cardBorder,
-              opacity: fadeAnim,
+              opacity: cardFadeAnim,
               transform: [
-                { scale: scaleAnim },
-                { translateY: translateYAnim },
+                { scale: cardScaleAnim },
+                { translateY: cardTranslateYAnim },
               ],
             },
           ]}
         >
-          {/* Top Subtle Bevel Specular Highlight */}
-          <View style={[styles.specularHighlight, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(255, 255, 255, 0.8)' }]} />
+          {/* Top Subtle Bevel Specular Highlight with shimmer scaleX */}
+          <Animated.View
+            style={[
+              styles.specularHighlight,
+              {
+                backgroundColor: isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(255, 255, 255, 0.85)',
+                opacity: specularWidthAnim,
+                transform: [{ scaleX: specularWidthAnim }],
+              },
+            ]}
+          />
 
-          {/* Icon Badge — pops in with its own spring after card */}
+          {/* Icon Badge with elastic spring & micro-rotation */}
           <Animated.View
             style={[
               styles.iconBadge,
               {
                 backgroundColor: color + '18',
                 borderColor: color + '40',
-                opacity: iconOpacityAnim,
-                transform: [{ scale: iconScaleAnim }],
+                transform: [
+                  { scale: iconScaleAnim },
+                  { rotate: iconRotate },
+                ],
               },
             ]}
           >
             <FontAwesome name={icon} size={24} color={color} />
           </Animated.View>
 
-          {/* Title */}
-          <Text style={[styles.title, { color: textColor }]} numberOfLines={2}>
-            {currentAlert.title}
-          </Text>
-
-          {/* Message */}
-          {Boolean(currentAlert.message) && (
-            <Text style={[styles.message, { color: subtextColor }]}>
-              {currentAlert.message}
+          {/* Title & Message Content with Staggered Motion */}
+          <Animated.View
+            style={[
+              styles.contentWrap,
+              {
+                opacity: contentFadeAnim,
+                transform: [{ translateY: contentTranslateYAnim }],
+              },
+            ]}
+          >
+            <Text style={[styles.title, { color: textColor }]} numberOfLines={2}>
+              {currentAlert.title}
             </Text>
-          )}
+            {Boolean(currentAlert.message) && (
+              <Text style={[styles.message, { color: subtextColor }]}>
+                {currentAlert.message}
+              </Text>
+            )}
+          </Animated.View>
 
-          {/* Action Buttons */}
-          <View style={isDual ? styles.dualButtonRow : styles.stackedButtonColumn}>
-            {buttons.map((btn, idx) => {
-              const isDestructive = btn.style === 'destructive' || (type === 'destructive' && idx === buttons.length - 1 && btn.style !== 'cancel');
-              const isCancel = btn.style === 'cancel' || (isDual && idx === 0 && btn.style !== 'destructive');
-
-              let btnBg = color;
-              let btnTextColor = '#FFFFFF';
-              let btnBorderColor = 'transparent';
-
-              if (isCancel) {
-                btnBg = cancelBg;
-                btnTextColor = cancelText;
-                btnBorderColor = cancelBorder;
-              } else if (isDestructive) {
-                btnBg = '#EF4444';
-                btnTextColor = '#FFFFFF';
-              } else if (type === 'success') {
-                btnBg = '#10B981';
-                btnTextColor = '#FFFFFF';
-              } else if (type === 'warning') {
-                btnBg = '#F59E0B';
-                btnTextColor = '#FFFFFF';
-              }
-
-              return (
-                <TouchableOpacity
-                  key={`${btn.text}-${idx}`}
-                  style={[
-                    styles.buttonBase,
-                    isDual && styles.dualButton,
-                    {
-                      backgroundColor: btnBg,
-                      borderColor: btnBorderColor,
-                      borderWidth: isCancel ? 1 : 0,
-                    },
-                  ]}
-                  activeOpacity={0.75}
-                  onPress={() => handleDismiss(btn)}
-                >
-                  <Text
-                    style={[
-                      styles.buttonText,
-                      {
-                        color: btnTextColor,
-                        fontWeight: isCancel ? '600' : '700',
-                      },
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {btn.text}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {/* Action Buttons with Staggered Motion & Press Scaling */}
+          <Animated.View
+            style={[
+              isDual ? styles.dualButtonRow : styles.stackedButtonColumn,
+              {
+                opacity: buttonsFadeAnim,
+                transform: [{ translateY: buttonsTranslateYAnim }],
+              },
+            ]}
+          >
+            {buttons.map((btn, idx) => (
+              <AnimatedAlertButton
+                key={`${btn.text}-${idx}`}
+                button={btn}
+                index={idx}
+                isDual={isDual}
+                type={type}
+                color={color}
+                cancelBg={cancelBg}
+                cancelBorder={cancelBorder}
+                cancelText={cancelText}
+                totalButtons={buttons.length}
+                onPress={() => handleDismiss(btn)}
+              />
+            ))}
+          </Animated.View>
         </Animated.View>
       </Animated.View>
     </Modal>
@@ -573,5 +767,12 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     fontSize: 14,
+  },
+  stackedButton: {
+    width: '100%',
+  },
+  contentWrap: {
+    width: '100%',
+    alignItems: 'center',
   },
 });

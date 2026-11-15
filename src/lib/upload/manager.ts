@@ -33,6 +33,20 @@ export interface ProcessQueueResult {
   uploadedBytes?: number;
 }
 
+export type UploadEventType = 'status' | 'progress' | 'item_complete' | 'queue_complete' | 'paused' | 'resumed';
+
+export interface UploadEvent {
+  type: UploadEventType;
+  isRunning: boolean;
+  isPaused: boolean;
+  itemId?: string;
+  progress?: number;
+  speedKbps?: number;
+  error?: string;
+}
+
+export type UploadEventListener = (event: UploadEvent) => void;
+
 const FREE_TIER_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2GB - Free Telegram limit
 const PREMIUM_TIER_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4GB - Telegram Premium limit
 
@@ -45,12 +59,41 @@ export class UploadManager {
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
   // Fix 1.6: In-memory progress cache to avoid AsyncStorage thrashing
   private inMemoryProgress: Map<string, { progress: number; speedKbps: number }> = new Map();
+  private listeners: Set<UploadEventListener> = new Set();
   private totalBatchItems = 0;
   private completedBatchItems = 0;
   private totalBatchBytes = 0;
   private uploadedBatchBytes = 0;
   private netInfoUnsubscribe: (() => void) | null = null;
   private wasInterruptedByNetwork = false;
+
+  /**
+   * Subscribes to live upload events (status changes, real-time progress, paused/resumed).
+   * Emits the current state immediately upon subscription.
+   */
+  public subscribe(listener: UploadEventListener): () => void {
+    this.listeners.add(listener);
+    try {
+      listener({
+        type: 'status',
+        isRunning: this.isRunning,
+        isPaused: this.isPaused,
+      });
+    } catch {}
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notifyListeners(event: UploadEvent): void {
+    this.listeners.forEach((listener) => {
+      try {
+        listener(event);
+      } catch (err) {
+        console.warn('[UploadManager] Error in listener callback:', err);
+      }
+    });
+  }
 
   /**
    * Returns live progress for all currently-uploading items.
@@ -110,6 +153,7 @@ export class UploadManager {
     if (changed) {
       await saveQueue(updated);
     }
+    this.notifyListeners({ type: 'paused', isRunning: this.isRunning, isPaused: true });
   }
 
   /**
@@ -136,6 +180,7 @@ export class UploadManager {
     if (changed) {
       await saveQueue(updated);
     }
+    this.notifyListeners({ type: 'resumed', isRunning: this.isRunning, isPaused: false });
 
     if (!this.isRunning) {
       return await this.processQueue({ forceManual: true });
@@ -159,6 +204,7 @@ export class UploadManager {
     if (target && (target.status === 'uploading' || target.status === 'pending')) {
       const live = this.inMemoryProgress.get(id)?.progress;
       await this.updateItemStatus(id, 'paused', live ?? target.progress ?? 0);
+      this.notifyListeners({ type: 'paused', isRunning: this.isRunning, isPaused: this.isPaused, itemId: id });
     }
   }
 
@@ -178,6 +224,7 @@ export class UploadManager {
     };
     queue[idx] = item;
     await saveQueue(queue);
+    this.notifyListeners({ type: 'resumed', isRunning: this.isRunning, isPaused: this.isPaused, itemId: id });
 
     if (this.isRunning && !this.isPaused) {
       this.queue.add(() => this.uploadItem(item).catch(() => {}));
@@ -273,6 +320,7 @@ export class UploadManager {
     this.isRunning = true;
     this.isPaused = false;
     this.pausedItemIds.clear();
+    this.notifyListeners({ type: 'status', isRunning: true, isPaused: false });
     
     try {
       // 1. Verify Telegram authentication first
@@ -428,6 +476,7 @@ export class UploadManager {
     } finally {
       await uploadNotificationService.dismissProgress();
       this.isRunning = false;
+      this.notifyListeners({ type: 'queue_complete', isRunning: false, isPaused: this.isPaused });
     }
   }
 
@@ -579,7 +628,17 @@ export class UploadManager {
         }
         this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
         // Fix 1.6: Only update in-memory progress — no AsyncStorage writes during progress
-        this.inMemoryProgress.set(item.id, { progress: Math.round(progress * 100), speedKbps: Math.round(speedKbps) });
+        const percent = Math.round(progress * 100);
+        const roundedSpeed = Math.round(speedKbps);
+        this.inMemoryProgress.set(item.id, { progress: percent, speedKbps: roundedSpeed });
+        this.notifyListeners({
+          type: 'progress',
+          isRunning: this.isRunning,
+          isPaused: this.isPaused,
+          itemId: item.id,
+          progress: percent,
+          speedKbps: roundedSpeed,
+        });
 
         // Update live sticky notification with speed and ETA
         const currentBatchBytes = this.uploadedBatchBytes + uploadedBytes;
@@ -660,6 +719,13 @@ export class UploadManager {
       // Clean up in-memory progress tracking
       this.inMemoryProgress.delete(item.id);
       delete this.progressTrack[item.id];
+
+      this.notifyListeners({
+        type: 'item_complete',
+        isRunning: this.isRunning,
+        isPaused: this.isPaused,
+        itemId: item.id,
+      });
 
       console.log(`Uploaded ${item.fileName} successfully in ${(durationMs / 1000).toFixed(1)}s`);
     } catch (error: any) {

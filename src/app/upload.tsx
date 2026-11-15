@@ -200,13 +200,40 @@ export default function UploadScreen() {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 2000);
-    const unsub = onConfigSaved((newCfg) => {
+    const unsubConfig = onConfigSaved((newCfg) => {
       setConfig(newCfg);
     });
+
+    const unsubUpload = uploadManager.subscribe((event) => {
+      if (
+        event.type === 'status' ||
+        event.type === 'queue_complete' ||
+        event.type === 'item_complete' ||
+        event.type === 'paused' ||
+        event.type === 'resumed'
+      ) {
+        loadData();
+      } else if (event.type === 'progress' && event.itemId) {
+        // Fast reactive progress and speed update
+        setQueue((prev) =>
+          prev.map((item) =>
+            item.id === event.itemId
+              ? {
+                  ...item,
+                  progress: event.progress ?? item.progress,
+                  speedKbps: event.speedKbps ?? item.speedKbps,
+                }
+              : item
+          )
+        );
+      }
+    });
+
+    const interval = setInterval(loadData, 1500);
     return () => {
       clearInterval(interval);
-      unsub();
+      unsubConfig();
+      unsubUpload();
     };
   }, []);
 
@@ -326,12 +353,24 @@ export default function UploadScreen() {
         return;
       }
 
-      const skippedNote = skipped > 0 ? ` (${skipped} duplicates skipped)` : '';
-      Alert.alert(
-        'Success',
-        `Added ${added.length} files (${formatFileSize(totalBytes)}) from ${foldersToScan.length} folder(s) to queue${skippedNote}`
-      );
-      loadData();
+      await loadData();
+
+      if (added.length > 0 && config?.autoUploadEnabled) {
+        // Auto-upload option enabled: immediately kick off upload session
+        startUpload();
+      } else {
+        const skippedNote = skipped > 0 ? ` (${skipped} duplicates skipped)` : '';
+        Alert.alert(
+          'Scan Complete',
+          `Added ${added.length} files (${formatFileSize(totalBytes)}) from ${foldersToScan.length} folder(s) to queue${skippedNote}`,
+          added.length > 0
+            ? [
+                { text: 'Later', style: 'cancel' },
+                { text: 'Upload Now', onPress: () => startUpload() },
+              ]
+            : [{ text: 'OK' }]
+        );
+      }
     } catch (error: any) {
       if (controller.signal.aborted) {
         Alert.alert('Scan Cancelled', 'Media scan stopped.');
@@ -361,6 +400,9 @@ export default function UploadScreen() {
       await recoverInterruptedUploads().catch(() => {});
       const result = await uploadManager.processQueue({ forceManual: true });
       loadData();
+      if (result.errors && result.errors[0] === 'Upload already in progress') {
+        return;
+      }
       if (result.paused && result.paused > 0 && result.failed === 0) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         Alert.alert(
@@ -561,10 +603,15 @@ export default function UploadScreen() {
     );
   };
 
+  const isCurrentlyUploading =
+    uploading ||
+    uploadManager.isActive ||
+    queue.some((item) => item.status === 'uploading');
+
   // Queue metrics
   const totalQueueBytes = queue.reduce((sum, item) => sum + (item.size || 0), 0);
   const pendingItems = queue.filter(
-    (item) => item.status === 'pending' || (item.status === 'uploading' && !uploading)
+    (item) => item.status === 'pending' || (item.status === 'uploading' && !isCurrentlyUploading)
   );
   const pendingBytes = pendingItems.reduce((sum, item) => sum + (item.size || 0), 0);
   const completedItems = queue.filter((item) => item.status === 'completed');
@@ -718,7 +765,7 @@ export default function UploadScreen() {
                 {item.status.toUpperCase()}
               </Text>
             </View>
-            {(item.status === 'pending' || (item.status === 'uploading' && !uploading)) && (
+            {(item.status === 'pending' || (item.status === 'uploading' && !isCurrentlyUploading)) && (
               <TouchableOpacity
                 style={[styles.itemUploadBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)' }]}
                 onPress={(e) => {
@@ -730,7 +777,7 @@ export default function UploadScreen() {
                 <FontAwesome name="rocket" size={13} color="#208AEF" />
               </TouchableOpacity>
             )}
-            {item.status === 'uploading' && uploading && (
+            {item.status === 'uploading' && isCurrentlyUploading && (
               <TouchableOpacity
                 style={[styles.itemUploadBtn, { backgroundColor: isDark ? 'rgba(217, 119, 6, 0.2)' : '#FEF3C7' }]}
                 onPress={(e) => {
@@ -1034,7 +1081,7 @@ export default function UploadScreen() {
           </TouchableOpacity>
         )}
 
-        {uploading ? (
+        {isCurrentlyUploading ? (
           <TouchableOpacity
             style={[styles.uploadButton, { backgroundColor: '#D97706' }]}
             onPress={handlePauseQueue}
@@ -1046,7 +1093,7 @@ export default function UploadScreen() {
               </Text>
             </View>
           </TouchableOpacity>
-        ) : queue.some((q) => q.status === 'paused') ? (
+        ) : (queue.some((q) => q.status === 'paused') || uploadManager.isQueuePaused) ? (
           <TouchableOpacity
             style={[styles.uploadButton, { backgroundColor: '#16A34A' }, scanning && styles.buttonDisabled]}
             onPress={handleResumeQueue}
@@ -1055,15 +1102,15 @@ export default function UploadScreen() {
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
               <FontAwesome name="play" size={14} color="#FFF" style={{ marginRight: 6 }} />
               <Text style={styles.uploadButtonText} numberOfLines={1}>
-                Resume ({queue.filter((q) => q.status === 'paused').length})
+                Resume ({queue.filter((q) => q.status === 'paused').length || 1})
               </Text>
             </View>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.uploadButton, (uploading || scanning) && styles.buttonDisabled]}
+            style={[styles.uploadButton, (isCurrentlyUploading || scanning) && styles.buttonDisabled]}
             onPress={startUpload}
-            disabled={uploading || scanning}
+            disabled={isCurrentlyUploading || scanning}
           >
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
               <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 6 }} />

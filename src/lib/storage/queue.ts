@@ -348,10 +348,19 @@ export interface UploadedRecord {
 
 const MAX_UPLOADED_ITEMS = 5000;
 
+// In-memory cache to prevent repeated SQLite reads/JSON-parsing of 5,000+ items during active queue uploads
+let cachedUploadedIndex: UploadedRecord[] | null = null;
+
 export async function getUploadedIndex(): Promise<UploadedRecord[]> {
+  if (cachedUploadedIndex !== null) {
+    return cachedUploadedIndex;
+  }
   try {
     const raw = await AsyncStorage.getItem(UPLOADED_KEY);
-    if (!raw) return [];
+    if (!raw) {
+      cachedUploadedIndex = [];
+      return [];
+    }
     const records: UploadedRecord[] = JSON.parse(raw);
     // Auto-prune bloated index on first read (keeps newest records)
     if (records.length > MAX_UPLOADED_ITEMS) {
@@ -360,10 +369,13 @@ export async function getUploadedIndex(): Promise<UploadedRecord[]> {
         .slice(0, MAX_UPLOADED_ITEMS);
       // Write back asynchronously — do NOT await so reads remain fast
       AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(pruned)).catch(() => {});
+      cachedUploadedIndex = pruned;
       return pruned;
     }
+    cachedUploadedIndex = records;
     return records;
   } catch {
+    cachedUploadedIndex = [];
     return [];
   }
 }
@@ -379,11 +391,13 @@ export async function markUploaded(record: UploadedRecord): Promise<void> {
       filtered.length > MAX_UPLOADED_ITEMS
         ? filtered.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0)).slice(0, MAX_UPLOADED_ITEMS)
         : filtered;
+    cachedUploadedIndex = capped;
     await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(capped));
   });
 }
 
 export async function saveUploadedIndex(records: UploadedRecord[]): Promise<void> {
+  cachedUploadedIndex = records;
   await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(records));
 }
 
@@ -473,6 +487,8 @@ export async function completeUploadAtomically(params: {
       destination: params.destination,
     };
     const updatedHistory = [newHistoryItem, ...history].slice(0, MAX_HISTORY_ITEMS);
+    cachedUploadedIndex = filteredUploaded;
+    cachedHistory = updatedHistory;
 
     await Promise.all([
       saveQueue(queue),
@@ -537,24 +553,35 @@ export function formatSpeed(bytesPerSec?: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
 }
 
+// In-memory cache mirror for action history to prevent redundant SQLite reads during rapid uploads
+let cachedHistory: ActionHistoryItem[] | null = null;
+const MAX_HISTORY_ITEMS = 500;
+
 export async function getActionHistory(): Promise<ActionHistoryItem[]> {
+  if (cachedHistory !== null) {
+    return cachedHistory;
+  }
   try {
     const raw = await AsyncStorage.getItem(ACTION_HISTORY_KEY);
-    if (!raw) return [];
+    if (!raw) {
+      cachedHistory = [];
+      return [];
+    }
     const parsed: ActionHistoryItem[] = JSON.parse(raw);
     if (parsed.length > MAX_HISTORY_ITEMS) {
       // Auto-prune existing bloated history down to MAX_HISTORY_ITEMS to prevent SQLite CursorWindow crash
       const pruned = parsed.slice(0, MAX_HISTORY_ITEMS);
       AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(pruned)).catch(() => {});
+      cachedHistory = pruned;
       return pruned;
     }
+    cachedHistory = parsed;
     return parsed;
   } catch {
+    cachedHistory = [];
     return [];
   }
 }
-
-const MAX_HISTORY_ITEMS = 500;
 
 export async function recordActionHistory(
   item: Omit<ActionHistoryItem, 'id' | 'timestamp'>
@@ -568,6 +595,7 @@ export async function recordActionHistory(
     };
     // Prepend to show most recent first, keep up to 500 items
     const updated = [newItem, ...history].slice(0, MAX_HISTORY_ITEMS);
+    cachedHistory = updated;
     await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
     return newItem;
   });
@@ -591,6 +619,7 @@ export async function recordActionHistoryBatch(
         timestamp: now,
       }));
       const updated = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
+      cachedHistory = updated;
       await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
     } catch (err) {
       console.warn('[Queue] Failed to record action history batch:', err);
@@ -599,6 +628,7 @@ export async function recordActionHistoryBatch(
 }
 
 export async function clearActionHistory(): Promise<void> {
+  cachedHistory = [];
   await AsyncStorage.removeItem(ACTION_HISTORY_KEY);
 }
 
@@ -644,6 +674,7 @@ export async function clearAllQueue(
         destination,
       }));
       const updatedHistory = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
+      cachedHistory = updatedHistory;
       await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory));
     }
     await saveQueue([]);

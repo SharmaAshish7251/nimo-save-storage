@@ -223,3 +223,28 @@ export async function cleanupTempFile(filePath: string): Promise<void> {
     console.warn('[cleanupTempFile] Error removing temp file:', err);
   }
 }
+
+/**
+ * Prunes orphaned temporary files from tdlib_upload/ cache older than 10 minutes,
+ * ensuring internal phone storage never exhausts during large queues.
+ */
+export async function pruneOrphanedUploadCache(maxAgeMs: number = 10 * 60 * 1000): Promise<void> {
+  try {
+    const dirInfo = await LegacyFileSystem.getInfoAsync(UPLOAD_CACHE_DIR);
+    if (!dirInfo.exists) return;
+    const files = await LegacyFileSystem.readDirectoryAsync(UPLOAD_CACHE_DIR).catch(() => []);
+    const now = Date.now();
+    for (const file of files) {
+      const filePath = `${UPLOAD_CACHE_DIR}${file}`;
+      const info = await LegacyFileSystem.getInfoAsync(filePath).catch(() => ({ exists: false } as any));
+      if (info.exists && (info as any).modificationTime) {
+        const modTime = (info as any).modificationTime * 1000;
+        if (now - modTime > maxAgeMs) {
+          await LegacyFileSystem.deleteAsync(filePath, { idempotent: true }).catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[pruneOrphanedUploadCache] Error pruning cache:', err);
+  }
+}

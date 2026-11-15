@@ -2,7 +2,7 @@ import 'react-native-get-random-values';
 import '@/shims/polyfills';
 import { DarkTheme, DefaultTheme, ThemeProvider, Stack, router } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import * as LegacyFileSystem from 'expo-file-system/legacy';
+import { pruneOrphanedUploadCache } from '@/lib/tdlib/fileHelper';
 import { Text, TouchableOpacity, StyleSheet, View, StatusBar as RNStatusBar, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
@@ -44,7 +44,7 @@ function RootLayoutNav() {
     const unsub = uploadManager.subscribe((event) => {
       if (event.type === 'queue_complete' || event.type === 'paused') {
         setIsUploading(false);
-      } else if (event.type === 'status' || event.type === 'progress') {
+      } else if (event.type === 'status' || event.type === 'resumed') {
         setIsUploading(uploadManager.isActive);
       }
     });
@@ -152,26 +152,8 @@ export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
-        // Clean up orphaned temp upload files older than 1 hour (preserve active/recent files)
-        try {
-          const uploadCacheDir = `${LegacyFileSystem.cacheDirectory}tdlib_upload/`;
-          const dirInfo = await LegacyFileSystem.getInfoAsync(uploadCacheDir);
-          if (dirInfo.exists) {
-            const files = await LegacyFileSystem.readDirectoryAsync(uploadCacheDir).catch(() => []);
-            const ONE_HOUR = 60 * 60 * 1000;
-            const now = Date.now();
-            for (const file of files) {
-              const filePath = `${uploadCacheDir}${file}`;
-              const info = await LegacyFileSystem.getInfoAsync(filePath).catch(() => ({ exists: false } as any));
-              if (info.exists && (info as any).modificationTime) {
-                const modTime = (info as any).modificationTime * 1000;
-                if (now - modTime > ONE_HOUR) {
-                  await LegacyFileSystem.deleteAsync(filePath, { idempotent: true }).catch(() => {});
-                }
-              }
-            }
-          }
-        } catch {}
+        // Clean up orphaned temp upload files older than 10 minutes
+        await pruneOrphanedUploadCache().catch(() => {});
         await registerBackgroundUploadTask().catch((err) => {
           console.warn('Background task registration error:', err);
         });

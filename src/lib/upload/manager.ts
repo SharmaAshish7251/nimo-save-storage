@@ -14,6 +14,7 @@ import {
   resolveFileDestination,
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
+import { pruneOrphanedUploadCache } from '../tdlib/fileHelper';
 import { getFileInfo, computeFastFileHash } from '../storage/fileHelper';
 import { syncDestinationBeforeUpload, findCloudConflict, deleteCloudRecord } from '../storage/cloudSync';
 import { scheduleCloudProfilePush } from '../storage/cloudProfileSync';
@@ -59,6 +60,8 @@ export class UploadManager {
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
   // Fix 1.6: In-memory progress cache to avoid AsyncStorage thrashing
   private inMemoryProgress: Map<string, { progress: number; speedKbps: number }> = new Map();
+  // Throttle progress notifications to max 4 times/sec per file to eliminate JS thread starvation
+  private lastProgressEmit: Map<string, { time: number; bytes: number; speedKbps: number }> = new Map();
   private listeners: Set<UploadEventListener> = new Set();
   private totalBatchItems = 0;
   private completedBatchItems = 0;
@@ -321,6 +324,8 @@ export class UploadManager {
     this.isPaused = false;
     this.pausedItemIds.clear();
     this.notifyListeners({ type: 'status', isRunning: true, isPaused: false });
+    // Clean up any stale temp files from previous aborted runs before starting batch
+    pruneOrphanedUploadCache().catch(() => {});
     
     try {
       // 1. Verify Telegram authentication first
@@ -348,13 +353,18 @@ export class UploadManager {
       }
 
       const config = await getConfig();
-      // Adaptive concurrency: throttle on slow cellular to avoid socket drops; utilize full concurrency on Wi-Fi / 5G
+      // Dynamic Size-Aware & Network-Adaptive Concurrency:
+      // When large files (>100MB) are in the queue, cap concurrency at 2 to maximize dedicated pipe bandwidth,
+      // prevent socket congestion, and eliminate 90s watchdog timeouts on mobile.
+      const hasLargeFiles = pendingItems.some((it) => (it.size || 0) > 100 * 1024 * 1024);
       const baseConcurrency = config.concurrency || 3;
       try {
         const netInfo = await NetInfo.fetch();
         const cellGen = (netInfo as any)?.details?.cellularGeneration;
         if ((netInfo as any).type === 'cellular' && (cellGen === '2g' || cellGen === '3g')) {
           this.setConcurrency(1);
+        } else if (hasLargeFiles && baseConcurrency > 2) {
+          this.setConcurrency(2);
         } else {
           this.setConcurrency(baseConcurrency);
         }
@@ -418,8 +428,15 @@ export class UploadManager {
               const floodMatch = String(err?.message || '').match(/FLOOD_WAIT_(\d+)/i);
               if (floodMatch && floodMatch[1]) {
                 const waitSec = Math.min(60, parseInt(floodMatch[1], 10) + 1);
-                console.warn(`[UploadManager] Flood wait encountered for ${item.fileName}: waiting ${waitSec}s`);
-                await new Promise((r) => setTimeout(r, waitSec * 1000));
+                console.warn(`[UploadManager] Flood wait encountered for ${item.fileName}: pausing queue for ${waitSec}s`);
+                try {
+                  this.queue.pause();
+                  await new Promise((r) => setTimeout(r, waitSec * 1000));
+                } finally {
+                  if (!this.isPaused) {
+                    this.queue.start();
+                  }
+                }
                 continue;
               }
 
@@ -477,6 +494,7 @@ export class UploadManager {
       await uploadNotificationService.dismissProgress();
       this.isRunning = false;
       this.notifyListeners({ type: 'queue_complete', isRunning: false, isPaused: this.isPaused });
+      pruneOrphanedUploadCache().catch(() => {});
     }
   }
 
@@ -614,22 +632,34 @@ export class UploadManager {
       let result: any;
       const onUploadProgress = (progress: number) => {
         const now = Date.now();
-        if (!this.progressTrack[item.id]) {
-          this.progressTrack[item.id] = { bytes: 0, time: now };
-        }
         const actualSize = fileInfo.size > 0 ? fileInfo.size : item.size || 0;
         const uploadedBytes = Math.round(progress * actualSize);
-        const last = this.progressTrack[item.id];
-        const deltaBytes = uploadedBytes - last.bytes;
-        const deltaTime = (now - last.time) / 1000;
-        let speedKbps = 0;
-        if (deltaTime > 0 && deltaBytes > 0) {
-          speedKbps = (deltaBytes / 1024) / deltaTime;
+        const percent = Math.min(100, Math.round(progress * 100));
+
+        let last = this.lastProgressEmit.get(item.id);
+        if (!last) {
+          last = { time: now, bytes: uploadedBytes, speedKbps: 0 };
+          this.lastProgressEmit.set(item.id, last);
         }
-        this.progressTrack[item.id] = { bytes: uploadedBytes, time: now };
-        // Fix 1.6: Only update in-memory progress — no AsyncStorage writes during progress
-        const percent = Math.round(progress * 100);
+
+        const elapsedMs = now - last.time;
+        // Throttle progress events to max once every 250ms (4 updates/sec per active file)
+        // Always emit when completed (progress >= 1)
+        if (elapsedMs < 250 && progress < 1) {
+          return;
+        }
+
+        const deltaBytes = uploadedBytes - last.bytes;
+        const deltaTimeSec = elapsedMs / 1000;
+        let speedKbps = last.speedKbps;
+        if (deltaTimeSec > 0 && deltaBytes > 0) {
+          const instantSpeed = (deltaBytes / 1024) / deltaTimeSec;
+          // Smooth moving average (70% last, 30% instant) to eliminate spikes/jitter
+          speedKbps = last.speedKbps > 0 ? (last.speedKbps * 0.7 + instantSpeed * 0.3) : instantSpeed;
+        }
         const roundedSpeed = Math.round(speedKbps);
+        this.lastProgressEmit.set(item.id, { time: now, bytes: uploadedBytes, speedKbps: roundedSpeed });
+
         this.inMemoryProgress.set(item.id, { progress: percent, speedKbps: roundedSpeed });
         this.notifyListeners({
           type: 'progress',
@@ -644,14 +674,14 @@ export class UploadManager {
         const currentBatchBytes = this.uploadedBatchBytes + uploadedBytes;
         const totalPercent = this.totalBatchBytes > 0
           ? Math.round((currentBatchBytes / this.totalBatchBytes) * 100)
-          : Math.round(progress * 100);
+          : percent;
         const remainingBytes = Math.max(0, this.totalBatchBytes - currentBatchBytes);
-        const etaSeconds = speedKbps > 0 ? Math.round((remainingBytes / 1024) / speedKbps) : 0;
+        const etaSeconds = roundedSpeed > 0 ? Math.round((remainingBytes / 1024) / roundedSpeed) : 0;
         uploadNotificationService.showUploadProgress(
           this.completedBatchItems + 1,
           this.totalBatchItems,
           totalPercent,
-          speedKbps,
+          roundedSpeed,
           etaSeconds
         ).catch(() => {});
       };
@@ -718,6 +748,7 @@ export class UploadManager {
 
       // Clean up in-memory progress tracking
       this.inMemoryProgress.delete(item.id);
+      this.lastProgressEmit.delete(item.id);
       delete this.progressTrack[item.id];
 
       this.notifyListeners({
@@ -737,6 +768,7 @@ export class UploadManager {
       ) {
         const liveProgress = this.inMemoryProgress.get(item.id)?.progress;
         this.inMemoryProgress.delete(item.id);
+        this.lastProgressEmit.delete(item.id);
         delete this.progressTrack[item.id];
         await this.updateItemStatus(item.id, 'paused', liveProgress ?? item.progress ?? 0);
         throw new Error('UPLOAD_PAUSED');

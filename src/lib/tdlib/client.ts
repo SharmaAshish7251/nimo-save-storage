@@ -702,6 +702,17 @@ class TdLibClientService {
     // 1. Resolve to native absolute filesystem path, preserving real filename & extension
     const { path: localPath, isTemp } = await resolveToLocalPath(uri, fileName);
 
+    // Get file size to scale watchdog and max upload timeout dynamically
+    let fileSize = 0;
+    try {
+      const fileInfo = await LegacyFileSystem.getInfoAsync(
+        localPath.startsWith('file://') ? localPath : `file://${localPath}`
+      );
+      if (fileInfo.exists && typeof (fileInfo as any).size === 'number') {
+        fileSize = (fileInfo as any).size;
+      }
+    } catch {}
+
     const targetChatId = await this.resolveTargetChatId(targetChat);
     await this.ensureChatLoaded(targetChatId);
 
@@ -750,7 +761,7 @@ class TdLibClientService {
             file_id: fileId,
           }).catch(() => {});
         }
-        cleanup();
+        cleanup().catch(() => {});
         reject(new Error('UPLOAD_PAUSED'));
       };
 
@@ -770,25 +781,37 @@ class TdLibClientService {
         }
         this.updateListeners.delete(updateHandler);
         if (isTemp) {
-          await cleanupTempFile(localPath);
+          await cleanupTempFile(localPath).catch(() => {});
         }
       };
 
-      // 10-minute maximum upload safety window
+      // Safety maximum upload window: scaled from 15 mins up to 45 mins based on file size
+      // (ensures large files >500MB on slow mobile links do not hit an arbitrary 10m cutoff)
+      const maxUploadTimeoutMs = Math.max(
+        15 * 60 * 1000,
+        Math.min(45 * 60 * 1000, 15 * 60 * 1000 + Math.ceil(fileSize / (1024 * 1024)) * 2000)
+      );
       timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error('TDLib upload timed out after 10 minutes'));
-      }, 10 * 60 * 1000);
+        cleanup().catch(() => {});
+        reject(new Error(`TDLib upload timed out after ${Math.round(maxUploadTimeoutMs / 60000)} minutes`));
+      }, maxUploadTimeoutMs);
 
-      // Active Stall Watchdog: Detects dead/frozen transfers without waiting 10 minutes.
-      // If no progress event or message response arrives for 90 seconds, treat as stalled.
+      // Active Stall Watchdog: Detects dead/frozen transfers without waiting for max timeout.
+      // Scaled dynamically by file size: Stall Timeout = max(90s, min(360s, 60s + (fileSize / 5MB) * 1s))
+      // e.g., small files get 90s; 500MB gets 160s; 1.5GB gets 360s.
+      const stallThresholdMs = Math.max(
+        90_000,
+        Math.min(360_000, 60_000 + Math.floor(fileSize / (5 * 1024 * 1024)) * 1000)
+      );
       stallIntervalId = setInterval(() => {
         if (isDone) return;
         const idleMs = Date.now() - lastActivityAt;
-        if (idleMs > 90_000) {
-          console.warn(`[TdLib sendFile] Stalled transfer detected for ${fileName} (idle ${Math.round(idleMs / 1000)}s)`);
-          cleanup();
-          reject(new Error(`TDLib upload stalled: no activity detected for 90s`));
+        if (idleMs > stallThresholdMs) {
+          console.warn(
+            `[TdLib sendFile] Stalled transfer detected for ${fileName} (idle ${Math.round(idleMs / 1000)}s > threshold ${Math.round(stallThresholdMs / 1000)}s)`
+          );
+          cleanup().catch(() => {});
+          reject(new Error(`TDLib upload stalled: no activity detected for ${Math.round(stallThresholdMs / 1000)}s`));
         }
       }, 15_000);
 
@@ -803,7 +826,7 @@ class TdLibClientService {
             const errCode = data.code ?? 400;
             const errMsg = data.message || 'TDLib operation failed';
             console.error(`[TdLib sendFile] Received TDLib error for ${sendExtra}:`, errCode, errMsg);
-            cleanup();
+            cleanup().catch(() => {});
             reject(new Error(`TDLib error [${errCode}]: ${errMsg}`));
             return;
           }
@@ -889,7 +912,7 @@ class TdLibClientService {
           if (matchesSentId || matchesFileId || matchesPath) {
             console.log('[TdLib sendFile] Message send succeeded!', msg.id);
             if (onProgress) onProgress(1);
-            cleanup();
+            cleanup().catch(() => {});
             resolve({ id: msg.id });
           }
         }
@@ -905,7 +928,7 @@ class TdLibClientService {
           const matchesDetails = isOurChat && (docFileName === fileName || msg.content?.caption?.text === fileName);
 
           if (matchesSentId || matchesDetails) {
-            cleanup();
+            cleanup().catch(() => {});
             reject(new Error(`TDLib message send failed: ${data.error_message || data.errorMessage || 'Unknown error'}`));
           }
         }
@@ -939,7 +962,7 @@ class TdLibClientService {
           },
         },
       }).catch((err) => {
-        cleanup();
+        cleanup().catch(() => {});
         reject(new Error(`TDLib sendMessage failed: ${err?.message || err}`));
       });
     });

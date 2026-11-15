@@ -214,24 +214,26 @@ export default function UploadScreen() {
       ) {
         loadData();
       } else if (event.type === 'progress' && event.itemId) {
-        // Fast reactive progress and speed update
-        setQueue((prev) =>
-          prev.map((item) =>
-            item.id === event.itemId
-              ? {
-                  ...item,
-                  progress: event.progress ?? item.progress,
-                  speedKbps: event.speedKbps ?? item.speedKbps,
-                }
-              : item
-          )
-        );
+        // Fast targeted reactive progress and speed update without mapping entire queue
+        setQueue((prev) => {
+          const idx = prev.findIndex((item) => item.id === event.itemId);
+          if (idx < 0) return prev;
+          const current = prev[idx];
+          if (current.progress === event.progress && current.speedKbps === event.speedKbps) {
+            return prev;
+          }
+          const next = [...prev];
+          next[idx] = {
+            ...current,
+            progress: event.progress ?? current.progress,
+            speedKbps: event.speedKbps ?? current.speedKbps,
+          };
+          return next;
+        });
       }
     });
 
-    const interval = setInterval(loadData, 1500);
     return () => {
-      clearInterval(interval);
       unsubConfig();
       unsubUpload();
     };

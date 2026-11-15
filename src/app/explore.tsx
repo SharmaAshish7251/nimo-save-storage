@@ -1109,7 +1109,7 @@ export default function CloudExplorerScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['bottom', 'left', 'right']}>
       {/* Top App Header / Selection Header */}
       {isSelectMode ? (
         <View style={[styles.selectModeHeader, { backgroundColor: cardBg, borderBottomColor: border }]}>
@@ -1124,13 +1124,27 @@ export default function CloudExplorerScreen() {
               ({formatFileSize(selectedTotalBytes)})
             </Text>
           </View>
-          <TouchableOpacity onPress={handleSelectAll} style={styles.selectAllBtn}>
-            <Text style={styles.selectAllBtnText}>
-              {selectedUris.size === filteredAndSortedItems.length && filteredAndSortedItems.length > 0
-                ? 'Deselect All'
-                : 'Select All'}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.selectHeaderRight}>
+            <TouchableOpacity onPress={handleSelectAll} style={styles.selectAllBtn}>
+              <Text style={styles.selectAllBtnText}>
+                {selectedUris.size === filteredAndSortedItems.length && filteredAndSortedItems.length > 0
+                  ? 'Deselect All'
+                  : 'Select All'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleBulkDelete}
+              disabled={isBulkOperating || selectedUris.size === 0}
+              style={[
+                styles.selectHeaderDeleteBtn,
+                { opacity: isBulkOperating || selectedUris.size === 0 ? 0.5 : 1 },
+              ]}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <FontAwesome name="trash" size={15} color="#EF4444" />
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <View style={[styles.header, { borderBottomColor: border }]}>
@@ -1879,7 +1893,7 @@ export default function CloudExplorerScreen() {
             {
               backgroundColor: cardBg,
               borderColor: border,
-              bottom: Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 16) + 12,
+              bottom: insets.bottom + 95,
             },
           ]}
         >
@@ -2446,6 +2460,19 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#208AEF',
   },
+  selectHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selectHeaderDeleteBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   gridCellSelected: {
     borderColor: '#208AEF',
     borderWidth: 2,
@@ -2589,6 +2616,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 10,
     elevation: 8,
+    zIndex: 999,
   },
   bulkActionBtn: {
     flexDirection: 'row',

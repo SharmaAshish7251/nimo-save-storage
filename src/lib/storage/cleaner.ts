@@ -220,6 +220,11 @@ export async function executeCleanSpace(
   // Deletes files directly via physical filesystem paths (FileSystem.deleteAsync)
   // to avoid triggering Android MediaStore.createDeleteRequest system dialogs.
   const fsQueue = new PQueue({ concurrency: 6 });
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => {
+      fsQueue.clear();
+    });
+  }
   const historyEntries: {
     fileName: string;
     uri: string;

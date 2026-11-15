@@ -57,6 +57,11 @@ export function FreeUpSpaceModal({
     }
   };
 
+  const handleCancelSelection = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setSelectedUris(new Set());
+  };
+
   const loadCandidates = async (forceRefresh = false) => {
     setLoading(true);
     try {
@@ -295,11 +300,16 @@ export function FreeUpSpaceModal({
               </View>
               <TouchableOpacity
                 onPress={handleCancelClean}
-                style={[styles.cancelCleaningBtn, { borderColor: border }]}
+                style={[
+                  styles.cancelCleaningBtn,
+                  { backgroundColor: '#EF4444', borderColor: '#DC2626' },
+                ]}
                 activeOpacity={0.7}
               >
-                <FontAwesome name="stop-circle" size={14} color="#EF4444" style={{ marginRight: 8 }} />
-                <Text style={styles.cancelCleaningBtnText}>Cancel Deletion</Text>
+                <FontAwesome name="stop-circle" size={14} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={[styles.cancelCleaningBtnText, { color: '#FFFFFF', fontWeight: '700' }]}>
+                  Cancel Deletion
+                </Text>
               </TouchableOpacity>
             </View>
           ) : !analysis || analysis.candidates.length === 0 ? (
@@ -493,13 +503,25 @@ export function FreeUpSpaceModal({
                   </Text>
                 </View>
                 <View style={styles.footerButtonsGroup}>
-                  <TouchableOpacity
-                    onPress={onClose}
-                    style={[styles.footerCancelBtn, { borderColor: border }]}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.footerCancelBtnText, { color: textColor }]}>Cancel</Text>
-                  </TouchableOpacity>
+                  {selectedStats.count > 0 ? (
+                    <TouchableOpacity
+                      onPress={handleCancelSelection}
+                      style={[styles.footerCancelBtn, { borderColor: border }]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.footerCancelBtnText, { color: textColor }]}>
+                        Cancel Selection
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      onPress={onClose}
+                      style={[styles.footerCancelBtn, { borderColor: border }]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.footerCancelBtnText, { color: textColor }]}>Close</Text>
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity
                     onPress={handleExecuteClean}
                     disabled={selectedStats.count === 0}

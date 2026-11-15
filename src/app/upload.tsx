@@ -24,6 +24,7 @@ import {
   addToQueue,
   addManyToQueue,
   clearActionHistory,
+  computeWallClockDuration,
   formatDuration,
   formatFileSize,
   formatSpeed,
@@ -625,10 +626,8 @@ export default function UploadScreen() {
   const completedWithTime = completedItems.filter(
     (i) => i.uploadDurationMs && i.uploadDurationMs > 0 && i.size > 0
   );
-  const totalCompletedUploadMs = completedWithTime.reduce(
-    (sum, i) => sum + (i.uploadDurationMs || 0),
-    0
-  );
+  // Compute true non-overlapping wall-clock duration across completed items so concurrency does not multiply time
+  const totalCompletedUploadMs = computeWallClockDuration(completedWithTime);
   const totalCompletedBytesWithTime = completedWithTime.reduce((sum, i) => sum + i.size, 0);
   const queueAvgSpeed =
     totalCompletedUploadMs > 0
@@ -656,15 +655,13 @@ export default function UploadScreen() {
   // History metrics
   const uploadedHistoryItems = history.filter((h) => h.status === 'uploaded');
   const totalUploadedBytes = uploadedHistoryItems.reduce((sum, item) => sum + (item.size || 0), 0);
-  const totalUploadTimeMs = uploadedHistoryItems.reduce(
-    (sum, item) => sum + (item.uploadDurationMs || 0),
-    0
-  );
   const itemsWithDuration = uploadedHistoryItems.filter(
     (h) => h.uploadDurationMs && h.uploadDurationMs > 0 && h.size > 0
   );
+  // Compute true non-overlapping wall-clock duration across completed history items
+  const totalUploadTimeMs = computeWallClockDuration(itemsWithDuration);
   const totalBytesWithDuration = itemsWithDuration.reduce((sum, h) => sum + h.size, 0);
-  const totalTimeSeconds = itemsWithDuration.reduce((sum, h) => sum + (h.uploadDurationMs || 0), 0) / 1000;
+  const totalTimeSeconds = totalUploadTimeMs / 1000;
   const avgUploadSpeed = totalTimeSeconds > 0 ? totalBytesWithDuration / totalTimeSeconds : 0;
 
   const filteredHistory = history.filter((item) => {
@@ -1209,7 +1206,11 @@ export default function UploadScreen() {
                   : formatFileSize(completedBytes)}
               </Text>
               <Text style={[styles.statsSub, { color: subtextColor }]}>
-                {activeUploadingSpeed > 0 ? 'transfer rate' : `${completedItems.length} uploaded`}
+                {activeUploadingSpeed > 0
+                  ? 'transfer rate'
+                  : completedItems.length > 0 && totalCompletedUploadMs > 0
+                  ? `${completedItems.length} uploaded (${formatDuration(totalCompletedUploadMs)})`
+                  : `${completedItems.length} uploaded`}
               </Text>
             </View>
           </View>

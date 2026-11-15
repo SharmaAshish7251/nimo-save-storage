@@ -44,6 +44,7 @@ export interface UploadEvent {
   progress?: number;
   speedKbps?: number;
   error?: string;
+  batchDurationMs?: number;
 }
 
 export type UploadEventListener = (event: UploadEvent) => void;
@@ -55,6 +56,8 @@ export class UploadManager {
   private queue: InstanceType<typeof PQueue>;
   private isRunning = false;
   private isPaused = false;
+  private batchStartTime = 0;
+  private batchDurationMs = 0;
   private activeControllers: Map<string, AbortController> = new Map();
   private pausedItemIds: Set<string> = new Set();
   private progressTrack: Record<string, { bytes: number; time: number }> = {};
@@ -69,6 +72,17 @@ export class UploadManager {
   private uploadedBatchBytes = 0;
   private netInfoUnsubscribe: (() => void) | null = null;
   private wasInterruptedByNetwork = false;
+
+  public get batchDuration(): number {
+    if (this.isRunning && this.batchStartTime > 0) {
+      return Date.now() - this.batchStartTime;
+    }
+    return this.batchDurationMs;
+  }
+
+  public get batchStartedAt(): number {
+    return this.batchStartTime;
+  }
 
   /**
    * Subscribes to live upload events (status changes, real-time progress, paused/resumed).
@@ -322,6 +336,8 @@ export class UploadManager {
     }
     this.isRunning = true;
     this.isPaused = false;
+    this.batchStartTime = Date.now();
+    this.batchDurationMs = 0;
     this.pausedItemIds.clear();
     this.notifyListeners({ type: 'status', isRunning: true, isPaused: false });
     // Clean up any stale temp files from previous aborted runs before starting batch
@@ -474,8 +490,10 @@ export class UploadManager {
       
       await this.queue.onIdle();
 
+      this.batchDurationMs = this.batchStartTime > 0 ? Date.now() - this.batchStartTime : 0;
+
       if (!this.isPaused) {
-        await uploadNotificationService.showUploadComplete(uploadedCount, this.uploadedBatchBytes);
+        await uploadNotificationService.showUploadComplete(uploadedCount, this.uploadedBatchBytes, this.batchDurationMs);
       }
 
       if (uploadedCount > 0) {
@@ -493,7 +511,12 @@ export class UploadManager {
     } finally {
       await uploadNotificationService.dismissProgress();
       this.isRunning = false;
-      this.notifyListeners({ type: 'queue_complete', isRunning: false, isPaused: this.isPaused });
+      this.notifyListeners({
+        type: 'queue_complete',
+        isRunning: false,
+        isPaused: this.isPaused,
+        batchDurationMs: this.batchDurationMs,
+      });
       pruneOrphanedUploadCache().catch(() => {});
     }
   }

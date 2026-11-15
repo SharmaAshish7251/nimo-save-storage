@@ -553,6 +553,64 @@ export function formatSpeed(bytesPerSec?: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
 }
 
+/**
+ * Computes the real-world non-overlapping wall-clock duration in milliseconds
+ * across a set of upload items that may have run concurrently in parallel.
+ * Merges overlapping [start, end] time intervals so time is not multiplied by concurrency.
+ */
+export function computeWallClockDuration(
+  items: {
+    uploadDurationMs?: number;
+    uploadedAt?: number;
+    timestamp?: number;
+    uploadStartedAt?: number;
+  }[]
+): number {
+  const intervals: [number, number][] = [];
+
+  for (const item of items) {
+    const duration = item.uploadDurationMs || 0;
+    if (duration <= 0) continue;
+
+    const end = item.uploadedAt || item.timestamp || 0;
+    if (end <= 0) {
+      intervals.push([0, duration]);
+      continue;
+    }
+
+    const start =
+      item.uploadStartedAt && item.uploadStartedAt <= end
+        ? item.uploadStartedAt
+        : Math.max(0, end - duration);
+
+    intervals.push([start, end]);
+  }
+
+  if (intervals.length === 0) return 0;
+
+  // Sort intervals chronologically by start timestamp
+  intervals.sort((a, b) => a[0] - b[0]);
+
+  // Merge overlapping and contiguous intervals
+  let totalMs = 0;
+  let [currStart, currEnd] = intervals[0];
+
+  for (let i = 1; i < intervals.length; i++) {
+    const [nextStart, nextEnd] = intervals[i];
+    if (nextStart <= currEnd) {
+      // Overlapping or contiguous interval
+      currEnd = Math.max(currEnd, nextEnd);
+    } else {
+      totalMs += Math.max(0, currEnd - currStart);
+      currStart = nextStart;
+      currEnd = nextEnd;
+    }
+  }
+
+  totalMs += Math.max(0, currEnd - currStart);
+  return totalMs;
+}
+
 // In-memory cache mirror for action history to prevent redundant SQLite reads during rapid uploads
 let cachedHistory: ActionHistoryItem[] | null = null;
 const MAX_HISTORY_ITEMS = 500;

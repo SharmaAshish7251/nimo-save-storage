@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { formatFileSize } from '../storage/queue';
+import { formatFileSize, formatDuration } from '../storage/queue';
 
 // Configure notification behavior
 Notifications.setNotificationHandler({
@@ -137,18 +137,19 @@ export class UploadNotificationService {
   /**
    * Shows a completion notification when batch upload finishes.
    */
-  async showUploadComplete(uploadedCount: number, totalBytes: number = 0): Promise<void> {
+  async showUploadComplete(uploadedCount: number, totalBytes: number = 0, durationMs?: number): Promise<void> {
     await this.dismissProgress();
     if (uploadedCount <= 0) return;
 
     await this.init();
     const sizeStr = totalBytes > 0 ? ` (${formatFileSize(totalBytes)})` : '';
+    const timeStr = durationMs && durationMs > 0 ? ` in ${formatDuration(durationMs)}` : '';
 
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
           title: 'Backup Complete ✓',
-          body: `Successfully backed up ${uploadedCount} file${uploadedCount === 1 ? '' : 's'}${sizeStr} to Telegram.`,
+          body: `Successfully backed up ${uploadedCount} file${uploadedCount === 1 ? '' : 's'}${sizeStr}${timeStr} to Telegram.`,
           sound: true,
           data: { type: 'upload_complete' },
         },

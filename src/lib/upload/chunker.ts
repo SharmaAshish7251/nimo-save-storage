@@ -13,8 +13,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 /** 1.95 GB — leaves ~50 MB headroom below Telegram's 2 GB free-tier limit */
 export const CHUNK_SIZE_BYTES = 1.95 * 1024 * 1024 * 1024;
 
-/** Buffer size for each streaming read/write cycle — ~16 MB, well under 25 MB RAM budget */
-const BUFFER_SIZE = 16 * 1024 * 1024; // 16 MB in bytes
+/** Buffer size for each streaming read/write cycle — 4 MB, peak RAM under 8 MB */
+const BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB in bytes
 
 /** Base64 overhead factor: every 3 raw bytes → 4 base64 chars, so buffer in base64 is 4/3 × larger */
 const BASE64_BUFFER_SIZE = Math.ceil(BUFFER_SIZE * (4 / 3));

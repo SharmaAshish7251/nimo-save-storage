@@ -15,6 +15,7 @@ Notifications.setNotificationHandler({
 
 const PROGRESS_CHANNEL_ID = 'upload-progress';
 const ALERT_CHANNEL_ID = 'upload-alerts';
+const PROGRESS_NOTIFICATION_ID = 'nimo-upload-progress';
 
 export class UploadNotificationService {
   private progressNotificationId: string | null = null;
@@ -98,12 +99,8 @@ export class UploadNotificationService {
       : `Uploading files • ${speedStr}`;
 
     try {
-      // Dismiss prior notification if ID exists
-      if (this.progressNotificationId) {
-        await Notifications.dismissNotificationAsync(this.progressNotificationId).catch(() => {});
-      }
-
-      this.progressNotificationId = await Notifications.scheduleNotificationAsync({
+      await Notifications.scheduleNotificationAsync({
+        identifier: PROGRESS_NOTIFICATION_ID,
         content: {
           title,
           body,
@@ -112,10 +109,9 @@ export class UploadNotificationService {
           autoDismiss: false,
           data: { type: 'upload_progress' },
         },
-        trigger: {
-          channelId: PROGRESS_CHANNEL_ID,
-        },
+        trigger: null,
       });
+      this.progressNotificationId = PROGRESS_NOTIFICATION_ID;
     } catch (e) {
       console.warn('[UploadNotification] Failed to present progress notification:', e);
     }
@@ -125,13 +121,10 @@ export class UploadNotificationService {
    * Dismisses the progress notification.
    */
   async dismissProgress(): Promise<void> {
-    if (this.progressNotificationId) {
-      const id = this.progressNotificationId;
-      this.progressNotificationId = null;
-      try {
-        await Notifications.dismissNotificationAsync(id);
-      } catch {}
-    }
+    this.progressNotificationId = null;
+    try {
+      await Notifications.dismissNotificationAsync(PROGRESS_NOTIFICATION_ID);
+    } catch {}
   }
 
   /**

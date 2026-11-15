@@ -9,6 +9,8 @@ export {
   getUploadedRecordByHash,
   removeUploadedRecords,
   clearAllUploadedRecords,
+  updateQueueItem,
+  clearCompletedQueueItems,
   initDatabase,
 } from './database';
 

@@ -847,6 +847,11 @@ export async function clearQueue(): Promise<void> {
   await db.runAsync('DELETE FROM upload_queue');
 }
 
+export async function clearCompletedQueueItems(): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync("DELETE FROM upload_queue WHERE status = 'completed'");
+}
+
 export async function resetQueueItemToPending(id: string): Promise<QueueItem | null> {
   const db = await getDatabase();
   await db.runAsync(

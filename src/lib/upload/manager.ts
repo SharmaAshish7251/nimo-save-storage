@@ -12,6 +12,8 @@ import {
   saveChunkManifest,
   formatFileSize,
   resolveFileDestination,
+  updateQueueItem,
+  clearCompletedQueueItems,
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
 import { pruneOrphanedUploadCache } from '../tdlib/fileHelper';
@@ -998,28 +1000,32 @@ export class UploadManager {
       }
       return;
     }
-    const queue = await getQueue();
-    const index = queue.findIndex((item: QueueItem) => item.id === id);
-    if (index >= 0) {
-      queue[index].status = status;
-      if (progress !== undefined) queue[index].progress = progress;
-      if (error) queue[index].error = error;
-      if (uploadStartedAt) queue[index].uploadStartedAt = uploadStartedAt;
-      if (uploadedAt) queue[index].uploadedAt = uploadedAt;
-      if (uploadDurationMs !== undefined) queue[index].uploadDurationMs = uploadDurationMs;
-      if (speedKbps !== undefined) (queue[index] as any).speedKbps = Math.round(speedKbps);
-      queue[index].lastAttemptAt = Date.now();
+
+    const patch: Partial<QueueItem> = {
+      status,
+      lastAttemptAt: Date.now(),
+    };
+    if (progress !== undefined) patch.progress = progress;
+    if (error !== undefined) patch.error = error;
+    if (uploadStartedAt !== undefined) patch.uploadStartedAt = uploadStartedAt;
+    if (uploadedAt !== undefined) patch.uploadedAt = uploadedAt;
+    if (uploadDurationMs !== undefined) patch.uploadDurationMs = uploadDurationMs;
+    if (speedKbps !== undefined) patch.speedKbps = Math.round(speedKbps);
+
+    try {
       if (status === 'uploading' || status === 'failed') {
-        queue[index].retries = (queue[index].retries || 0) + (status === 'failed' ? 1 : 0);
+        const currentQueue = await getQueue();
+        const current = currentQueue.find((q) => q.id === id);
+        patch.retries = (current?.retries || 0) + (status === 'failed' ? 1 : 0);
       }
-      await saveQueue(queue);
+      await updateQueueItem(id, patch);
+    } catch (err) {
+      console.warn(`[UploadManager] Failed to update item status for ${id}:`, err);
     }
   }
   
   async clearCompleted(): Promise<void> {
-    const queue = await getQueue();
-    const filtered = queue.filter((item: QueueItem) => item.status !== 'completed');
-    await saveQueue(filtered);
+    await clearCompletedQueueItems();
   }
 
   async discardItem(id: string): Promise<void> {

@@ -1,10 +1,10 @@
 import 'react-native-get-random-values';
 import '@/shims/polyfills';
-import { DarkTheme, DefaultTheme, ThemeProvider, Stack, router } from 'expo-router';
+import { DarkTheme, DefaultTheme, ThemeProvider, Stack, router, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { pruneOrphanedUploadCache } from '@/lib/tdlib/fileHelper';
 import { Text, TouchableOpacity, StyleSheet, View, StatusBar as RNStatusBar, Platform, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 
@@ -38,6 +38,8 @@ function RootLayoutNav() {
   const themeBg = isDark ? '#0F172A' : '#FFFFFF';
   const themeText = isDark ? '#F8FAFC' : '#0F172A';
   const [isUploading, setIsUploading] = useState(false);
+  const pathname = usePathname();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     setIsUploading(uploadManager.isActive);
@@ -105,25 +107,25 @@ function RootLayoutNav() {
           <Stack.Screen name="logs" options={{ title: 'Logs' }} />
           <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         </Stack>
-        {isUploading && (
+        {isUploading && pathname !== '/upload' && (
           <View
             style={{
               position: 'absolute',
-              bottom: 80,
+              bottom: insets.bottom + 95,
               left: 16,
               right: 16,
               backgroundColor: isDark ? '#0F4C81' : '#1D6FAE',
-              borderRadius: 10,
-              paddingVertical: 8,
+              borderRadius: 12,
+              paddingVertical: 10,
               paddingHorizontal: 14,
               flexDirection: 'row',
               alignItems: 'center',
               zIndex: 999,
               shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.25,
-              shadowRadius: 4,
-              elevation: 6,
+              shadowOffset: { width: 0, height: 3 },
+              shadowOpacity: 0.3,
+              shadowRadius: 6,
+              elevation: 8,
             }}
           >
             <ActivityIndicator size="small" color="#60A5FA" style={{ marginRight: 8 }} />

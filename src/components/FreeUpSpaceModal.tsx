@@ -20,6 +20,7 @@ import {
   CleanerAnalysis,
 } from '@/lib/storage/cleaner';
 import { formatFileSize } from '@/lib/storage/queue';
+import { appAlert } from '@/components/AppAlert';
 
 interface FreeUpSpaceModalProps {
   visible: boolean;
@@ -47,6 +48,14 @@ export function FreeUpSpaceModal({
     current: 0,
     total: 0,
   });
+  const cleanAbortRef = React.useRef<AbortController | null>(null);
+
+  const handleCancelClean = () => {
+    if (cleanAbortRef.current) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      cleanAbortRef.current.abort();
+    }
+  };
 
   const loadCandidates = async (forceRefresh = false) => {
     setLoading(true);
@@ -123,7 +132,7 @@ export function FreeUpSpaceModal({
   const handleExecuteClean = () => {
     if (selectedStats.count === 0 || !analysis) return;
 
-    Alert.alert(
+    appAlert(
       'Free Up Space Confirmation',
       `Delete ${selectedStats.count} local file(s) to free up ${formatFileSize(selectedStats.bytes)}?\n\nThese files are already safely uploaded to Telegram cloud.`,
       [
@@ -132,49 +141,63 @@ export function FreeUpSpaceModal({
           text: `Free Up ${formatFileSize(selectedStats.bytes)}`,
           style: 'destructive',
           onPress: async () => {
+            const controller = new AbortController();
+            cleanAbortRef.current = controller;
             setIsCleaning(true);
             const itemsToClean = analysis.candidates.filter((c) => selectedUris.has(c.uri));
             setCleanProgress({ current: 0, total: itemsToClean.length });
 
             try {
-              const result = await executeCleanSpace(itemsToClean, (cur, tot) => {
-                setCleanProgress({ current: cur, total: tot });
-              });
+              const result = await executeCleanSpace(
+                itemsToClean,
+                (cur, tot) => {
+                  setCleanProgress({ current: cur, total: tot });
+                },
+                controller.signal
+              );
 
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
 
-              const parts: string[] = [];
-              if (result.freedCount > 0) {
-                parts.push(
-                  `Freed ${formatFileSize(result.freedBytes)} (${result.freedCount} file(s) deleted locally).`
+              if (controller.signal.aborted) {
+                appAlert(
+                  'Cleanup Cancelled',
+                  `Deletion was stopped. Freed ${formatFileSize(result.freedBytes)} (${result.freedCount} file(s) deleted).`
                 );
               } else {
-                parts.push('No local files were deleted.');
-              }
-              if (result.blockedCount > 0) {
-                parts.push(
-                  `Safety Shield protected ${result.blockedCount} file(s) whose Telegram cloud copy was deleted.`
-                );
-              }
-              if (result.failedCount > 0) {
-                parts.push(
-                  `${result.failedCount} file(s) could not be deleted automatically due to Android storage permissions.`
-                );
-              }
+                const parts: string[] = [];
+                if (result.freedCount > 0) {
+                  parts.push(
+                    `Freed ${formatFileSize(result.freedBytes)} (${result.freedCount} file(s) deleted locally).`
+                  );
+                } else {
+                  parts.push('No local files were deleted.');
+                }
+                if (result.blockedCount > 0) {
+                  parts.push(
+                    `Safety Shield protected ${result.blockedCount} file(s) whose Telegram cloud copy was deleted.`
+                  );
+                }
+                if (result.failedCount > 0) {
+                  parts.push(
+                    `${result.failedCount} file(s) could not be deleted automatically due to Android storage permissions.`
+                  );
+                }
 
-              Alert.alert(
-                result.freedCount > 0 ? 'Space Reclaimed' : 'Cleanup Incomplete',
-                parts.join('\n\n')
-              );
+                appAlert(
+                  result.freedCount > 0 ? 'Space Reclaimed' : 'Cleanup Incomplete',
+                  parts.join('\n\n')
+                );
+              }
 
               if (onCleanComplete) {
                 onCleanComplete(result.freedBytes, result.freedCount);
               }
               onClose();
             } catch (err: any) {
-              Alert.alert('Cleaner Error', err?.message || 'Failed to complete cleanup.');
+              appAlert('Cleaner Error', err?.message || 'Failed to complete cleanup.');
             } finally {
               setIsCleaning(false);
+              cleanAbortRef.current = null;
             }
           },
         },
@@ -257,6 +280,14 @@ export function FreeUpSpaceModal({
                   ]}
                 />
               </View>
+              <TouchableOpacity
+                onPress={handleCancelClean}
+                style={[styles.cancelCleaningBtn, { borderColor: border }]}
+                activeOpacity={0.7}
+              >
+                <FontAwesome name="stop-circle" size={14} color="#EF4444" style={{ marginRight: 8 }} />
+                <Text style={styles.cancelCleaningBtnText}>Cancel Deletion</Text>
+              </TouchableOpacity>
             </View>
           ) : !analysis || analysis.candidates.length === 0 ? (
             <View style={styles.emptyContainer}>
@@ -448,22 +479,31 @@ export function FreeUpSpaceModal({
                     {selectedStats.count} files ({formatFileSize(selectedStats.bytes)})
                   </Text>
                 </View>
-                <TouchableOpacity
-                  onPress={handleExecuteClean}
-                  disabled={selectedStats.count === 0}
-                  style={[
-                    styles.cleanBtn,
-                    {
-                      backgroundColor: selectedStats.count > 0 ? '#EF4444' : border,
-                      opacity: selectedStats.count > 0 ? 1 : 0.6,
-                    },
-                  ]}
-                >
-                  <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.cleanBtnText} numberOfLines={1}>
-                    Free Up {formatFileSize(selectedStats.bytes)}
-                  </Text>
-                </TouchableOpacity>
+                <View style={styles.footerButtonsGroup}>
+                  <TouchableOpacity
+                    onPress={onClose}
+                    style={[styles.footerCancelBtn, { borderColor: border }]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.footerCancelBtnText, { color: textColor }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleExecuteClean}
+                    disabled={selectedStats.count === 0}
+                    style={[
+                      styles.cleanBtn,
+                      {
+                        backgroundColor: selectedStats.count > 0 ? '#EF4444' : border,
+                        opacity: selectedStats.count > 0 ? 1 : 0.6,
+                      },
+                    ]}
+                  >
+                    <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={styles.cleanBtnText} numberOfLines={1}>
+                      Free Up {formatFileSize(selectedStats.bytes)}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </>
           )}
@@ -732,5 +772,36 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  cancelCleaningBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+  },
+  cancelCleaningBtnText: {
+    color: '#EF4444',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  footerButtonsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  footerCancelBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  footerCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

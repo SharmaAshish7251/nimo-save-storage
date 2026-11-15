@@ -1,5 +1,4 @@
 import {
-  Alert,
   AppState,
   Share,
   View,
@@ -23,6 +22,7 @@ import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import QRCode from 'react-native-qrcode-svg';
 import { useAppTheme } from '@/context/ThemeContext';
+import { appAlert } from '@/components/AppAlert';
 import { saveApiCredentials, getApiCredentials } from '@/lib/storage/secure';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { cleanupCachedQrImages, QrSvgRef, saveQrCodeToGallery, shareQrCodeImage } from '@/lib/telegram/qrExport';
@@ -229,7 +229,7 @@ export default function TelegramLoginScreen() {
     try {
       await Linking.openURL(qrLink);
     } catch {
-      Alert.alert(
+      appAlert(
         'Telegram App Not Opened',
         'Could not open Telegram directly on this phone. Make sure Telegram is installed, or use Download / Share to scan the QR code from another device or Telegram gallery.'
       );
@@ -244,7 +244,7 @@ export default function TelegramLoginScreen() {
     try {
       await Share.share({ message: qrLink });
     } catch (err: any) {
-      Alert.alert('Share Failed', err?.message || 'Could not share login link.');
+      appAlert('Share Failed', err?.message || 'Could not share login link.');
     }
   };
 
@@ -256,7 +256,7 @@ export default function TelegramLoginScreen() {
       await shareQrCodeImage(qrSvgRef.current);
     } catch (err: any) {
       console.warn('[AUTH] Share QR failed:', err);
-      Alert.alert(
+      appAlert(
         'Image Share Unavailable',
         err?.message || 'Could not share the QR code image.',
         [
@@ -276,7 +276,7 @@ export default function TelegramLoginScreen() {
     try {
       const result = await saveQrCodeToGallery(qrSvgRef.current);
       if (result.permissionDenied) {
-        Alert.alert(
+        appAlert(
           'Gallery Permission Needed',
           'Allow photo library permission to save the QR image, or use Share to send it directly.',
           [
@@ -288,13 +288,13 @@ export default function TelegramLoginScreen() {
         return;
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
+      appAlert(
         'QR Saved to Gallery',
         'In Telegram go to Settings → Devices → Link Desktop Device and choose this image from your gallery (QR codes update periodically, so scan right away).'
       );
     } catch (err: any) {
       console.warn('[AUTH] Save QR failed:', err);
-      Alert.alert('Download Failed', err?.message || 'Could not save QR code image to gallery.');
+      appAlert('Download Failed', err?.message || 'Could not save QR code image to gallery.');
     } finally {
       setQrSaving(false);
     }
@@ -351,7 +351,7 @@ export default function TelegramLoginScreen() {
     const trimmedHash = apiHash.trim();
     if (!trimmedId && !trimmedHash) {
       if (showConfirmation) {
-        Alert.alert('Missing Credentials', 'Enter both API ID and API Hash before saving.');
+        appAlert('Missing Credentials', 'Enter both API ID and API Hash before saving.');
       }
       return false;
     }
@@ -360,7 +360,7 @@ export default function TelegramLoginScreen() {
     if (!trimmedId || !Number.isInteger(numericId) || numericId <= 0) {
       const msg = 'API ID must be a positive whole number from my.telegram.org.';
       if (showConfirmation) {
-        Alert.alert('Invalid API ID', msg);
+        appAlert('Invalid API ID', msg);
       } else {
         setError(msg);
       }
@@ -370,7 +370,7 @@ export default function TelegramLoginScreen() {
     if (!trimmedHash || trimmedHash.length < 16) {
       const msg = 'API Hash appears incomplete. Please enter the full hash from my.telegram.org.';
       if (showConfirmation) {
-        Alert.alert('Invalid API Hash', msg);
+        appAlert('Invalid API Hash', msg);
       } else {
         setError(msg);
       }
@@ -386,7 +386,7 @@ export default function TelegramLoginScreen() {
 
     if (showConfirmation) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
+      appAlert(
         'Credentials Saved',
         'Custom Telegram API credentials have been saved and applied to this session.'
       );
@@ -516,7 +516,7 @@ export default function TelegramLoginScreen() {
     try {
       await applyCustomCredentialsIfProvided(true);
     } catch (err: any) {
-      Alert.alert('Save Failed', err?.message || 'Could not apply custom credentials.');
+      appAlert('Save Failed', err?.message || 'Could not apply custom credentials.');
     } finally {
       setSavingCreds(false);
     }

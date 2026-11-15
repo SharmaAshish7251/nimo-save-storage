@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
-  Alert,
+  AppState,
   Dimensions,
   Image,
   ScrollView,
@@ -18,6 +18,7 @@ import * as Battery from 'expo-battery';
 import { Redirect, router, useFocusEffect } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAppTheme } from '@/context/ThemeContext';
+import { appAlert } from '@/components/AppAlert';
 import {
   formatFileSize,
   getConfig,
@@ -123,7 +124,7 @@ export default function HomeScreen() {
             uploadedItems = freshUploaded;
             setConfig(appConfig);
             setSchedulerState(schedState);
-            Alert.alert(
+            appAlert(
               'Profile Restored from Telegram',
               'Your previous settings, watched folders, and upload history were successfully restored from Telegram Cloud.'
             );
@@ -246,6 +247,16 @@ export default function HomeScreen() {
       };
     }, [onboardingStatus])
   );
+
+  // Re-fetch when app returns from background → foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && onboardingStatus === 'done') {
+        checkStatus();
+      }
+    });
+    return () => sub.remove();
+  }, [onboardingStatus]);
 
   const handleSyncNow = async () => {
     if (isSyncing) return;

@@ -11,7 +11,6 @@ import {
   Image,
   Modal,
   ActivityIndicator,
-  Alert,
   Dimensions,
   RefreshControl,
   Platform,
@@ -19,6 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '@/context/ThemeContext';
+import { appAlert } from '@/components/AppAlert';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
@@ -101,6 +101,7 @@ export default function CloudExplorerScreen() {
 
   // In-memory channel ID cache so we don't query TDLib IPC on every screen focus
   const channelIdCacheRef = React.useRef<Map<string, string>>(new Map());
+  const bulkAbortRef = React.useRef(false);
 
   const loadCloudItems = useCallback(async () => {
     try {
@@ -251,7 +252,7 @@ export default function CloudExplorerScreen() {
       const res = await reconcileCloudIndex({ forceAll: true });
       await loadCloudItems();
       if (res.missing > 0) {
-        Alert.alert(
+        appAlert(
           'Reconciliation Complete',
           `Checked ${res.total} file(s). Found ${res.missing} file(s) deleted in Telegram Cloud.`
         );
@@ -264,7 +265,7 @@ export default function CloudExplorerScreen() {
   };
 
   const handleDeleteFromCloud = (item: CloudItem) => {
-    Alert.alert(
+    appAlert(
       'Delete from Telegram Cloud?',
       `Are you sure you want to permanently delete "${item.fileName}" from Telegram servers?\n\nThis cannot be undone.`,
       [
@@ -280,7 +281,7 @@ export default function CloudExplorerScreen() {
               setSelectedItem(null);
               await loadCloudItems();
             } catch (err: any) {
-              Alert.alert('Delete Failed', err?.message || 'Could not delete from Telegram.');
+              appAlert('Delete Failed', err?.message || 'Could not delete from Telegram.');
             } finally {
               setIsDeletingCloud(false);
             }
@@ -293,7 +294,7 @@ export default function CloudExplorerScreen() {
   const handleReuploadMissing = async (item: CloudItem) => {
     try {
       if (!item.existsLocally) {
-        Alert.alert('Cannot Re-upload', 'The local file copy does not exist on this device.');
+        appAlert('Cannot Re-upload', 'The local file copy does not exist on this device.');
         return;
       }
       await addToQueue({
@@ -303,7 +304,7 @@ export default function CloudExplorerScreen() {
       });
       await removeUploadedRecord(item.uri);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
+      appAlert(
         'Queued for Upload',
         `"${item.fileName}" has been re-added to your upload queue.`,
         [
@@ -314,7 +315,7 @@ export default function CloudExplorerScreen() {
       setSelectedItem(null);
       await loadCloudItems();
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to re-queue file.');
+      appAlert('Error', err?.message || 'Failed to re-queue file.');
     }
   };
 
@@ -325,7 +326,7 @@ export default function CloudExplorerScreen() {
       setSelectedItem(null);
       await loadCloudItems();
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to remove record.');
+      appAlert('Error', err?.message || 'Failed to remove record.');
     }
   };
 
@@ -341,19 +342,19 @@ export default function CloudExplorerScreen() {
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       await loadCloudItems();
-      Alert.alert(
+      appAlert(
         'Sync Finished',
         `Scanned ${res.totalFound} messages and imported ${res.imported} cloud file(s) into your catalog.`
       );
     } catch (err: any) {
-      Alert.alert('Sync Error', err?.message || 'Failed to scan Telegram history.');
+      appAlert('Sync Error', err?.message || 'Failed to scan Telegram history.');
     } finally {
       setIsImporting(false);
     }
   };
 
   const handleImportFromTelegram = () => {
-    Alert.alert(
+    appAlert(
       'Sync Telegram Cloud History',
       'Choose how deep to scan your backup stream channels for existing files:',
       [
@@ -567,7 +568,7 @@ export default function CloudExplorerScreen() {
 
   const handleBulkDownload = async () => {
     if (selectedItemsList.length === 0) return;
-    Alert.alert(
+    appAlert(
       'Download to Device',
       `Download ${selectedItemsList.length} file(s) (${formatFileSize(selectedTotalBytes)}) to your device storage?`,
       [
@@ -575,6 +576,7 @@ export default function CloudExplorerScreen() {
         {
           text: 'Download',
           onPress: async () => {
+            bulkAbortRef.current = false;
             setIsBulkOperating(true);
             let downloadedCount = 0;
             try {
@@ -590,6 +592,7 @@ export default function CloudExplorerScreen() {
               }
 
               for (let i = 0; i < selectedItemsList.length; i++) {
+                if (bulkAbortRef.current) break;
                 const it = selectedItemsList[i];
                 setBulkStatusText(`Preparing ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
                 const localUri = await downloadCloudItemToLocal(it);
@@ -598,11 +601,15 @@ export default function CloudExplorerScreen() {
                 }
                 downloadedCount++;
               }
-              Alert.alert('Download Complete ✓', `Saved ${downloadedCount} file(s) to device.`);
+              if (bulkAbortRef.current) {
+                appAlert('Download Cancelled', `Saved ${downloadedCount} file(s) before cancellation.`);
+              } else {
+                appAlert('Download Complete ✓', `Saved ${downloadedCount} file(s) to device.`);
+              }
               exitSelectMode();
               await loadCloudItems();
             } catch (err: any) {
-              Alert.alert('Download Error', err?.message || 'Failed during bulk download.');
+              appAlert('Download Error', err?.message || 'Failed during bulk download.');
             } finally {
               setIsBulkOperating(false);
               setBulkStatusText('');
@@ -620,7 +627,7 @@ export default function CloudExplorerScreen() {
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
-        Alert.alert('Sharing Unavailable', 'File sharing is not supported on this device.');
+        appAlert('Sharing Unavailable', 'File sharing is not supported on this device.');
         return;
       }
 
@@ -647,7 +654,7 @@ export default function CloudExplorerScreen() {
       }
       exitSelectMode();
     } catch (err: any) {
-      Alert.alert('Share Error', err?.message || 'Could not prepare files to share.');
+      appAlert('Share Error', err?.message || 'Could not prepare files to share.');
     } finally {
       setIsBulkOperating(false);
       setBulkStatusText('');
@@ -656,7 +663,7 @@ export default function CloudExplorerScreen() {
 
   const handleBulkDelete = async () => {
     if (selectedItemsList.length === 0) return;
-    Alert.alert(
+    appAlert(
       'Delete from Telegram Cloud',
       `Are you sure you want to delete ${selectedItemsList.length} file(s) from your Telegram cloud storage? This action cannot be undone.`,
       [
@@ -665,20 +672,31 @@ export default function CloudExplorerScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            bulkAbortRef.current = false;
             setIsBulkOperating(true);
             setBulkStatusText(`Deleting ${selectedItemsList.length} items from cloud...`);
+            let deletedCount = 0;
             try {
-              for (const it of selectedItemsList) {
+              for (let i = 0; i < selectedItemsList.length; i++) {
+                if (bulkAbortRef.current) break;
+                const it = selectedItemsList[i];
+                setBulkStatusText(`Deleting ${i + 1} of ${selectedItemsList.length}: ${it.fileName}...`);
                 await deleteCloudRecord(it);
+                deletedCount++;
               }
               exitSelectMode();
               await loadCloudItems();
-              Alert.alert('Deleted', `Removed ${selectedItemsList.length} file(s) from cloud catalog.`);
+              if (bulkAbortRef.current) {
+                appAlert('Delete Cancelled', `Deletion stopped. Removed ${deletedCount} of ${selectedItemsList.length} file(s) from cloud.`);
+              } else {
+                appAlert('Deleted', `Removed ${selectedItemsList.length} file(s) from cloud catalog.`);
+              }
             } catch (err: any) {
-              Alert.alert('Delete Error', err?.message || 'Failed to delete some items.');
+              appAlert('Delete Error', err?.message || 'Failed to delete some items.');
             } finally {
               setIsBulkOperating(false);
               setBulkStatusText('');
+              bulkAbortRef.current = false;
             }
           },
         },
@@ -790,7 +808,7 @@ export default function CloudExplorerScreen() {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       if (!item.chatId || !item.telegramMessageId) {
-        Alert.alert('Telegram Link', 'This file was uploaded to Saved Messages or a chat without a direct channel link.');
+        appAlert('Telegram Link', 'This file was uploaded to Saved Messages or a chat without a direct channel link.');
         return;
       }
       const rawId = String(item.chatId);
@@ -803,7 +821,7 @@ export default function CloudExplorerScreen() {
         await Linking.openURL(`https://t.me/c/${cleanId}/${item.telegramMessageId}`);
       }
     } catch {
-      Alert.alert('Telegram Link', 'Could not open Telegram directly.');
+      appAlert('Telegram Link', 'Could not open Telegram directly.');
     }
   };
 
@@ -829,7 +847,7 @@ export default function CloudExplorerScreen() {
         if (status === MediaLibrary.PermissionStatus.GRANTED) {
           await MediaLibrary.saveToLibraryAsync(localUri);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          Alert.alert(
+          appAlert(
             'Saved to Gallery',
             `"${item.fileName}" has been saved to your device Photos & Gallery.`
           );
@@ -846,7 +864,7 @@ export default function CloudExplorerScreen() {
         });
       }
     } catch (err: any) {
-      Alert.alert('Save Failed', err?.message || 'Could not save file to device.');
+      appAlert('Save Failed', err?.message || 'Could not save file to device.');
     } finally {
       setDownloadingItemUri(null);
       setDownloadProgress(0);
@@ -864,7 +882,7 @@ export default function CloudExplorerScreen() {
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
-        Alert.alert('Sharing Unavailable', 'File sharing is not supported on this device.');
+        appAlert('Sharing Unavailable', 'File sharing is not supported on this device.');
         return;
       }
 
@@ -882,7 +900,7 @@ export default function CloudExplorerScreen() {
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (err: any) {
-      Alert.alert('Share Error', err?.message || 'Failed to share file.');
+      appAlert('Share Error', err?.message || 'Failed to share file.');
     } finally {
       setIsSharing(false);
       setDownloadingItemUri(null);
@@ -1829,7 +1847,7 @@ export default function CloudExplorerScreen() {
                     onPress={() => setSelectedItem(null)}
                   >
                     <Text style={[styles.secondaryActionBtnText, { color: textColor }]} numberOfLines={1}>
-                      Close
+                      Cancel / Close
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1901,14 +1919,38 @@ export default function CloudExplorerScreen() {
               Delete
             </Text>
           </TouchableOpacity>
+
+          <View style={[styles.bulkDivider, { backgroundColor: border }]} />
+
+          <TouchableOpacity
+            style={styles.bulkActionBtn}
+            onPress={exitSelectMode}
+            disabled={isBulkOperating}
+          >
+            <FontAwesome name="times" size={16} color={isDark ? '#94A3B8' : '#64748B'} />
+            <Text style={[styles.bulkActionText, { color: isDark ? '#94A3B8' : '#64748B' }]} numberOfLines={1}>
+              Cancel
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {/* Bulk Progress Toast / Overlay */}
+      {/* Bulk Progress Toast / Overlay with Cancel Button */}
       {isBulkOperating && (
         <View style={styles.bulkProgressOverlay}>
           <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-          <Text style={styles.bulkProgressText}>{bulkStatusText}</Text>
+          <Text style={styles.bulkProgressText} numberOfLines={1}>{bulkStatusText}</Text>
+          <TouchableOpacity
+            style={styles.bulkCancelBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+              bulkAbortRef.current = true;
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.bulkCancelBtnText}>Cancel</Text>
+          </TouchableOpacity>
         </View>
       )}
     </SafeAreaView>
@@ -2583,6 +2625,19 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+    flexShrink: 1,
+  },
+  bulkCancelBtn: {
+    marginLeft: 12,
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  bulkCancelBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   heroSummaryCard: {
     marginHorizontal: 16,

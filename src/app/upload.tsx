@@ -739,6 +739,8 @@ export default function UploadScreen() {
                     <Text style={[styles.metaProgressText, { color: '#0284C7', fontWeight: '600' }]}>
                       • {formatSpeed(item.speedKbps * 1024)}
                     </Text>
+                  ) : item.status === 'uploading' ? (
+                    <Text style={[styles.metaProgressText, { color: '#64748B' }]}>• Connecting…</Text>
                   ) : null}
                   {typeof item.speedKbps === 'number' && item.speedKbps > 0 && item.size > 0 ? (
                     <Text style={[styles.metaProgressText, { color: '#10B981', fontWeight: '600' }]}>
@@ -764,6 +766,11 @@ export default function UploadScreen() {
               <Text style={[styles.statusText, { color: getStatusColor(item.status) }]}>
                 {item.status.toUpperCase()}
               </Text>
+              {item.status === 'failed' && typeof item.retries === 'number' && item.retries > 0 && (
+                <Text style={{ color: '#F87171', fontSize: 9, fontWeight: '700', marginTop: 1 }}>
+                  {item.retries}× tried
+                </Text>
+              )}
             </View>
             {(item.status === 'pending' || (item.status === 'uploading' && !isCurrentlyUploading)) && (
               <TouchableOpacity

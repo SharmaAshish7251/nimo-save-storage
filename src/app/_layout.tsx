@@ -1,9 +1,9 @@
 import 'react-native-get-random-values';
 import '@/shims/polyfills';
-import { DarkTheme, DefaultTheme, ThemeProvider, Stack } from 'expo-router';
+import { DarkTheme, DefaultTheme, ThemeProvider, Stack, router } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { Text, TouchableOpacity, StyleSheet, View, StatusBar as RNStatusBar, Platform } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet, View, StatusBar as RNStatusBar, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
@@ -12,9 +12,11 @@ import { ThemeProvider as AppThemeProvider, useAppTheme } from '@/context/ThemeC
 import { registerBackgroundUploadTask } from '@/tasks/backgroundUpload';
 import { schedulerEngine } from '@/lib/scheduler/schedulerEngine';
 import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
+import { AppAlertHost } from '@/components/AppAlert';
 import { BottomNavBar } from '@/components/BottomNavBar';
 import { recoverInterruptedUploads } from '@/lib/storage/queue';
 import { vaultService } from '@/lib/crypto/vault';
+import { uploadManager } from '@/lib/upload/manager';
 import '@/app/logs'; // Initialize log capture
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -35,6 +37,19 @@ function RootLayoutNav() {
   const { isDark } = useAppTheme();
   const themeBg = isDark ? '#0F172A' : '#FFFFFF';
   const themeText = isDark ? '#F8FAFC' : '#0F172A';
+  const [isUploading, setIsUploading] = useState(false);
+
+  useEffect(() => {
+    setIsUploading(uploadManager.isActive);
+    const unsub = uploadManager.subscribe((event) => {
+      if (event.type === 'queue_complete' || event.type === 'paused') {
+        setIsUploading(false);
+      } else if (event.type === 'status' || event.type === 'progress') {
+        setIsUploading(uploadManager.isActive);
+      }
+    });
+    return unsub;
+  }, []);
 
   const customDarkTheme = {
     ...DarkTheme,
@@ -90,8 +105,42 @@ function RootLayoutNav() {
           <Stack.Screen name="logs" options={{ title: 'Logs' }} />
           <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         </Stack>
+        {isUploading && (
+          <View
+            style={{
+              position: 'absolute',
+              bottom: 80,
+              left: 16,
+              right: 16,
+              backgroundColor: isDark ? '#0F4C81' : '#1D6FAE',
+              borderRadius: 10,
+              paddingVertical: 8,
+              paddingHorizontal: 14,
+              flexDirection: 'row',
+              alignItems: 'center',
+              zIndex: 999,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.25,
+              shadowRadius: 4,
+              elevation: 6,
+            }}
+          >
+            <ActivityIndicator size="small" color="#60A5FA" style={{ marginRight: 8 }} />
+            <Text style={{ color: '#E0F2FE', fontSize: 13, fontWeight: '600', flex: 1 }}>
+              Upload in progress…
+            </Text>
+            <TouchableOpacity
+              onPress={() => router.push('/upload' as any)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={{ color: '#93C5FD', fontSize: 13, fontWeight: '700' }}>View →</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <BottomNavBar />
         <BiometricLockOverlay />
+        <AppAlertHost />
       </View>
     </ThemeProvider>
   );

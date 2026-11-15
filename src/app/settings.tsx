@@ -9,7 +9,6 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  Alert,
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import * as Battery from 'expo-battery';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useAppTheme } from '@/context/ThemeContext';
+import { appAlert } from '@/components/AppAlert';
 import { vaultService } from '@/lib/crypto/vault';
 import {
   getConfig,
@@ -179,12 +179,12 @@ export default function SettingsScreen() {
   const handleAddCustomFileType = async () => {
     const trimmed = newExt.trim().toLowerCase().replace(/^\./, '');
     if (!trimmed) {
-      Alert.alert('Invalid Extension', 'Please enter a valid file extension (e.g. epub, apk, psd).');
+      appAlert('Invalid Extension', 'Please enter a valid file extension (e.g. epub, apk, psd).');
       return;
     }
     const current = config?.customFileTypes || [];
     if (current.some((c) => c.extension.toLowerCase() === trimmed)) {
-      Alert.alert('Duplicate Extension', `.${trimmed} is already in your custom file types.`);
+      appAlert('Duplicate Extension', `.${trimmed} is already in your custom file types.`);
       return;
     }
     const updated = [...current, { extension: trimmed, category: newCategory }];
@@ -206,14 +206,14 @@ export default function SettingsScreen() {
     try {
       const res = await purgeAppCache();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
+      appAlert(
         'Cache Cleared ✓',
         `Successfully purged ${formatFileSize(res.freedBytes)} across ${res.freedFiles} temporary files.`
       );
       setCacheBytes(0);
       setCacheFileCount(0);
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to purge cache');
+      appAlert('Error', err?.message || 'Failed to purge cache');
     } finally {
       setIsPurgingCache(false);
     }
@@ -228,11 +228,11 @@ export default function SettingsScreen() {
 
   const handleSaveVaultPassword = async () => {
     if (!vaultPassword || vaultPassword.length < 6) {
-      Alert.alert('Invalid Password', 'Master vault password must be at least 6 characters.');
+      appAlert('Invalid Password', 'Master vault password must be at least 6 characters.');
       return;
     }
     if (vaultPassword !== vaultConfirm) {
-      Alert.alert('Mismatch', 'Passwords do not match. Please re-enter.');
+      appAlert('Mismatch', 'Passwords do not match. Please re-enter.');
       return;
     }
     setIsSavingVault(true);
@@ -243,19 +243,19 @@ export default function SettingsScreen() {
       setVaultPasswordModalVisible(false);
       setVaultPassword('');
       setVaultConfirm('');
-      Alert.alert(
+      appAlert(
         'Vault Enabled ✓',
         'Your Zero-Knowledge AES-256 Vault is active. Backups will now be encrypted client-side before sending to Telegram.'
       );
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to initialize vault');
+      appAlert('Error', e?.message || 'Failed to initialize vault');
     } finally {
       setIsSavingVault(false);
     }
   };
 
   const handleClearVault = () => {
-    Alert.alert(
+    appAlert(
       'Clear Vault Password',
       'Are you sure you want to disable the vault and remove the master key from secure storage? Previously encrypted files will require you to set the same password again to decrypt.',
       [
@@ -267,7 +267,7 @@ export default function SettingsScreen() {
             await vaultService.clearVaultKey();
             setHasVaultKey(false);
             await updateConfig({ vaultEnabled: false });
-            Alert.alert('Vault Cleared', 'Zero-knowledge encryption has been disabled.');
+            appAlert('Vault Cleared', 'Zero-knowledge encryption has been disabled.');
           },
         },
       ]
@@ -385,7 +385,7 @@ export default function SettingsScreen() {
   };
 
   const handleLogout = () => {
-    Alert.alert(
+    appAlert(
       'Logout from Telegram',
       'Are you sure you want to disconnect your Telegram account? You will need to log in again to upload files.',
       [
@@ -411,9 +411,9 @@ export default function SettingsScreen() {
   const requestPermissions = async () => {
     const granted = await requestMediaPermissions();
     if (granted) {
-      Alert.alert('Permission Granted', 'Media and storage access is enabled.');
+      appAlert('Permission Granted', 'Media and storage access is enabled.');
     } else {
-      Alert.alert('Permission Denied', 'Please enable media access in your device settings.');
+      appAlert('Permission Denied', 'Please enable media access in your device settings.');
     }
   };
 
@@ -425,22 +425,22 @@ export default function SettingsScreen() {
       const res = await pushCloudProfileSnapshot(true);
       if (res.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        Alert.alert(
+        appAlert(
           'Cloud Profile Backed Up',
           'Your settings, watched folders, and upload index were saved to Telegram Saved Messages.'
         );
       } else {
-        Alert.alert('Backup Failed', res.error || 'Could not push cloud profile.');
+        appAlert('Backup Failed', res.error || 'Could not push cloud profile.');
       }
     } catch (err: any) {
-      Alert.alert('Backup Error', err?.message || 'Failed to backup profile');
+      appAlert('Backup Error', err?.message || 'Failed to backup profile');
     } finally {
       setIsSyncingProfile(false);
     }
   };
 
   const handleManualProfileRestore = async () => {
-    Alert.alert(
+    appAlert(
       'Restore Profile from Cloud',
       'This will download your latest settings, watched folders, and upload index from Telegram Saved Messages and apply them to this device. Continue?',
       [
@@ -455,11 +455,11 @@ export default function SettingsScreen() {
                 const refreshed = await getConfig();
                 setConfig(refreshed);
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-                Alert.alert('Profile Restored', 'Settings, folders, and cloud upload records have been successfully restored.');
+                appAlert('Profile Restored', 'Settings, folders, and cloud upload records have been successfully restored.');
               } else if (res.reason === 'NO_PROFILE_FOUND') {
-                Alert.alert('No Profile Found', 'No existing profile snapshot was found in your Telegram Saved Messages.');
+                appAlert('No Profile Found', 'No existing profile snapshot was found in your Telegram Saved Messages.');
               } else if (res.reason === 'NOT_LOGGED_IN') {
-                Alert.alert('Not Connected', 'Please connect your Telegram account before restoring your cloud profile.');
+                appAlert('Not Connected', 'Please connect your Telegram account before restoring your cloud profile.');
               } else {
                 const friendlyReasons: Record<string, string> = {
                   FILE_DOWNLOAD_FAILED: 'Could not download the profile backup snapshot from Telegram Cloud.',
@@ -469,10 +469,10 @@ export default function SettingsScreen() {
                   UNSUPPORTED_SCHEMA_VERSION: 'Cloud profile backup was created by an incompatible app version.',
                 };
                 const msg = (res.reason && friendlyReasons[res.reason]) || res.reason || 'Could not restore cloud profile snapshot.';
-                Alert.alert('Restore Failed', msg);
+                appAlert('Restore Failed', msg);
               }
             } catch (err: any) {
-              Alert.alert('Restore Error', err?.message || 'Failed to restore profile');
+              appAlert('Restore Error', err?.message || 'Failed to restore profile');
             } finally {
               setIsSyncingProfile(false);
             }
@@ -1691,10 +1691,10 @@ export default function SettingsScreen() {
                       if (res.success) {
                         updateConfig({ biometricLockEnabled: true });
                       } else {
-                        Alert.alert('Authentication Failed', 'Unable to verify biometric identity.');
+                        appAlert('Authentication Failed', 'Unable to verify biometric identity.');
                       }
                     } catch (err: any) {
-                      Alert.alert('Biometric Error', err?.message || 'Biometric hardware unavailable.');
+                      appAlert('Biometric Error', err?.message || 'Biometric hardware unavailable.');
                     }
                   } else {
                     updateConfig({ biometricLockEnabled: false });

@@ -1,4 +1,4 @@
-import { Alert } from 'react-native';
+import { appAlert } from '@/components/AppAlert';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
@@ -355,9 +355,9 @@ export async function requestAndScanSAFDirectory(): Promise<{
       directoryUri.includes('/tree/raw%3A') ||
       directoryUri.endsWith('%3Adownloads')
     ) {
-      Alert.alert(
+      appAlert(
         'Downloads Shortcut Restriction',
-        'Android does not permit reading files from the virtual "Downloads" sidebar shortcut.\n\nTo scan your Downloads folder:\n1. Tap "Add Folder" again\n2. Open the sidebar (tap â˜° top-left)\n3. Tap your phone\'s "Internal Storage" (device name)\n4. Select the "Download" folder and tap "Use this folder".',
+        'Android does not permit reading files from the virtual "Downloads" sidebar shortcut.\n\nTo scan your Downloads folder:\n1. Tap "Add Folder" again\n2. Open the sidebar (tap ☰ top-left)\n3. Tap your phone\'s "Internal Storage" (device name)\n4. Select the "Download" folder and tap "Use this folder".',
         [{ text: 'OK' }]
       );
       return null;

@@ -199,22 +199,32 @@ export function DuplicateCleanerModal({
                 },
               ]}
             >
-              <TouchableOpacity
-                style={[styles.cleanBtn, isCleaning && styles.cleanBtnDisabled]}
-                onPress={handleClean}
-                disabled={isCleaning}
-              >
-                {isCleaning ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <>
-                    <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.cleanBtnText} numberOfLines={1}>
-                      Clean Duplicates (Free {formatFileSize(totalWastedBytes)})
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
+              <View style={styles.footerRow}>
+                <TouchableOpacity
+                  style={[styles.cancelBtn, { borderColor: border }]}
+                  onPress={onClose}
+                  disabled={isCleaning}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.cancelBtnText, { color: textColor }]}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.cleanBtn, isCleaning && styles.cleanBtnDisabled]}
+                  onPress={handleClean}
+                  disabled={isCleaning}
+                >
+                  {isCleaning ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.cleanBtnText} numberOfLines={1}>
+                        Clean Duplicates ({formatFileSize(totalWastedBytes)})
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         )}
@@ -340,7 +350,25 @@ const styles = StyleSheet.create({
     padding: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
+  footerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  cancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
   cleanBtn: {
+    flex: 1,
     backgroundColor: '#EF4444',
     flexDirection: 'row',
     alignItems: 'center',

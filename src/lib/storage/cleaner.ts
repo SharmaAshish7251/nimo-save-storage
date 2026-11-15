@@ -178,14 +178,15 @@ export async function analyzeCleanableSpace(options: { forceRefresh?: boolean } 
  */
 export async function executeCleanSpace(
   items: CleanableItem[],
-  onProgress?: (cleanedCount: number, total: number) => void
+  onProgress?: (cleanedCount: number, total: number) => void,
+  abortSignal?: AbortSignal
 ): Promise<CleanResult> {
   let freedCount = 0;
   let freedBytes = 0;
   let failedCount = 0;
   let blockedCount = 0;
 
-  if (items.length === 0) {
+  if (items.length === 0 || abortSignal?.aborted) {
     return { freedCount: 0, freedBytes: 0, failedCount: 0, blockedCount: 0 };
   }
 
@@ -258,6 +259,13 @@ export async function executeCleanSpace(
   const totalItems = eligibleItems.length;
 
   // Phase 3: BATCH MediaLibrary Deletion
+  // Check for cancellation before presenting system dialog
+  if (abortSignal?.aborted) {
+    clearResolvedTargetCache();
+    invalidateCleanerAnalysisCache();
+    return { freedCount, freedBytes, failedCount, blockedCount };
+  }
+
   // CRITICAL FIX: Pass ALL asset IDs in a SINGLE array so Android presents the system permission dialog EXACTLY ONCE!
   if (mediaItems.length > 0) {
     const assetIdSet = new Set<string>();
@@ -307,7 +315,7 @@ export async function executeCleanSpace(
   }
 
   // Phase 4: Parallel Direct FileSystem / SAF Deletion
-  if (directFsItems.length > 0) {
+  if (directFsItems.length > 0 && !abortSignal?.aborted) {
     const fsQueue = new PQueue({ concurrency: 8 });
     const fsHistoryEntries: {
       fileName: string;
@@ -320,6 +328,7 @@ export async function executeCleanSpace(
     await Promise.all(
       directFsItems.map(({ item, targetUri }) =>
         fsQueue.add(async () => {
+          if (abortSignal?.aborted) return;
           let deleted = false;
           try {
             await FileSystem.deleteAsync(targetUri, { idempotent: true });

@@ -8,12 +8,12 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
-  Alert,
   Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '@/context/ThemeContext';
+import { appAlert } from '@/components/AppAlert';
 import { tdLibClient } from '@/lib/tdlib/client';
 import { TelegramDestination } from '@/lib/tdlib/types';
 import { getConfig, saveConfig, AppConfig } from '@/lib/storage/queue';
@@ -76,7 +76,7 @@ export const DestinationSelector = React.memo(function DestinationSelector({
       dest.memberRole === 'owner' ||
       dest.memberRole === 'admin';
     if ((dest.type === 'channel' || dest.type === 'group') && !isOwnerOrAdmin && dest.canPost === false) {
-      Alert.alert(
+      appAlert(
         'Posting Restricted',
         `You are a member in "${dest.title}", but your account does not have admin or posting rights there. Please choose a channel or group where you are an admin or owner, or select Saved Messages.`
       );
@@ -145,7 +145,7 @@ export const DestinationSelector = React.memo(function DestinationSelector({
       await selectDestination(resolved);
       setCustomInput('');
     } catch (err: any) {
-      Alert.alert(
+      appAlert(
         'Channel Not Found',
         err?.message || `Could not resolve "${trimmed}". Make sure the @username or numeric Chat ID is valid and accessible.`
       );

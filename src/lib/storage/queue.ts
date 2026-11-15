@@ -346,11 +346,23 @@ export interface UploadedRecord {
   lastVerifiedAt?: number;
 }
 
+const MAX_UPLOADED_ITEMS = 5000;
+
 export async function getUploadedIndex(): Promise<UploadedRecord[]> {
   try {
     const raw = await AsyncStorage.getItem(UPLOADED_KEY);
     if (!raw) return [];
-    return JSON.parse(raw);
+    const records: UploadedRecord[] = JSON.parse(raw);
+    // Auto-prune bloated index on first read (keeps newest records)
+    if (records.length > MAX_UPLOADED_ITEMS) {
+      const pruned = records
+        .sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0))
+        .slice(0, MAX_UPLOADED_ITEMS);
+      // Write back asynchronously — do NOT await so reads remain fast
+      AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(pruned)).catch(() => {});
+      return pruned;
+    }
+    return records;
   } catch {
     return [];
   }
@@ -362,7 +374,12 @@ export async function markUploaded(record: UploadedRecord): Promise<void> {
     // Avoid duplicates by uri
     const filtered = index.filter(r => r.uri !== record.uri);
     filtered.push(record);
-    await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filtered));
+    // Cap at MAX_UPLOADED_ITEMS (keep newest)
+    const capped =
+      filtered.length > MAX_UPLOADED_ITEMS
+        ? filtered.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0)).slice(0, MAX_UPLOADED_ITEMS)
+        : filtered;
+    await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(capped));
   });
 }
 

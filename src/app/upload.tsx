@@ -61,6 +61,7 @@ type HistoryFilter = 'all' | 'uploaded' | 'failed' | 'dismissed';
 type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
 
 const PAGE_SIZE = 20;
+const MAX_EXPANDED_ITEMS = 250;
 
 export default function UploadScreen() {
   const insets = useSafeAreaInsets();
@@ -600,7 +601,7 @@ export default function UploadScreen() {
   });
 
   const displayedQueue = queueShowAll
-    ? filteredQueue
+    ? filteredQueue.slice(0, MAX_EXPANDED_ITEMS)
     : filteredQueue.slice(0, PAGE_SIZE);
 
   // History metrics
@@ -623,7 +624,7 @@ export default function UploadScreen() {
   });
 
   const displayedHistory = historyShowAll
-    ? filteredHistory
+    ? filteredHistory.slice(0, MAX_EXPANDED_ITEMS)
     : filteredHistory.slice(0, PAGE_SIZE);
 
   const formatTimestamp = (ts: number) => {
@@ -1214,7 +1215,7 @@ export default function UploadScreen() {
               {filteredQueue.length > PAGE_SIZE && (
                 <TouchableOpacity onPress={() => setQueueShowAll(!queueShowAll)}>
                   <Text style={styles.linkText}>
-                    {queueShowAll ? 'Show 20' : `Show All (${filteredQueue.length})`}
+                    {queueShowAll ? `Show ${PAGE_SIZE}` : (filteredQueue.length > MAX_EXPANDED_ITEMS ? `Show Top ${MAX_EXPANDED_ITEMS}` : `Show All (${filteredQueue.length})`)}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -1311,7 +1312,7 @@ export default function UploadScreen() {
               {filteredHistory.length > PAGE_SIZE && (
                 <TouchableOpacity onPress={() => setHistoryShowAll(!historyShowAll)}>
                   <Text style={styles.linkText}>
-                    {historyShowAll ? 'Show 20' : `Show All (${filteredHistory.length})`}
+                    {historyShowAll ? `Show ${PAGE_SIZE}` : (filteredHistory.length > MAX_EXPANDED_ITEMS ? `Show Top ${MAX_EXPANDED_ITEMS}` : `Show All (${filteredHistory.length})`)}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -1339,7 +1340,7 @@ export default function UploadScreen() {
             onPress={() => setQueueShowAll(!queueShowAll)}
           >
             <Text style={[styles.paginationBtnText, isDark && { color: '#818CF8' }]}>
-              {queueShowAll ? "Show 20 by default" : `Show All (${filteredQueue.length} files)`}
+              {queueShowAll ? `Show ${PAGE_SIZE} by default` : (filteredQueue.length > MAX_EXPANDED_ITEMS ? `Show Top ${MAX_EXPANDED_ITEMS} files` : `Show All (${filteredQueue.length} files)`)}
             </Text>
           </TouchableOpacity>
         </View>
@@ -1357,7 +1358,7 @@ export default function UploadScreen() {
             onPress={() => setHistoryShowAll(!historyShowAll)}
           >
             <Text style={[styles.paginationBtnText, isDark && { color: '#818CF8' }]}>
-              {historyShowAll ? "Show 20 by default" : `Show All (${filteredHistory.length} records)`}
+              {historyShowAll ? `Show ${PAGE_SIZE} by default` : (filteredHistory.length > MAX_EXPANDED_ITEMS ? `Show Top ${MAX_EXPANDED_ITEMS} records` : `Show All (${filteredHistory.length} records)`)}
             </Text>
           </TouchableOpacity>
         </View>

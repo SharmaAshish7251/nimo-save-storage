@@ -4,7 +4,7 @@ import PQueue from 'p-queue';
 import {
   getUploadedIndex,
   getQueue,
-  recordActionHistory,
+  recordActionHistoryBatch,
 } from './queue';
 import {
   FileCategory,
@@ -13,8 +13,8 @@ import {
   findMatchingMediaLibraryAsset,
   extractMediaStoreAssetId,
   clearResolvedTargetCache,
+  statLocalFileUri,
 } from './fileHelper';
-import { verifyCloudRecord } from './cloudSync';
 
 export interface CleanableItem {
   uri: string;
@@ -185,149 +185,179 @@ export async function executeCleanSpace(
   let failedCount = 0;
   let blockedCount = 0;
 
+  if (items.length === 0) {
+    return { freedCount: 0, freedBytes: 0, failedCount: 0, blockedCount: 0 };
+  }
+
+  // Clear stale in-memory target caches upfront so checks never return stale "exists: true"
+  clearResolvedTargetCache();
+  invalidateCleanerAnalysisCache();
+
   const uploaded = await getUploadedIndex();
 
-  const checkUriGone = async (
-    uriToVerify: string,
-    fileName: string,
-    size: number,
-    mediaAssetId?: string
-  ): Promise<boolean> => {
-    const check = await resolveLocalFileTarget({
-      uri: uriToVerify,
-      fileName,
-      size,
-      mediaAssetId,
-      allowMediaMatch: false,
-      requestPermission: false,
-    }).catch(() => ({ exists: true }));
-    return !check.exists;
-  };
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    let deleted = false;
-
-    // ── SAFETY SHIELD CHECK ──────────────────────────────────────────────────
-    // Files are eligible for cleaning only if they have a confirmed cloud upload.
-    // Safety Shield blocks deletion if cloudStatus is 'missing' or if the file was never uploaded.
+  // Phase 1: In-memory Safety Shield Filter (0ms instant)
+  // Verify that every file candidate has a confirmed cloud backup record.
+  const eligibleItems: CleanableItem[] = [];
+  for (const item of items) {
     const rec = uploaded.find((u) => u.uri === item.uri);
     const hasCloudRecord = Boolean(rec && (rec.telegramMessageId || rec.chunkManifest || item.telegramMessageId));
 
     if (!hasCloudRecord || rec?.cloudStatus === 'missing') {
       console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — No valid Telegram cloud upload record found.`);
       blockedCount += 1;
-      if (onProgress) onProgress(i + 1, items.length);
-      continue;
+    } else {
+      eligibleItems.push(item);
     }
+  }
 
-    // Active Safety Shield Live Verification: Verify message actually exists in Telegram Cloud before deleting local copy!
-    if (rec) {
-      try {
-        const verification = await verifyCloudRecord(rec, item.chatId);
-        if (!verification.exists) {
-          console.warn(`[Cleaner Safety Shield] Blocked deletion of "${item.fileName}" — Cloud message no longer exists on Telegram.`);
-          blockedCount += 1;
-          if (onProgress) onProgress(i + 1, items.length);
-          continue;
-        }
-      } catch (verifyErr) {
-        console.warn(`[Cleaner Safety Shield] Verification failed for "${item.fileName}", blocking local deletion for safety:`, verifyErr);
-        blockedCount += 1;
-        if (onProgress) onProgress(i + 1, items.length);
-        continue;
-      }
-    }
+  if (eligibleItems.length === 0) {
+    return { freedCount: 0, freedBytes: 0, failedCount: 0, blockedCount };
+  }
 
-    if (!item.canAutoDelete) {
-      failedCount += 1;
-      if (onProgress) onProgress(i + 1, items.length);
-      continue;
-    }
+  // Phase 2: Separate items into MediaStore assets (Batchable) and Direct FileSystem files
+  const mediaItems: { item: CleanableItem; assetId: string }[] = [];
+  const directFsItems: { item: CleanableItem; targetUri: string }[] = [];
 
-    const targetUri = item.resolvedUri || item.uri;
-    const assetId =
-      item.mediaAssetId ||
-      extractMediaStoreAssetId(targetUri) ||
-      extractMediaStoreAssetId(item.uri) ||
-      (targetUri.startsWith('ph://') ? targetUri : undefined);
+  // Parallel lookup of any missing asset IDs for media categories
+  const lookupQueue = new PQueue({ concurrency: 6 });
+  await Promise.all(
+    eligibleItems.map((item) =>
+      lookupQueue.add(async () => {
+        const targetUri = item.resolvedUri || item.uri;
+        let assetId =
+          item.mediaAssetId ||
+          extractMediaStoreAssetId(targetUri) ||
+          extractMediaStoreAssetId(item.uri) ||
+          (targetUri.startsWith('ph://') ? targetUri : undefined);
 
-    try {
-      // Attempt 1: Delete via MediaLibrary using valid asset ID (required for Android Scoped Storage media)
-      if (assetId) {
-        try {
-          const res = await MediaLibrary.deleteAssetsAsync([assetId]);
-          if (res) {
-            deleted = await checkUriGone(targetUri, item.fileName, item.size, assetId);
-          }
-        } catch {
-          // Fall back to FileSystem.deleteAsync
-        }
-      }
-
-      // Attempt 2: Direct FileSystem delete (works for SAF tree content:// and local file:// paths)
-      if (!deleted) {
-        try {
-          await FileSystem.deleteAsync(targetUri, { idempotent: false });
-          deleted = await checkUriGone(targetUri, item.fileName, item.size, assetId);
-        } catch {
-          deleted = false;
-        }
-      }
-
-      // Attempt 3: Lazy MediaLibrary asset lookup for legacy media records lacking mediaAssetId
-      if (
-        !deleted &&
-        !assetId &&
-        (item.category === 'image' || item.category === 'video' || item.category === 'audio')
-      ) {
-        try {
-          const matched = await findMatchingMediaLibraryAsset({
-            fileName: item.fileName,
-            size: item.size,
-            category: item.category,
-            contentUri: item.uri,
-            requestPermission: false,
-          });
-          if (matched) {
-            const res = await MediaLibrary.deleteAssetsAsync([matched.id]);
-            if (res) {
-              deleted = await checkUriGone(matched.uri, item.fileName, item.size, matched.id);
+        if (!assetId && (item.category === 'image' || item.category === 'video' || item.category === 'audio')) {
+          try {
+            const matched = await findMatchingMediaLibraryAsset({
+              fileName: item.fileName,
+              size: item.size,
+              category: item.category,
+              contentUri: item.uri,
+              requestPermission: false,
+            });
+            if (matched?.id) {
+              assetId = matched.id;
             }
-          }
-        } catch {
-          // Unable to delete via MediaLibrary fallback
+          } catch {}
         }
-      }
 
-      if (deleted) {
+        if (assetId) {
+          mediaItems.push({ item, assetId });
+        } else {
+          directFsItems.push({ item, targetUri });
+        }
+      })
+    )
+  );
+
+  let processedCount = 0;
+  const totalItems = eligibleItems.length;
+
+  // Phase 3: BATCH MediaLibrary Deletion
+  // CRITICAL FIX: Pass ALL asset IDs in a SINGLE array so Android presents the system permission dialog EXACTLY ONCE!
+  if (mediaItems.length > 0) {
+    const assetIdSet = new Set<string>();
+    mediaItems.forEach((m) => assetIdSet.add(m.assetId));
+    const allAssetIds = Array.from(assetIdSet);
+
+    let batchSuccess = false;
+    try {
+      // Android OS prompt: "Allow Nimo Save Storage to delete X items?" (Asked only once!)
+      batchSuccess = await MediaLibrary.deleteAssetsAsync(allAssetIds);
+    } catch (err) {
+      console.warn('[Cleaner] MediaLibrary batch deletion failed:', err);
+      batchSuccess = false;
+    }
+
+    if (batchSuccess) {
+      // All media assets deleted in one instant batch
+      const historyEntries: {
+        fileName: string;
+        uri: string;
+        size: number;
+        status: 'cleaned_locally';
+        destination: string;
+      }[] = [];
+
+      for (const m of mediaItems) {
         freedCount += 1;
-        freedBytes += item.size;
-        await recordActionHistory({
-          fileName: item.fileName,
-          uri: item.uri,
-          size: item.size,
+        freedBytes += m.item.size;
+        processedCount += 1;
+        historyEntries.push({
+          fileName: m.item.fileName,
+          uri: m.item.uri,
+          size: m.item.size,
           status: 'cleaned_locally',
           destination: 'Local Space Reclaimed',
         });
-      } else {
-        failedCount += 1;
       }
-    } catch (err) {
-      console.warn(`[Cleaner] Failed to delete local file ${item.fileName}:`, err);
-      failedCount += 1;
-    }
-
-    if (onProgress) {
-      onProgress(i + 1, items.length);
+      if (onProgress) onProgress(processedCount, totalItems);
+      // Batch record action history in one atomic AsyncStorage write instead of N competing writes
+      recordActionHistoryBatch(historyEntries).catch(() => {});
+    } else {
+      // User cancelled the prompt or permission denied
+      failedCount += mediaItems.length;
+      processedCount += mediaItems.length;
+      if (onProgress) onProgress(processedCount, totalItems);
     }
   }
 
-  // Invalidate cleaner analysis and target caches when files were cleaned
-  if (freedCount > 0) {
-    invalidateCleanerAnalysisCache();
-    clearResolvedTargetCache();
+  // Phase 4: Parallel Direct FileSystem / SAF Deletion
+  if (directFsItems.length > 0) {
+    const fsQueue = new PQueue({ concurrency: 8 });
+    const fsHistoryEntries: {
+      fileName: string;
+      uri: string;
+      size: number;
+      status: 'cleaned_locally';
+      destination: string;
+    }[] = [];
+
+    await Promise.all(
+      directFsItems.map(({ item, targetUri }) =>
+        fsQueue.add(async () => {
+          let deleted = false;
+          try {
+            await FileSystem.deleteAsync(targetUri, { idempotent: true });
+            // Direct verification without reading any stale cache
+            const stat = await statLocalFileUri(targetUri);
+            deleted = !stat.exists;
+          } catch {
+            deleted = false;
+          }
+
+          if (deleted) {
+            freedCount += 1;
+            freedBytes += item.size;
+            fsHistoryEntries.push({
+              fileName: item.fileName,
+              uri: item.uri,
+              size: item.size,
+              status: 'cleaned_locally',
+              destination: 'Local Space Reclaimed',
+            });
+          } else {
+            failedCount += 1;
+          }
+
+          processedCount += 1;
+          if (onProgress) onProgress(processedCount, totalItems);
+        })
+      )
+    );
+
+    if (fsHistoryEntries.length > 0) {
+      recordActionHistoryBatch(fsHistoryEntries).catch(() => {});
+    }
   }
+
+  // Final cache invalidation
+  clearResolvedTargetCache();
+  invalidateCleanerAnalysisCache();
 
   return {
     freedCount,

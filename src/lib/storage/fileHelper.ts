@@ -210,7 +210,7 @@ async function hasMediaLibraryPermission(requestIfNeeded = false): Promise<boole
   }
 }
 
-async function statLocalFileUri(
+export async function statLocalFileUri(
   uri: string
 ): Promise<{ exists: boolean; size: number }> {
   if (!uri || uri.startsWith('content://')) return { exists: false, size: 0 };

@@ -2,6 +2,7 @@ import { Alert } from 'react-native';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import PQueue from 'p-queue';
 import { getUploadedIndex, getWatchedFolders, getQueue, getConfig, WatchedFolder } from '../storage/queue';
 import { getFileInfo, getFileCategory, inferMimeType, resolveLocalFileTarget } from '../storage/fileHelper';
 
@@ -132,28 +133,41 @@ export async function getFilesFromAlbum(
   if (!hasPermission || abortSignal?.aborted) return [];
 
   try {
-    const assets = await MediaLibrary.getAssetsAsync({
-      album: albumId,
-      mediaType: ['photo', 'video', 'audio'],
-      first: 2000,
-      sortBy: ['creationTime'],
-    });
-
-    if (abortSignal?.aborted) return [];
-
     const files: ScannedFile[] = [];
-    for (const asset of assets.assets) {
-      if (abortSignal?.aborted) break;
-      files.push({
-        uri: asset.uri,
-        fileName: asset.filename,
-        size: 0,
-        mimeType: asset.mediaType,
-        modificationTime: asset.modificationTime || asset.creationTime,
-        source: 'media',
-        folderName: folderTitle,
-        mediaAssetId: asset.id,
+    let hasNextPage = true;
+    let endCursor: string | undefined = undefined;
+    const MAX_FOLDER_FILES = 10000;
+    const sampleAssets: MediaLibrary.Asset[] = [];
+
+    while (hasNextPage && files.length < MAX_FOLDER_FILES && !abortSignal?.aborted) {
+      const page = await MediaLibrary.getAssetsAsync({
+        album: albumId,
+        mediaType: ['photo', 'video', 'audio'],
+        first: 1000,
+        after: endCursor,
+        sortBy: ['creationTime'],
       });
+
+      for (const asset of page.assets) {
+        if (abortSignal?.aborted) break;
+        if (sampleAssets.length < 5) {
+          sampleAssets.push(asset);
+        }
+        files.push({
+          uri: asset.uri,
+          fileName: asset.filename,
+          size: 0,
+          mimeType: asset.mediaType,
+          modificationTime: asset.modificationTime || asset.creationTime,
+          source: 'media',
+          folderName: folderTitle,
+          mediaAssetId: asset.id,
+        });
+      }
+
+      hasNextPage = page.hasNextPage;
+      endCursor = page.endCursor;
+      if (!endCursor) break;
     }
 
     if (abortSignal?.aborted) return files;
@@ -162,7 +176,7 @@ export async function getFilesFromAlbum(
     let resolvedDirUri: string | null = null;
 
     // 1. Try resolving physical directory URI from sample assets in this album
-    for (const asset of assets.assets.slice(0, 5)) {
+    for (const asset of sampleAssets) {
       let fileUri = asset.uri;
       if (!fileUri.startsWith('file://')) {
         try {
@@ -272,31 +286,39 @@ export async function scanSAFDirectory(
       await FileSystem.StorageAccessFramework.readDirectoryAsync(directoryUri);
 
     const files: ScannedFile[] = [];
-    for (const fileUri of fileUris) {
-      if (abortSignal?.aborted) break;
-      const name = decodeURIComponent(fileUri.split('%2F').pop() || 'file');
-      let size = 0;
-      try {
-        const info = await FileSystem.getInfoAsync(fileUri);
-        // Fix 1.4: Skip sub-directories â€” only process actual files
-        if (!info.exists || (info as any).isDirectory) continue;
-        if (typeof (info as any).size === 'number') {
-          size = (info as any).size;
-        }
-      } catch {}
-      // Infer MIME type from extension for documents/archives/custom types
-      const ext = name.split('.').pop()?.toLowerCase() || '';
+    const pQueue = new PQueue({ concurrency: 12 });
 
-      const mimeType = inferMimeType(ext);
-      files.push({
-        uri: fileUri,
-        fileName: name,
-        size,
-        mimeType,
-        source: 'document',
-        folderName: folderTitle,
-      });
-    }
+    const tasks = fileUris.map((fileUri) =>
+      pQueue.add(async () => {
+        if (abortSignal?.aborted) return;
+        const name = decodeURIComponent(fileUri.split('%2F').pop() || 'file');
+        let size = 0;
+        try {
+          const info = await FileSystem.getInfoAsync(fileUri);
+          // Skip sub-directories — only process actual files
+          if (!info.exists || (info as any).isDirectory) return;
+          if (typeof (info as any).size === 'number') {
+            size = (info as any).size;
+          }
+        } catch {
+          return;
+        }
+
+        const ext = name.split('.').pop()?.toLowerCase() || '';
+        const mimeType = inferMimeType(ext);
+
+        files.push({
+          uri: fileUri,
+          fileName: name,
+          size,
+          mimeType,
+          source: 'document',
+          folderName: folderTitle,
+        });
+      })
+    );
+
+    await Promise.all(tasks);
     return files;
   } catch (error) {
     console.error(`Error reading SAF directory ${directoryUri}:`, error);
@@ -426,29 +448,37 @@ export async function scanForNewFiles(options?: ScanOptions): Promise<ScannedFil
   const minBytes = (config?.minFileSizeKb || 0) * 1024;
   const maxBytes = config?.maxFileSizeBytes || 0;
 
-  for (const file of candidateFiles) {
-    if (abortSignal?.aborted) break;
-    try {
-      const info = await getFileInfo(file.uri);
-      const actualSize = info.size > 0 ? info.size : file.size || 0;
+  const sizeQueue = new PQueue({ concurrency: 12 });
+  const sizeTasks = candidateFiles.map((file) =>
+    sizeQueue.add(async () => {
+      if (abortSignal?.aborted) return;
+      let actualSize = file.size || 0;
+      if (actualSize <= 0) {
+        try {
+          const info = await getFileInfo(file.uri);
+          if (info.size > 0) {
+            actualSize = info.size;
+          }
+        } catch {}
+      }
 
       // Filter by min size (e.g. skip icons/thumbnails smaller than threshold)
       if (minBytes > 0 && actualSize > 0 && actualSize < minBytes) {
-        continue;
+        return;
       }
       // Filter by max size (e.g. skip huge files larger than threshold)
       if (maxBytes > 0 && actualSize > maxBytes) {
-        continue;
+        return;
       }
 
       filesWithSize.push({
         ...file,
         size: actualSize,
       });
-    } catch {
-      filesWithSize.push(file);
-    }
-  }
+    })
+  );
+
+  await Promise.all(sizeTasks);
 
   return filesWithSize;
 }

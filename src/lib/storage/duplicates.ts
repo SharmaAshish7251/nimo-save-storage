@@ -159,6 +159,9 @@ export async function deleteDuplicates(
   let freedBytes = 0;
   const errors: string[] = [];
 
+  const allRedundantMedia: { copy: DuplicateFile; groupSize: number; assetId: string }[] = [];
+  const allRedundantDirectFs: { copy: DuplicateFile; groupSize: number }[] = [];
+
   for (const group of groups) {
     if (group.files.length < 2) continue;
 
@@ -171,33 +174,47 @@ export async function deleteDuplicates(
     const redundantCopies = sorted.slice(1);
 
     for (const copy of redundantCopies) {
-      try {
-        let deleted = false;
-        const assetId =
-          extractMediaStoreAssetId(copy.uri) ||
-          (copy.uri.startsWith('ph://') ? copy.uri : undefined);
+      const assetId =
+        extractMediaStoreAssetId(copy.uri) ||
+        (copy.uri.startsWith('ph://') ? copy.uri : undefined);
 
-        if (assetId) {
-          try {
-            const res = await MediaLibrary.deleteAssetsAsync([assetId]);
-            if (res) deleted = true;
-          } catch {}
-        }
-        if (!deleted) {
-          try {
-            await FileSystem.deleteAsync(copy.uri, { idempotent: true });
-            deleted = true;
-          } catch {}
-        }
-        if (deleted) {
-          deletedCount++;
-          freedBytes += group.size;
-        } else {
-          errors.push(`Failed to delete ${copy.name}: File could not be removed`);
-        }
-      } catch (err: any) {
-        errors.push(`Failed to delete ${copy.name}: ${err?.message || 'Permission denied'}`);
+      if (assetId) {
+        allRedundantMedia.push({ copy, groupSize: group.size, assetId });
+      } else {
+        allRedundantDirectFs.push({ copy, groupSize: group.size });
       }
+    }
+  }
+
+  // 1. Batch delete all MediaLibrary assets in a single OS call (Asked only once!)
+  if (allRedundantMedia.length > 0) {
+    const assetIdSet = new Set<string>();
+    allRedundantMedia.forEach((m) => assetIdSet.add(m.assetId));
+    const allAssetIds = Array.from(assetIdSet);
+
+    try {
+      const res = await MediaLibrary.deleteAssetsAsync(allAssetIds);
+      if (res) {
+        for (const item of allRedundantMedia) {
+          deletedCount++;
+          freedBytes += item.groupSize;
+        }
+      } else {
+        errors.push('Permission to delete media duplicates was cancelled.');
+      }
+    } catch (err: any) {
+      errors.push(`Media batch delete error: ${err?.message || 'Permission denied'}`);
+    }
+  }
+
+  // 2. Delete non-media filesystem copies in parallel
+  for (const { copy, groupSize } of allRedundantDirectFs) {
+    try {
+      await FileSystem.deleteAsync(copy.uri, { idempotent: true });
+      deletedCount++;
+      freedBytes += groupSize;
+    } catch (err: any) {
+      errors.push(`Failed to delete ${copy.name}: ${err?.message || 'Unable to remove'}`);
     }
   }
 

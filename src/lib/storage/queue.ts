@@ -524,27 +524,61 @@ export async function getActionHistory(): Promise<ActionHistoryItem[]> {
   try {
     const raw = await AsyncStorage.getItem(ACTION_HISTORY_KEY);
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed: ActionHistoryItem[] = JSON.parse(raw);
+    if (parsed.length > MAX_HISTORY_ITEMS) {
+      // Auto-prune existing bloated history down to MAX_HISTORY_ITEMS to prevent SQLite CursorWindow crash
+      const pruned = parsed.slice(0, MAX_HISTORY_ITEMS);
+      AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(pruned)).catch(() => {});
+      return pruned;
+    }
+    return parsed;
   } catch {
     return [];
   }
 }
 
-const MAX_HISTORY_ITEMS = 10000;
+const MAX_HISTORY_ITEMS = 500;
 
 export async function recordActionHistory(
   item: Omit<ActionHistoryItem, 'id' | 'timestamp'>
 ): Promise<ActionHistoryItem> {
-  const history = await getActionHistory();
-  const newItem: ActionHistoryItem = {
-    ...item,
-    id: Crypto.randomUUID(),
-    timestamp: Date.now(),
-  };
-  // Prepend to show most recent first, keep up to 10,000 items
-  const updated = [newItem, ...history].slice(0, MAX_HISTORY_ITEMS);
-  await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
-  return newItem;
+  return withQueueLock(async () => {
+    const history = await getActionHistory();
+    const newItem: ActionHistoryItem = {
+      ...item,
+      id: Crypto.randomUUID(),
+      timestamp: Date.now(),
+    };
+    // Prepend to show most recent first, keep up to 500 items
+    const updated = [newItem, ...history].slice(0, MAX_HISTORY_ITEMS);
+    await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
+    return newItem;
+  });
+}
+
+/**
+ * Records multiple action history items in a single atomic AsyncStorage read + write.
+ * Essential for batch cleanups and multi-file actions to avoid hammering SQLite.
+ */
+export async function recordActionHistoryBatch(
+  items: Omit<ActionHistoryItem, 'id' | 'timestamp'>[]
+): Promise<void> {
+  if (items.length === 0) return;
+  return withQueueLock(async () => {
+    try {
+      const history = await getActionHistory();
+      const now = Date.now();
+      const newItems: ActionHistoryItem[] = items.map((item) => ({
+        ...item,
+        id: Crypto.randomUUID(),
+        timestamp: now,
+      }));
+      const updated = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
+      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
+    } catch (err) {
+      console.warn('[Queue] Failed to record action history batch:', err);
+    }
+  });
 }
 
 export async function clearActionHistory(): Promise<void> {

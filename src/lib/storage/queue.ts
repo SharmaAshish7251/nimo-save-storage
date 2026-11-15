@@ -739,6 +739,42 @@ export async function clearAllQueue(
   });
 }
 
+/**
+ * Discards only queue items matching a predicate (e.g. by file category)
+ * leaving the rest of the queue untouched.
+ */
+export async function clearQueueByFilter(
+  predicate: (item: QueueItem) => boolean,
+  recordAsDismissed: boolean = false,
+  destination?: string
+): Promise<number> {
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    const toRemove = queue.filter(predicate);
+    if (toRemove.length === 0) return 0;
+    const remaining = queue.filter((item) => !predicate(item));
+
+    if (recordAsDismissed) {
+      const history = await getActionHistory();
+      const now = Date.now();
+      const newItems: ActionHistoryItem[] = toRemove.map((item) => ({
+        id: Crypto.randomUUID(),
+        fileName: item.fileName,
+        uri: item.uri,
+        size: item.size,
+        status: 'dismissed',
+        timestamp: now,
+        destination,
+      }));
+      const updatedHistory = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
+      cachedHistory = updatedHistory;
+      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory));
+    }
+    await saveQueue(remaining);
+    return toRemove.length;
+  });
+}
+
 
 export async function getSchedulerState(): Promise<SchedulerState> {
   try {

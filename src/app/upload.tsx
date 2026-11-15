@@ -5,6 +5,7 @@ import { DestinationSelector } from '@/components/DestinationSelector';
 import { FileDetailData, FileDetailsModal } from '@/components/FileDetailsModal';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
 import { DuplicateCleanerModal } from '@/components/DuplicateCleanerModal';
+import { QueueTypeFilterModal } from '@/components/QueueTypeFilterModal';
 import { appAlert } from '@/components/AppAlert';
 import {
   findLocalDuplicates,
@@ -35,6 +36,7 @@ import {
   QueueItem,
   removeFromQueue,
   clearAllQueue,
+  clearQueueByFilter,
   recoverInterruptedUploads,
   WatchedFolder,
   AppConfig,
@@ -95,6 +97,9 @@ export default function UploadScreen() {
   const [isScanningDuplicates, setIsScanningDuplicates] = useState(false);
   const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
   const [duplicateProgress, setDuplicateProgress] = useState<ScanDuplicatesProgress | null>(null);
+
+  // Queue Type Filter Modal state
+  const [typeModalVisible, setTypeModalVisible] = useState(false);
 
   const handleOpenDuplicateCleaner = async (forceRefresh = false) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -395,13 +400,17 @@ export default function UploadScreen() {
     setScanStatusText('Aborting scan...');
   };
 
-  const startUpload = async () => {
+  const startUpload = async (targetCategory?: string, targetCategories?: string[]) => {
     setUploading(true);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       // Auto-recover any orphaned uploads before starting queue processing
       await recoverInterruptedUploads().catch(() => {});
-      const result = await uploadManager.processQueue({ forceManual: true });
+      const result = await uploadManager.processQueue({
+        forceManual: true,
+        categoryFilter: targetCategory && targetCategory !== 'all' ? targetCategory : undefined,
+        categories: targetCategories,
+      });
       loadData();
       if (result.errors && result.errors[0] === 'Upload already in progress') {
         return;
@@ -445,6 +454,8 @@ export default function UploadScreen() {
         );
       } else if (msg.includes('NO_INTERNET')) {
         appAlert('No Internet Connection', 'Please check your WiFi or mobile data connection and try again.');
+      } else if (msg.includes('NO_MATCHING_FILES')) {
+        appAlert('No Matching Files', 'No pending files in the queue match the chosen file type filter.');
       } else if (msg.includes('EMPTY_QUEUE') || msg.includes('ALL_FAILED')) {
         appAlert('Queue Notice', msg.replace(/^[A-Z_]+:\s*/, ''));
       } else {
@@ -569,8 +580,63 @@ export default function UploadScreen() {
     loadData();
   };
 
+  const getCategoryLabel = (cat: string) => {
+    switch (cat) {
+      case 'image': return 'Images';
+      case 'video': return 'Videos';
+      case 'audio': return 'Audio';
+      case 'document': return 'Docs';
+      default: return 'Files';
+    }
+  };
+
+  const handleDiscardCategories = async (categories: string[]) => {
+    const catSet = new Set(categories);
+    const count = await clearQueueByFilter(
+      (item) => catSet.has(getFileCategory(item.fileName, item.mimeType)),
+      true
+    );
+    loadData();
+    if (count > 0) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      appAlert('Queue Cleaned', `Removed ${count} file(s) from the queue.`);
+    }
+  };
+
   const handleDiscardAll = async () => {
     if (queue.length === 0) return;
+    if (queueFilter !== 'all') {
+      const catLabel = getCategoryLabel(queueFilter);
+      const count = filteredQueue.length;
+      appAlert(
+        `Discard ${catLabel}`,
+        `Do you want to discard only ${count} ${catLabel.toLowerCase()} file(s), or discard the entire queue (${queue.length} files)?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: `Discard ${catLabel} Only (${count})`,
+            style: 'destructive',
+            onPress: async () => {
+              await clearQueueByFilter(
+                (item) => getFileCategory(item.fileName, item.mimeType) === queueFilter,
+                true
+              );
+              loadData();
+            },
+          },
+          {
+            text: `Discard All (${queue.length})`,
+            style: 'destructive',
+            onPress: async () => {
+              await clearAllQueue(true);
+              loadData();
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     appAlert(
       'Discard All',
       `Are you sure you want to remove all ${queue.length} files from the queue?`,
@@ -642,6 +708,16 @@ export default function UploadScreen() {
     },
     { image: 0, video: 0, audio: 0, document: 0, other: 0 }
   );
+
+  const pendingCategoryCounts = pendingItems.reduce(
+    (acc, item) => {
+      const cat = getFileCategory(item.fileName, item.mimeType);
+      if (cat in acc) acc[cat as keyof typeof acc]++;
+      return acc;
+    },
+    { image: 0, video: 0, audio: 0, document: 0, other: 0 }
+  );
+
 
   const filteredQueue = queue.filter((item) => {
     if (queueFilter === 'all') return true;
@@ -1115,13 +1191,15 @@ export default function UploadScreen() {
         ) : (
           <TouchableOpacity
             style={[styles.uploadButton, (isCurrentlyUploading || scanning) && styles.buttonDisabled]}
-            onPress={startUpload}
+            onPress={() => startUpload(queueFilter)}
             disabled={isCurrentlyUploading || scanning}
           >
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
               <FontAwesome name="rocket" size={14} color="#FFF" style={{ marginRight: 6 }} />
               <Text style={styles.uploadButtonText} numberOfLines={1}>
-                Upload Now
+                {queueFilter === 'all'
+                  ? `Upload All (${pendingItems.length})`
+                  : `Upload ${getCategoryLabel(queueFilter)} (${pendingCategoryCounts[queueFilter as keyof typeof pendingCategoryCounts] || 0})`}
               </Text>
             </View>
           </TouchableOpacity>
@@ -1135,8 +1213,16 @@ export default function UploadScreen() {
         </View>
       )}
 
-      {/* Duplicate Cleaner Tool Row */}
+      {/* Utility Action Row */}
       <View style={styles.utilityActionRow}>
+        <TouchableOpacity
+          style={[styles.duplicateToolBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)', borderColor: '#334155' }]}
+          onPress={() => setTypeModalVisible(true)}
+        >
+          <FontAwesome name="sliders" size={12} color="#208AEF" style={{ marginRight: 6 }} />
+          <Text style={styles.duplicateToolBtnText}>Upload by Type</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.duplicateToolBtn, isDark && { backgroundColor: 'rgba(32, 138, 239, 0.15)', borderColor: '#334155' }]}
           onPress={() => handleOpenDuplicateCleaner()}
@@ -1283,7 +1369,11 @@ export default function UploadScreen() {
               )}
               {queue.length > 0 && (
                 <TouchableOpacity onPress={handleDiscardAll}>
-                  <Text style={styles.dangerLinkText}>Discard All</Text>
+                  <Text style={styles.dangerLinkText}>
+                    {queueFilter !== 'all'
+                      ? `Discard ${getCategoryLabel(queueFilter)} (${filteredQueue.length})`
+                      : 'Discard All'}
+                  </Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -1573,6 +1663,14 @@ export default function UploadScreen() {
         onClose={() => setDuplicateModalVisible(false)}
         onClean={handleCleanDuplicates}
       />
+
+      <QueueTypeFilterModal
+        visible={typeModalVisible}
+        queue={queue}
+        onClose={() => setTypeModalVisible(false)}
+        onUploadCategories={(categories) => startUpload(undefined, categories)}
+        onDiscardCategories={(categories) => handleDiscardCategories(categories)}
+      />
     </SafeAreaView>
   );
 }
@@ -1719,6 +1817,7 @@ const styles = StyleSheet.create({
   utilityActionRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: 8,
     marginBottom: 8,
   },
   duplicateToolBtn: {

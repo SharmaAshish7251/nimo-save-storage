@@ -15,7 +15,7 @@ import {
 } from '../storage/queue';
 import { tdLibClient } from '../tdlib/client';
 import { pruneOrphanedUploadCache } from '../tdlib/fileHelper';
-import { getFileInfo, computeFastFileHash } from '../storage/fileHelper';
+import { getFileInfo, computeFastFileHash, getFileCategory } from '../storage/fileHelper';
 import { syncDestinationBeforeUpload, findCloudConflict, deleteCloudRecord } from '../storage/cloudSync';
 import { scheduleCloudProfilePush } from '../storage/cloudProfileSync';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -323,7 +323,12 @@ export class UploadManager {
     return { canUpload: true };
   }
   
-  async processQueue(options: { forceManual?: boolean } = {}): Promise<ProcessQueueResult> {
+  async processQueue(options: {
+    forceManual?: boolean;
+    categoryFilter?: string;
+    categories?: string[];
+    itemIds?: string[];
+  } = {}): Promise<ProcessQueueResult> {
     if (this.isRunning) {
       return {
         total: 0,
@@ -357,10 +362,31 @@ export class UploadManager {
       }
       
       // 3. Check queue for pending items
+      const config = await getConfig();
       const queueItems = await getQueue();
-      const pendingItems = queueItems.filter((item: QueueItem) => item.status === 'pending');
+      const allPendingItems = queueItems.filter((item: QueueItem) => item.status === 'pending');
+
+      let pendingItems = allPendingItems;
+      if (options.itemIds && options.itemIds.length > 0) {
+        const idSet = new Set(options.itemIds);
+        pendingItems = allPendingItems.filter((item) => idSet.has(item.id));
+      } else if (options.categories && options.categories.length > 0) {
+        const catSet = new Set(options.categories);
+        pendingItems = allPendingItems.filter((item) => {
+          const cat = getFileCategory(item.fileName, item.mimeType, config.customFileTypes);
+          return catSet.has(cat);
+        });
+      } else if (options.categoryFilter && options.categoryFilter !== 'all') {
+        pendingItems = allPendingItems.filter((item) => {
+          const cat = getFileCategory(item.fileName, item.mimeType, config.customFileTypes);
+          return cat === options.categoryFilter;
+        });
+      }
       
       if (pendingItems.length === 0) {
+        if (allPendingItems.length > 0) {
+          throw new Error('NO_MATCHING_FILES: No pending files found matching the selected type filter.');
+        }
         const failedItems = queueItems.filter((item: QueueItem) => item.status === 'failed');
         if (failedItems.length > 0) {
           throw new Error(`ALL_FAILED: All ${failedItems.length} file(s) in queue previously failed. Tap "Retry" on a file to try again.`);
@@ -368,7 +394,6 @@ export class UploadManager {
         throw new Error('EMPTY_QUEUE: Queue is empty. Please select or scan files first.');
       }
 
-      const config = await getConfig();
       // Dynamic Size-Aware & Network-Adaptive Concurrency:
       // When large files (>100MB) are in the queue, cap concurrency at 2 to maximize dedicated pipe bandwidth,
       // prevent socket congestion, and eliminate 90s watchdog timeouts on mobile.

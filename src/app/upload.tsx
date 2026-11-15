@@ -5,6 +5,7 @@ import { DestinationSelector } from '@/components/DestinationSelector';
 import { FileDetailData, FileDetailsModal } from '@/components/FileDetailsModal';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
 import { DuplicateCleanerModal } from '@/components/DuplicateCleanerModal';
+import { appAlert } from '@/components/AppAlert';
 import {
   findLocalDuplicates,
   deleteDuplicates,
@@ -44,7 +45,6 @@ import { uploadManager } from '@/lib/upload/manager';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   Platform,
@@ -121,7 +121,7 @@ export default function UploadScreen() {
       setDuplicateGroups(groups);
     } catch (err: any) {
       console.warn('Duplicate scan error:', err);
-      Alert.alert('Scan Error', err?.message || 'Could not scan for duplicates');
+      appAlert('Scan Error', err?.message || 'Could not scan for duplicates');
     } finally {
       setIsScanningDuplicates(false);
     }
@@ -133,12 +133,12 @@ export default function UploadScreen() {
       const result = await deleteDuplicates(duplicateGroups, strategy);
       await loadData();
       setDuplicateModalVisible(false);
-      Alert.alert(
+      appAlert(
         'Duplicates Cleaned ✓',
         `Removed ${result.deletedCount} duplicate file(s) and freed ${formatFileSize(result.freedBytes)} of device storage.`
       );
     } catch (err: any) {
-      Alert.alert('Clean Error', err?.message || 'Failed to clean duplicates');
+      appAlert('Clean Error', err?.message || 'Failed to clean duplicates');
     } finally {
       setIsCleaningDuplicates(false);
     }
@@ -259,7 +259,7 @@ export default function UploadScreen() {
         isHistory: false,
       });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to pick file');
+      appAlert('Error', error.message || 'Failed to pick file');
     }
   };
 
@@ -278,17 +278,17 @@ export default function UploadScreen() {
         const msg = skipped > 0
           ? `Added ${added.length} files (${formatFileSize(totalBytes)}) to queue. ${skipped} duplicates skipped.`
           : `Added ${added.length} files (${formatFileSize(totalBytes)}) to queue`;
-        Alert.alert('Success', msg);
+        appAlert('Success', msg);
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to add files to queue');
+      appAlert('Error', error.message || 'Failed to add files to queue');
     }
   };
 
   const scanAndQueueAll = async (foldersToUse?: WatchedFolder[]) => {
     const foldersToScan = foldersToUse || watchedFolders;
     if (foldersToScan.length === 0) {
-      Alert.alert(
+      appAlert(
         'No Folders Selected',
         'Please select which folders to scan.',
         [
@@ -307,7 +307,7 @@ export default function UploadScreen() {
     try {
       const hasPermission = await requestMediaPermissions();
       if (!hasPermission) {
-        Alert.alert(
+        appAlert(
           'Permission Required',
           'Media library permission is required to scan files. Please grant media permission when prompted or in system settings.'
         );
@@ -325,12 +325,12 @@ export default function UploadScreen() {
       });
 
       if (controller.signal.aborted) {
-        Alert.alert('Scan Cancelled', 'Media scan was stopped by user.');
+        appAlert('Scan Cancelled', 'Media scan was stopped by user.');
         return;
       }
 
       if (newFiles.length === 0) {
-        Alert.alert(
+        appAlert(
           'Scan Complete',
           `No new files found in ${foldersToScan.length} selected folder(s).`
         );
@@ -349,7 +349,7 @@ export default function UploadScreen() {
       const { added, skipped } = await addManyToQueue(toAdd);
 
       if (controller.signal.aborted) {
-        Alert.alert('Scan Cancelled', 'Adding files to queue was stopped.');
+        appAlert('Scan Cancelled', 'Adding files to queue was stopped.');
         return;
       }
 
@@ -360,7 +360,7 @@ export default function UploadScreen() {
         startUpload();
       } else {
         const skippedNote = skipped > 0 ? ` (${skipped} duplicates skipped)` : '';
-        Alert.alert(
+        appAlert(
           'Scan Complete',
           `Added ${added.length} files (${formatFileSize(totalBytes)}) from ${foldersToScan.length} folder(s) to queue${skippedNote}`,
           added.length > 0
@@ -373,9 +373,9 @@ export default function UploadScreen() {
       }
     } catch (error: any) {
       if (controller.signal.aborted) {
-        Alert.alert('Scan Cancelled', 'Media scan stopped.');
+        appAlert('Scan Cancelled', 'Media scan stopped.');
       } else {
-        Alert.alert('Error', error.message || 'Scan error occurred');
+        appAlert('Error', error.message || 'Scan error occurred');
       }
     } finally {
       setScanning(false);
@@ -405,22 +405,22 @@ export default function UploadScreen() {
       }
       if (result.paused && result.paused > 0 && result.failed === 0) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        Alert.alert(
+        appAlert(
           'Upload Paused',
           `Uploaded ${result.uploaded} file(s); ${result.paused} file(s) paused and saved in queue.`
         );
       } else if (result.failed === 0) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Success', `Successfully uploaded ${result.uploaded} file(s)!`);
+        appAlert('Success', `Successfully uploaded ${result.uploaded} file(s)!`);
       } else if (result.uploaded > 0) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        Alert.alert(
+        appAlert(
           'Upload Completed with Warnings',
           `Uploaded ${result.uploaded} of ${result.total} files.\n\n${result.failed} file(s) failed:\n${result.errors[0] || 'Unknown error'}`
         );
       } else {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert(
+        appAlert(
           'Upload Failed',
           `${result.failed} file(s) failed to upload:\n${result.errors[0] || 'Unknown error'}`
         );
@@ -429,7 +429,7 @@ export default function UploadScreen() {
       loadData();
       const msg = error.message || 'Upload process failed';
       if (msg.includes('NOT_LOGGED_IN')) {
-        Alert.alert(
+        appAlert(
           'Telegram Not Connected',
           'You need to connect your Telegram account first to upload files.',
           [
@@ -441,11 +441,11 @@ export default function UploadScreen() {
           ]
         );
       } else if (msg.includes('NO_INTERNET')) {
-        Alert.alert('No Internet Connection', 'Please check your WiFi or mobile data connection and try again.');
+        appAlert('No Internet Connection', 'Please check your WiFi or mobile data connection and try again.');
       } else if (msg.includes('EMPTY_QUEUE') || msg.includes('ALL_FAILED')) {
-        Alert.alert('Queue Notice', msg.replace(/^[A-Z_]+:\s*/, ''));
+        appAlert('Queue Notice', msg.replace(/^[A-Z_]+:\s*/, ''));
       } else {
-        Alert.alert('Upload Error', msg);
+        appAlert('Upload Error', msg);
       }
     } finally {
       setUploading(false);
@@ -457,12 +457,12 @@ export default function UploadScreen() {
     try {
       await uploadManager.uploadSingleItem(item);
       loadData();
-      Alert.alert('Success', `"${item.fileName}" uploaded successfully!`);
+      appAlert('Success', `"${item.fileName}" uploaded successfully!`);
     } catch (error: any) {
       loadData();
       const msg = error.message || 'Failed to upload item';
       if (msg.includes('NOT_LOGGED_IN')) {
-        Alert.alert(
+        appAlert(
           'Telegram Not Connected',
           'Please connect your Telegram account first.',
           [
@@ -471,7 +471,7 @@ export default function UploadScreen() {
           ]
         );
       } else {
-        Alert.alert('Upload Error', msg);
+        appAlert('Upload Error', msg);
       }
     } finally {
       setUploading(false);
@@ -486,7 +486,7 @@ export default function UploadScreen() {
       if (isQueueItem) {
         await uploadManager.retryItem(item.id);
         loadData();
-        Alert.alert('Success', `"${item.fileName}" uploaded successfully!`);
+        appAlert('Success', `"${item.fileName}" uploaded successfully!`);
       } else {
         await addToQueue({
           uri: item.uri,
@@ -495,13 +495,13 @@ export default function UploadScreen() {
         });
         await uploadManager.processQueue({ forceManual: true });
         loadData();
-        Alert.alert('Success', `"${item.fileName}" re-queued and uploaded!`);
+        appAlert('Success', `"${item.fileName}" re-queued and uploaded!`);
       }
     } catch (error: any) {
       loadData();
       const msg = error.message || 'Retry failed';
       if (msg.includes('NOT_LOGGED_IN')) {
-        Alert.alert(
+        appAlert(
           'Telegram Not Connected',
           'Please connect your Telegram account first.',
           [
@@ -510,7 +510,7 @@ export default function UploadScreen() {
           ]
         );
       } else {
-        Alert.alert('Upload Error', msg);
+        appAlert('Upload Error', msg);
       }
     } finally {
       setUploading(false);
@@ -531,13 +531,13 @@ export default function UploadScreen() {
       const res = await uploadManager.resumeQueue();
       loadData();
       if (res && res.failed > 0) {
-        Alert.alert(
+        appAlert(
           'Resume Finished with Warnings',
           `${res.uploaded} uploaded, ${res.failed} failed:\n${res.errors[0] || 'Unknown error'}`
         );
       }
     } catch (err: any) {
-      Alert.alert('Resume Error', err.message || 'Failed to resume queue');
+      appAlert('Resume Error', err.message || 'Failed to resume queue');
     } finally {
       setUploading(false);
     }
@@ -568,7 +568,7 @@ export default function UploadScreen() {
 
   const handleDiscardAll = async () => {
     if (queue.length === 0) return;
-    Alert.alert(
+    appAlert(
       'Discard All',
       `Are you sure you want to remove all ${queue.length} files from the queue?`,
       [
@@ -586,7 +586,7 @@ export default function UploadScreen() {
   };
 
   const handleClearHistory = async () => {
-    Alert.alert(
+    appAlert(
       'Clear History',
       'Are you sure you want to clear your entire upload history log?',
       [

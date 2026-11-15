@@ -48,19 +48,13 @@ import { ensureFileSchemeUri, getMimeTypeFromFileName } from '@/lib/tdlib/fileHe
 import { reassembleChunks } from '@/lib/storage/reassembler';
 import { MediaPlayerModal, MediaPreviewItem } from '@/components/MediaPlayerModal';
 import { vaultService } from '@/lib/crypto/vault';
+import { CloudGridItem } from '@/components/explore/CloudGridItem';
+import { CloudListItem } from '@/components/explore/CloudListItem';
+import type { CloudItem, CategoryFilter, SortOption } from '@/components/explore/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
 const GRID_ITEM_SIZE = (SCREEN_WIDTH - 32 - (GRID_COLUMNS - 1) * 8) / GRID_COLUMNS;
-
-type CategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document' | 'missing';
-type SortOption = 'newest' | 'oldest' | 'largest' | 'name';
-
-interface CloudItem extends UploadedRecord {
-  category: 'image' | 'video' | 'audio' | 'document' | 'other';
-  existsLocally?: boolean;
-  cachedLocalUri?: string;
-}
 
 function getRestoredCachePath(fileName: string, id: string | number): string {
   return `${FileSystem.cacheDirectory}restored_${id}_${fileName}`;
@@ -489,7 +483,7 @@ export default function CloudExplorerScreen() {
     };
   }, [selectedItem, config]);
 
-  const toggleSelection = (uri: string) => {
+  const toggleSelection = useCallback((uri: string) => {
     setSelectedUris((prev) => {
       const next = new Set(prev);
       if (next.has(uri)) {
@@ -499,14 +493,14 @@ export default function CloudExplorerScreen() {
       }
       return next;
     });
-  };
+  }, []);
 
-  const exitSelectMode = () => {
+  const exitSelectMode = useCallback(() => {
     setIsSelectMode(false);
     setSelectedUris(new Set());
-  };
+  }, []);
 
-  const handleItemPress = (item: CloudItem) => {
+  const handleItemPress = useCallback((item: CloudItem) => {
     if (isSelectMode) {
       Haptics.selectionAsync().catch(() => {});
       toggleSelection(item.uri);
@@ -514,9 +508,9 @@ export default function CloudExplorerScreen() {
       Haptics.selectionAsync().catch(() => {});
       setSelectedItem(item);
     }
-  };
+  }, [isSelectMode, toggleSelection]);
 
-  const handleItemLongPress = (item: CloudItem) => {
+  const handleItemLongPress = useCallback((item: CloudItem) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     if (!isSelectMode) {
       setIsSelectMode(true);
@@ -524,7 +518,7 @@ export default function CloudExplorerScreen() {
     } else {
       toggleSelection(item.uri);
     }
-  };
+  }, [isSelectMode, toggleSelection]);
 
   const selectedItemsList = useMemo(() => {
     return items.filter((it) => selectedUris.has(it.uri));
@@ -935,178 +929,40 @@ export default function CloudExplorerScreen() {
   const subtextColor = isDark ? '#94A3B8' : '#64748B';
   const border = isDark ? '#334155' : '#E2E8F0';
 
-  const renderGridItem = ({ item }: { item: CloudItem }) => {
-    const isImage = item.category === 'image';
-    const isSelected = selectedUris.has(item.uri);
-    return (
-      <TouchableOpacity
-        style={[
-          styles.gridCell,
-          { backgroundColor: cardBg, borderColor: border },
-          isSelected && styles.gridCellSelected,
-        ]}
-        onPress={() => handleItemPress(item)}
-        onLongPress={() => handleItemLongPress(item)}
-        delayLongPress={300}
-        activeOpacity={0.8}
-      >
-        {isImage && (item.existsLocally || item.cachedLocalUri) ? (
-          <Image source={{ uri: item.cachedLocalUri || item.uri }} style={styles.gridThumbImage} resizeMode="cover" />
-        ) : (
-          <View style={[styles.gridFallbackWrap, { backgroundColor: isDark ? '#1E293B' : '#F1F5F9' }]}>
-            <FontAwesome
-              name={getCategoryIcon(item.category) as any}
-              size={28}
-              color={item.category === 'image' ? '#10B981' : item.category === 'video' ? '#8B5CF6' : '#3B82F6'}
-            />
-            <Text style={[styles.gridFallbackText, { color: subtextColor }]} numberOfLines={1}>
-              {item.fileName}
-            </Text>
-          </View>
-        )}
+  const renderGridItem = useCallback(
+    ({ item }: { item: CloudItem }) => (
+      <CloudGridItem
+        item={item}
+        isSelected={selectedUris.has(item.uri)}
+        isSelectMode={isSelectMode}
+        isDark={isDark}
+        cardBg={cardBg}
+        border={border}
+        subtextColor={subtextColor}
+        onPress={handleItemPress}
+        onLongPress={handleItemLongPress}
+      />
+    ),
+    [selectedUris, isSelectMode, isDark, cardBg, border, subtextColor, handleItemPress, handleItemLongPress]
+  );
 
-        {/* Floating Size Pill */}
-        <View style={styles.gridSizeBadge}>
-          <Text style={styles.gridSizeText}>{formatFileSize(item.chunkManifest ? item.chunkManifest.originalSize : item.size)}</Text>
-        </View>
-
-        {/* Split badge for multi-part files */}
-        {item.chunkManifest ? (
-          <View style={styles.gridSplitBadge}>
-            <FontAwesome name="puzzle-piece" size={8} color="#FFFFFF" />
-            <Text style={styles.gridSplitText}> {item.chunkManifest.totalParts}p</Text>
-          </View>
-        ) : null}
-
-        {/* Telegram Cloud Icon Badge / Missing Warning Badge */}
-        <View
-          style={[
-            styles.gridCloudBadge,
-            item.cloudStatus === 'missing' && { backgroundColor: '#EF4444' },
-          ]}
-        >
-          <FontAwesome
-            name={item.cloudStatus === 'missing' ? 'exclamation' : 'telegram'}
-            size={10}
-            color="#FFFFFF"
-          />
-        </View>
-
-        {/* Multi-Select Checkmark Circle */}
-        {isSelectMode && (
-          <View
-            style={[
-              styles.gridSelectCircle,
-              isSelected && styles.gridSelectCircleActive,
-            ]}
-          >
-            {isSelected && <FontAwesome name="check" size={10} color="#FFFFFF" />}
-          </View>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
-  const renderListItem = ({ item }: { item: CloudItem }) => {
-    const isImage = item.category === 'image';
-    const isSelected = selectedUris.has(item.uri);
-    return (
-      <TouchableOpacity
-        style={[
-          styles.listRow,
-          { backgroundColor: cardBg, borderColor: border },
-          isSelected && styles.listRowSelected,
-        ]}
-        onPress={() => handleItemPress(item)}
-        onLongPress={() => handleItemLongPress(item)}
-        delayLongPress={300}
-        activeOpacity={0.7}
-      >
-        {isSelectMode && (
-          <View
-            style={[
-              styles.listSelectCircle,
-              isSelected && styles.listSelectCircleActive,
-            ]}
-          >
-            {isSelected && <FontAwesome name="check" size={10} color="#FFFFFF" />}
-          </View>
-        )}
-
-        <View style={styles.listThumbWrap}>
-          {isImage && item.existsLocally ? (
-            <Image source={{ uri: item.uri }} style={styles.listThumbImage} />
-          ) : (
-            <View style={[styles.listIconBox, { backgroundColor: isDark ? '#334155' : '#EEF2FF' }]}>
-              <FontAwesome
-                name={getCategoryIcon(item.category) as any}
-                size={18}
-                color={item.category === 'image' ? '#10B981' : item.category === 'video' ? '#8B5CF6' : '#3B82F6'}
-              />
-            </View>
-          )}
-        </View>
-
-        <View style={styles.listInfoWrap}>
-          <Text style={[styles.listTitle, { color: textColor }]} numberOfLines={1}>
-            {item.fileName}
-          </Text>
-          <View style={styles.listMetaRow}>
-            <Text style={[styles.listSize, { color: subtextColor }]}>
-              {formatFileSize(item.chunkManifest ? item.chunkManifest.originalSize : item.size)}
-            </Text>
-            <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
-            <Text style={[styles.listDate, { color: subtextColor }]}>
-              {new Date(item.uploadedAt).toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-              })}
-            </Text>
-            {item.destinationTitle ? (
-              <>
-                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
-                <View style={[styles.destBadge, { backgroundColor: isDark ? '#1E293B' : '#EEF2FF', borderColor: border }]}>
-                  <Text style={[styles.destBadgeText, { color: '#2563EB' }]} numberOfLines={1}>
-                    {item.destinationTitle}
-                  </Text>
-                </View>
-              </>
-            ) : null}
-            {item.chunkManifest ? (
-              <>
-                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
-                <View style={[styles.msgBadge, { backgroundColor: '#F59E0B' }]}>
-                  <Text style={styles.msgBadgeText}>{item.chunkManifest.totalParts} parts</Text>
-                </View>
-              </>
-            ) : null}
-            {item.cloudStatus === 'missing' ? (
-              <>
-                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
-                <View style={[styles.msgBadge, { backgroundColor: '#EF4444' }]}>
-                  <Text style={styles.msgBadgeText}>Missing in TG</Text>
-                </View>
-              </>
-            ) : item.telegramMessageId && !item.chunkManifest ? (
-              <>
-                <Text style={[styles.listDot, { color: subtextColor }]}>•</Text>
-                <View style={styles.msgBadge}>
-                  <Text style={styles.msgBadgeText}>#{item.telegramMessageId}</Text>
-                </View>
-              </>
-            ) : null}
-          </View>
-        </View>
-
-        <TouchableOpacity
-          style={[styles.listActionBtn, { borderColor: border }]}
-          onPress={() => handleShareFile(item)}
-        >
-          <FontAwesome name="share" size={12} color="#208AEF" />
-        </TouchableOpacity>
-      </TouchableOpacity>
-    );
-  };
+  const renderListItem = useCallback(
+    ({ item }: { item: CloudItem }) => (
+      <CloudListItem
+        item={item}
+        isSelected={selectedUris.has(item.uri)}
+        isSelectMode={isSelectMode}
+        isDark={isDark}
+        cardBg={cardBg}
+        border={border}
+        textColor={textColor}
+        subtextColor={subtextColor}
+        onPress={handleItemPress}
+        onLongPress={handleItemLongPress}
+      />
+    ),
+    [selectedUris, isSelectMode, isDark, cardBg, border, textColor, subtextColor, handleItemPress, handleItemLongPress]
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['bottom', 'left', 'right']}>

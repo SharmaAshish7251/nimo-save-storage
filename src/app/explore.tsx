@@ -1951,7 +1951,7 @@ export default function CloudExplorerScreen() {
 
       {/* Bulk Progress Toast / Overlay with Cancel Button */}
       {isBulkOperating && (
-        <View style={styles.bulkProgressOverlay}>
+        <View style={[styles.bulkProgressOverlay, { bottom: insets.bottom + 95 }]}>
           <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
           <Text style={styles.bulkProgressText} numberOfLines={1}>{bulkStatusText}</Text>
           <TouchableOpacity
@@ -1963,7 +1963,8 @@ export default function CloudExplorerScreen() {
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             activeOpacity={0.7}
           >
-            <Text style={styles.bulkCancelBtnText}>Cancel</Text>
+            <FontAwesome name="stop-circle" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+            <Text style={styles.bulkCancelBtnText}>Cancel Deletion</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -2648,6 +2649,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 10,
+    zIndex: 1000,
   },
   bulkProgressText: {
     color: '#FFFFFF',
@@ -2658,6 +2660,8 @@ const styles = StyleSheet.create({
   bulkCancelBtn: {
     marginLeft: 12,
     backgroundColor: '#EF4444',
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 14,

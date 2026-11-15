@@ -680,7 +680,7 @@ const styles = StyleSheet.create({
   headerLogo: {
     width: 38,
     height: 38,
-    borderRadius: 8,
+    borderRadius: 12,
   },
   brandTitle: {
     fontSize: 16,

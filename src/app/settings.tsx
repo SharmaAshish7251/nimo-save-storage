@@ -2172,7 +2172,7 @@ const styles = StyleSheet.create({
   headerLogo: {
     width: 44,
     height: 44,
-    borderRadius: 10,
+    borderRadius: 12,
     marginRight: 12,
   },
   headerInfo: {

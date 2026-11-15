@@ -1692,7 +1692,7 @@ const styles = StyleSheet.create({
   navHeaderLogo: {
     width: 38,
     height: 38,
-    borderRadius: 8,
+    borderRadius: 12,
     marginRight: 10,
   },
   navHeaderTextContainer: {

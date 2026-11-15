@@ -209,6 +209,7 @@ const styles = StyleSheet.create({
   logo: {
     width: 80,
     height: 80,
+    borderRadius: 12,
     marginBottom: 24,
   },
   lockBadge: {

@@ -1,7 +1,11 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import PQueue from 'p-queue';
-import { computeFastFileHash, extractMediaStoreAssetId } from './fileHelper';
+import {
+  computeFastFileHash,
+  extractMediaStoreAssetId,
+  extractDirectFileUriFromContentUri,
+} from './fileHelper';
 
 export { computeFastFileHash };
 
@@ -186,16 +190,50 @@ export async function deleteDuplicates(
     }
   }
 
-  // 1. Batch delete all MediaLibrary assets in a single OS call (Asked only once!)
-  if (allRedundantMedia.length > 0) {
+  // 1. Try silent direct FileSystem deletion first for all media duplicates
+  const remainingMedia: typeof allRedundantMedia = [];
+  for (const item of allRedundantMedia) {
+    let deleted = false;
+    let targetPath = item.copy.uri;
+    if (!targetPath.startsWith('file://')) {
+      const fromContent = extractDirectFileUriFromContentUri(targetPath);
+      if (fromContent) {
+        targetPath = fromContent;
+      } else if (item.assetId) {
+        try {
+          const assetInfo = await MediaLibrary.getAssetInfoAsync(item.assetId).catch(() => null);
+          if (assetInfo?.localUri && assetInfo.localUri.startsWith('file://')) {
+            targetPath = assetInfo.localUri;
+          }
+        } catch {}
+      }
+    }
+    if (targetPath.startsWith('file://')) {
+      try {
+        await FileSystem.deleteAsync(targetPath, { idempotent: true });
+        deleted = true;
+      } catch {
+        deleted = false;
+      }
+    }
+    if (deleted) {
+      deletedCount++;
+      freedBytes += item.groupSize;
+    } else {
+      remainingMedia.push(item);
+    }
+  }
+
+  // 1b. Fallback: only if direct deletion couldn't remove all media, batch delete remaining
+  if (remainingMedia.length > 0) {
     const assetIdSet = new Set<string>();
-    allRedundantMedia.forEach((m) => assetIdSet.add(m.assetId));
+    remainingMedia.forEach((m) => assetIdSet.add(m.assetId));
     const allAssetIds = Array.from(assetIdSet);
 
     try {
       const res = await MediaLibrary.deleteAssetsAsync(allAssetIds);
       if (res) {
-        for (const item of allRedundantMedia) {
+        for (const item of remainingMedia) {
           deletedCount++;
           freedBytes += item.groupSize;
         }

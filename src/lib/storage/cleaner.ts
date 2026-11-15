@@ -12,6 +12,7 @@ import {
   resolveLocalFileTarget,
   findMatchingMediaLibraryAsset,
   extractMediaStoreAssetId,
+  extractDirectFileUriFromContentUri,
   clearResolvedTargetCache,
   statLocalFileUri,
 } from './fileHelper';
@@ -215,21 +216,50 @@ export async function executeCleanSpace(
     return { freedCount: 0, freedBytes: 0, failedCount: 0, blockedCount };
   }
 
-  // Phase 2: Separate items into MediaStore assets (Batchable) and Direct FileSystem files
-  const mediaItems: { item: CleanableItem; assetId: string }[] = [];
-  const directFsItems: { item: CleanableItem; targetUri: string }[] = [];
+  // Phase 2: Direct Silent FileSystem Deletion (Zero Android Native Popups)
+  // Deletes files directly via physical filesystem paths (FileSystem.deleteAsync)
+  // to avoid triggering Android MediaStore.createDeleteRequest system dialogs.
+  const fsQueue = new PQueue({ concurrency: 6 });
+  const historyEntries: {
+    fileName: string;
+    uri: string;
+    size: number;
+    status: 'cleaned_locally';
+    destination: string;
+  }[] = [];
 
-  // Parallel lookup of any missing asset IDs for media categories
-  const lookupQueue = new PQueue({ concurrency: 6 });
+  let processedCount = 0;
+  const totalItems = eligibleItems.length;
+
   await Promise.all(
     eligibleItems.map((item) =>
-      lookupQueue.add(async () => {
-        const targetUri = item.resolvedUri || item.uri;
+      fsQueue.add(async () => {
+        if (abortSignal?.aborted) return;
+
+        // Collect all candidate physical file:// paths to attempt direct silent deletion
+        const pathsToTry: string[] = [];
+
+        // 1. Direct resolvedUri if it's already a file:// path
+        if (item.resolvedUri?.startsWith('file://')) {
+          pathsToTry.push(item.resolvedUri);
+        }
+
+        // 2. Direct item.uri if it's already a file:// path
+        if (item.uri?.startsWith('file://') && !pathsToTry.includes(item.uri)) {
+          pathsToTry.push(item.uri);
+        }
+
+        // 3. Extract direct file URI from content:// scheme (e.g. primary:...)
+        const fromContent = extractDirectFileUriFromContentUri(item.uri);
+        if (fromContent && !pathsToTry.includes(fromContent)) {
+          pathsToTry.push(fromContent);
+        }
+
+        // 4. Resolve MediaStore physical path via MediaLibrary assetInfo if available
         let assetId =
           item.mediaAssetId ||
-          extractMediaStoreAssetId(targetUri) ||
-          extractMediaStoreAssetId(item.uri) ||
-          (targetUri.startsWith('ph://') ? targetUri : undefined);
+          extractMediaStoreAssetId(item.resolvedUri || '') ||
+          extractMediaStoreAssetId(item.uri);
 
         if (!assetId && (item.category === 'image' || item.category === 'video' || item.category === 'audio')) {
           try {
@@ -247,121 +277,55 @@ export async function executeCleanSpace(
         }
 
         if (assetId) {
-          mediaItems.push({ item, assetId });
-        } else {
-          directFsItems.push({ item, targetUri });
+          try {
+            const assetInfo = await MediaLibrary.getAssetInfoAsync(assetId).catch(() => null);
+            if (assetInfo?.localUri && assetInfo.localUri.startsWith('file://') && !pathsToTry.includes(assetInfo.localUri)) {
+              pathsToTry.push(assetInfo.localUri);
+            }
+          } catch {}
         }
+
+        // 5. Fallback: try raw URI if no file:// scheme was found
+        if (pathsToTry.length === 0 && item.uri) {
+          pathsToTry.push(item.uri);
+        }
+
+        let deleted = false;
+        for (const targetPath of pathsToTry) {
+          try {
+            await FileSystem.deleteAsync(targetPath, { idempotent: true });
+            const stat = await statLocalFileUri(targetPath);
+            if (!stat.exists) {
+              deleted = true;
+              break;
+            }
+          } catch {
+            // Keep trying alternate paths
+          }
+        }
+
+        if (deleted) {
+          freedCount += 1;
+          freedBytes += item.size;
+          historyEntries.push({
+            fileName: item.fileName,
+            uri: item.uri,
+            size: item.size,
+            status: 'cleaned_locally',
+            destination: 'Local Space Reclaimed',
+          });
+        } else {
+          failedCount += 1;
+        }
+
+        processedCount += 1;
+        if (onProgress) onProgress(processedCount, totalItems);
       })
     )
   );
 
-  let processedCount = 0;
-  const totalItems = eligibleItems.length;
-
-  // Phase 3: BATCH MediaLibrary Deletion
-  // Check for cancellation before presenting system dialog
-  if (abortSignal?.aborted) {
-    clearResolvedTargetCache();
-    invalidateCleanerAnalysisCache();
-    return { freedCount, freedBytes, failedCount, blockedCount };
-  }
-
-  // CRITICAL FIX: Pass ALL asset IDs in a SINGLE array so Android presents the system permission dialog EXACTLY ONCE!
-  if (mediaItems.length > 0) {
-    const assetIdSet = new Set<string>();
-    mediaItems.forEach((m) => assetIdSet.add(m.assetId));
-    const allAssetIds = Array.from(assetIdSet);
-
-    let batchSuccess = false;
-    try {
-      // Android OS prompt: "Allow Nimo Save Storage to delete X items?" (Asked only once!)
-      batchSuccess = await MediaLibrary.deleteAssetsAsync(allAssetIds);
-    } catch (err) {
-      console.warn('[Cleaner] MediaLibrary batch deletion failed:', err);
-      batchSuccess = false;
-    }
-
-    if (batchSuccess) {
-      // All media assets deleted in one instant batch
-      const historyEntries: {
-        fileName: string;
-        uri: string;
-        size: number;
-        status: 'cleaned_locally';
-        destination: string;
-      }[] = [];
-
-      for (const m of mediaItems) {
-        freedCount += 1;
-        freedBytes += m.item.size;
-        processedCount += 1;
-        historyEntries.push({
-          fileName: m.item.fileName,
-          uri: m.item.uri,
-          size: m.item.size,
-          status: 'cleaned_locally',
-          destination: 'Local Space Reclaimed',
-        });
-      }
-      if (onProgress) onProgress(processedCount, totalItems);
-      // Batch record action history in one atomic AsyncStorage write instead of N competing writes
-      recordActionHistoryBatch(historyEntries).catch(() => {});
-    } else {
-      // User cancelled the prompt or permission denied
-      failedCount += mediaItems.length;
-      processedCount += mediaItems.length;
-      if (onProgress) onProgress(processedCount, totalItems);
-    }
-  }
-
-  // Phase 4: Parallel Direct FileSystem / SAF Deletion
-  if (directFsItems.length > 0 && !abortSignal?.aborted) {
-    const fsQueue = new PQueue({ concurrency: 8 });
-    const fsHistoryEntries: {
-      fileName: string;
-      uri: string;
-      size: number;
-      status: 'cleaned_locally';
-      destination: string;
-    }[] = [];
-
-    await Promise.all(
-      directFsItems.map(({ item, targetUri }) =>
-        fsQueue.add(async () => {
-          if (abortSignal?.aborted) return;
-          let deleted = false;
-          try {
-            await FileSystem.deleteAsync(targetUri, { idempotent: true });
-            // Direct verification without reading any stale cache
-            const stat = await statLocalFileUri(targetUri);
-            deleted = !stat.exists;
-          } catch {
-            deleted = false;
-          }
-
-          if (deleted) {
-            freedCount += 1;
-            freedBytes += item.size;
-            fsHistoryEntries.push({
-              fileName: item.fileName,
-              uri: item.uri,
-              size: item.size,
-              status: 'cleaned_locally',
-              destination: 'Local Space Reclaimed',
-            });
-          } else {
-            failedCount += 1;
-          }
-
-          processedCount += 1;
-          if (onProgress) onProgress(processedCount, totalItems);
-        })
-      )
-    );
-
-    if (fsHistoryEntries.length > 0) {
-      recordActionHistoryBatch(fsHistoryEntries).catch(() => {});
-    }
+  if (historyEntries.length > 0) {
+    recordActionHistoryBatch(historyEntries).catch(() => {});
   }
 
   // Final cache invalidation

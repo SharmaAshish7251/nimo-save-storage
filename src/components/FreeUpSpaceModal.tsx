@@ -8,6 +8,7 @@ import {
   FlatList,
   ActivityIndicator,
   Platform,
+  Linking,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -178,20 +179,33 @@ export function FreeUpSpaceModal({
                 }
                 if (result.failedCount > 0) {
                   parts.push(
-                    `${result.failedCount} file(s) could not be deleted automatically due to Android storage permissions.`
+                    `${result.failedCount} file(s) could not be deleted directly without system popups. Please grant "All files access" in Android Settings to allow silent deletion.`
                   );
                 }
 
-                appAlert(
-                  result.freedCount > 0 ? 'Space Reclaimed' : 'Cleanup Incomplete',
-                  parts.join('\n\n')
-                );
+                if (result.failedCount > 0 && result.freedCount === 0) {
+                  appAlert(
+                    'Permission Notice',
+                    `${result.failedCount} file(s) could not be deleted directly.\n\nTo allow silent deletion without Android system popups, please grant "All files access" in Settings.`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                    ]
+                  );
+                } else {
+                  appAlert(
+                    result.freedCount > 0 ? 'Space Reclaimed' : 'Cleanup Incomplete',
+                    parts.join('\n\n')
+                  );
+                }
               }
+
+              // Refresh candidate list in-place so deleted items disappear immediately and stats update
+              await loadCandidates(true);
 
               if (onCleanComplete) {
                 onCleanComplete(result.freedBytes, result.freedCount);
               }
-              onClose();
             } catch (err: any) {
               appAlert('Cleaner Error', err?.message || 'Failed to complete cleanup.');
             } finally {

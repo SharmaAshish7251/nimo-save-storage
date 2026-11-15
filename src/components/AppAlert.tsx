@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Animated,
+  Easing,
   Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -180,29 +181,124 @@ export function AppAlertHost() {
   const { isDark } = useAppTheme();
   const [currentAlert, setCurrentAlert] = useState<AlertPayload | null>(null);
 
+  // Backdrop (scrim) fades independently for a layered feel
+  const [backdropAnim] = useState(() => new Animated.Value(0));
+  // Card: scale + translateY + opacity — all three for Apple-like spring entry
   const [fadeAnim] = useState(() => new Animated.Value(0));
-  const [scaleAnim] = useState(() => new Animated.Value(0.92));
+  const [scaleAnim] = useState(() => new Animated.Value(0.88));
+  const [translateYAnim] = useState(() => new Animated.Value(32));
+  // Icon pops in with its own spring after the card settles
+  const [iconScaleAnim] = useState(() => new Animated.Value(0.6));
+  const [iconOpacityAnim] = useState(() => new Animated.Value(0));
+
+  // ─── Entrance ────────────────────────────────────────────────────────────────
+  const runEnterAnimation = useCallback(() => {
+    // Reset all to initial state
+    backdropAnim.setValue(0);
+    fadeAnim.setValue(0);
+    scaleAnim.setValue(0.88);
+    translateYAnim.setValue(32);
+    iconScaleAnim.setValue(0.6);
+    iconOpacityAnim.setValue(0);
+
+    // Phase 1 — backdrop + card in parallel
+    Animated.parallel([
+      // Backdrop: smooth linear fade
+      Animated.timing(backdropAnim, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      // Card opacity: short fade
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      // Card scale: spring overshoot (feels "alive")
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        damping: 16,
+        stiffness: 300,
+        mass: 0.9,
+        useNativeDriver: true,
+      }),
+      // Card slide-up from slightly below
+      Animated.spring(translateYAnim, {
+        toValue: 0,
+        damping: 18,
+        stiffness: 320,
+        mass: 0.85,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      // Phase 2 — icon badge pops in after card settles
+      Animated.parallel([
+        Animated.spring(iconScaleAnim, {
+          toValue: 1,
+          damping: 10,
+          stiffness: 400,
+          mass: 0.7,
+          useNativeDriver: true,
+        }),
+        Animated.timing(iconOpacityAnim, {
+          toValue: 1,
+          duration: 100,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+  }, [backdropAnim, fadeAnim, scaleAnim, translateYAnim, iconScaleAnim, iconOpacityAnim]);
+
+  // ─── Exit ─────────────────────────────────────────────────────────────────
+  const runExitAnimation = useCallback((onDone: () => void) => {
+    Animated.parallel([
+      // Backdrop fades out cleanly
+      Animated.timing(backdropAnim, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+      // Card fades
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 160,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      // Card shrinks & slides down slightly (feels like gravity pulling it away)
+      Animated.timing(scaleAnim, {
+        toValue: 0.92,
+        duration: 160,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateYAnim, {
+        toValue: 16,
+        duration: 160,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      // Icon fades out first
+      Animated.timing(iconOpacityAnim, {
+        toValue: 0,
+        duration: 100,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(() => onDone());
+  }, [backdropAnim, fadeAnim, scaleAnim, translateYAnim, iconOpacityAnim]);
 
   useEffect(() => {
     const unsubscribe = alertEmitter.subscribe((payload) => {
       if (payload) {
         setCurrentAlert(payload);
-        fadeAnim.setValue(0);
-        scaleAnim.setValue(0.92);
-
-        Animated.parallel([
-          Animated.timing(fadeAnim, {
-            toValue: 1,
-            duration: 180,
-            useNativeDriver: true,
-          }),
-          Animated.spring(scaleAnim, {
-            toValue: 1,
-            damping: 18,
-            stiffness: 280,
-            useNativeDriver: true,
-          }),
-        ]).start();
+        // Run enter after state flushes (next frame)
+        requestAnimationFrame(() => runEnterAnimation());
 
         const { type } = resolveAlertType(payload);
         if (type === 'destructive') {
@@ -217,39 +313,23 @@ export function AppAlertHost() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
         }
       } else {
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 120,
-          useNativeDriver: true,
-        }).start(() => {
-          setCurrentAlert(null);
-        });
+        // Dismissed from outside (e.g. dismissAppAlert())
+        runExitAnimation(() => setCurrentAlert(null));
       }
     });
 
     return unsubscribe;
-  }, [fadeAnim, scaleAnim]);
+  }, [runEnterAnimation, runExitAnimation]);
 
   const handleDismiss = useCallback((button?: AppAlertButton) => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 140,
-        useNativeDriver: true,
-      }),
-      Animated.timing(scaleAnim, {
-        toValue: 0.94,
-        duration: 140,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
+    runExitAnimation(() => {
       setCurrentAlert(null);
       alertEmitter.dismiss();
       if (button?.onPress) {
         button.onPress();
       }
     });
-  }, [fadeAnim, scaleAnim]);
+  }, [runExitAnimation]);
 
   if (!currentAlert) {
     return null;
@@ -281,7 +361,19 @@ export function AppAlertHost() {
         handleDismiss(cancelBtn || buttons[0]);
       }}
     >
-      <View style={styles.backdrop}>
+      {/* Animated backdrop — fades independently */}
+      <Animated.View style={[styles.backdrop, { opacity: backdropAnim }]}>
+        <TouchableOpacity
+          style={StyleSheet.absoluteFill}
+          activeOpacity={1}
+          onPress={() => {
+            if (currentAlert.options?.cancelable) {
+              const cancelBtn = buttons.find((b) => b.style === 'cancel');
+              handleDismiss(cancelBtn || buttons[0]);
+            }
+          }}
+        />
+        {/* Card: scale + translateY + opacity */}
         <Animated.View
           style={[
             styles.cardContainer,
@@ -289,17 +381,30 @@ export function AppAlertHost() {
               backgroundColor: cardBg,
               borderColor: cardBorder,
               opacity: fadeAnim,
-              transform: [{ scale: scaleAnim }],
+              transform: [
+                { scale: scaleAnim },
+                { translateY: translateYAnim },
+              ],
             },
           ]}
         >
           {/* Top Subtle Bevel Specular Highlight */}
           <View style={[styles.specularHighlight, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(255, 255, 255, 0.8)' }]} />
 
-          {/* Icon Badge */}
-          <View style={[styles.iconBadge, { backgroundColor: color + '18', borderColor: color + '40' }]}>
+          {/* Icon Badge — pops in with its own spring after card */}
+          <Animated.View
+            style={[
+              styles.iconBadge,
+              {
+                backgroundColor: color + '18',
+                borderColor: color + '40',
+                opacity: iconOpacityAnim,
+                transform: [{ scale: iconScaleAnim }],
+              },
+            ]}
+          >
             <FontAwesome name={icon} size={24} color={color} />
-          </View>
+          </Animated.View>
 
           {/* Title */}
           <Text style={[styles.title, { color: textColor }]} numberOfLines={2}>
@@ -370,7 +475,7 @@ export function AppAlertHost() {
             })}
           </View>
         </Animated.View>
-      </View>
+      </Animated.View>
     </Modal>
   );
 }

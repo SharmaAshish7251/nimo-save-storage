@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "nimo-save-storage",
+    "name": "NIMO Save Storage",
     "slug": "nimo-save-storage",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -59,7 +59,8 @@
         }
       ],
       "expo-font",
-      "expo-sharing"
+      "expo-sharing",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,

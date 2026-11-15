@@ -15,6 +15,7 @@ import { BiometricLockOverlay } from '@/components/BiometricLockOverlay';
 import { AppAlertHost } from '@/components/AppAlert';
 import { BottomNavBar } from '@/components/BottomNavBar';
 import { recoverInterruptedUploads } from '@/lib/storage/queue';
+import { initDatabase } from '@/lib/storage/database';
 import { vaultService } from '@/lib/crypto/vault';
 import { uploadManager } from '@/lib/upload/manager';
 import '@/app/logs'; // Initialize log capture
@@ -154,6 +155,10 @@ export default function RootLayout() {
   useEffect(() => {
     async function prepare() {
       try {
+        // Initialize high-performance SQLite database & run legacy migration
+        await initDatabase().catch((err) => {
+          console.warn('Database initialization error:', err);
+        });
         // Clean up orphaned temp upload files older than 10 minutes
         await pruneOrphanedUploadCache().catch(() => {});
         await registerBackgroundUploadTask().catch((err) => {

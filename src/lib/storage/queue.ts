@@ -1,6 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Crypto from 'expo-crypto';
 import type { ChunkManifest } from './reassembler';
+import * as db from './database';
+
+export {
+  getUploadedFilesPaged,
+  countUploadedFiles,
+  getUploadedRecordByUri,
+  getUploadedRecordByHash,
+  removeUploadedRecords,
+  clearAllUploadedRecords,
+  initDatabase,
+} from './database';
 
 export interface WatchedFolder {
   id: string;
@@ -77,12 +87,8 @@ export interface SchedulerState {
 }
 
 const CONFIG_KEY = '@nimo/config';
-const QUEUE_KEY = '@nimo/queue';
-const UPLOADED_KEY = '@nimo/uploaded';
 const LAST_SCAN_KEY = '@nimo/last_scan';
-const ACTION_HISTORY_KEY = '@nimo/action_history';
 const SCHEDULER_STATE_KEY = '@nimo/scheduler_state';
-const CHUNK_MANIFEST_KEY = '@nimo/chunk_manifests';
 
 const DEFAULT_CONFIG: AppConfig = {
   watchFolders: [],
@@ -184,16 +190,14 @@ export interface QueueItem {
 
 export async function getQueue(): Promise<QueueItem[]> {
   try {
-    const raw = await AsyncStorage.getItem(QUEUE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
+    return await db.getQueueItems();
   } catch {
     return [];
   }
 }
 
 export async function saveQueue(queue: QueueItem[]): Promise<void> {
-  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  await db.saveQueueItems(queue);
 }
 
 let queueLockPromise: Promise<any> = Promise.resolve();
@@ -218,55 +222,23 @@ export function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 export async function recoverInterruptedUploads(): Promise<number> {
   try {
-    const queue = await getQueue();
-    let recoveredCount = 0;
-    const updated = queue.map((item) => {
-      if (item.status === 'uploading') {
-        recoveredCount++;
-        return {
-          ...item,
-          status: 'pending' as const,
-          progress: 0,
-          speedKbps: undefined,
-          error: undefined,
-        };
-      }
-      return item;
-    });
-
-    if (recoveredCount > 0) {
-      await saveQueue(updated);
-      console.log(`[Queue] Auto-recovered ${recoveredCount} interrupted upload item(s) back to pending.`);
-    }
-    return recoveredCount;
+    return await db.recoverInterruptedUploads();
   } catch (err) {
     console.warn('[Queue] Failed to recover interrupted uploads:', err);
     return 0;
   }
 }
 
-export async function addToQueue(item: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>): Promise<QueueItem> {
+export async function addToQueue(
+  item: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>
+): Promise<QueueItem> {
   return withQueueLock(async () => {
-    const queue = await getQueue();
-    // Fix 2.1: Deduplicate by URI — skip if already in queue with a non-completed status
-    const existing = queue.find(q => q.uri === item.uri && q.status !== 'completed');
-    if (existing) return existing;
-    const newItem: QueueItem = {
-      ...item,
-      id: Crypto.randomUUID(),
-      status: 'pending',
-      progress: 0,
-      retries: 0,
-      addedAt: Date.now(),
-    };
-    queue.push(newItem);
-    await saveQueue(queue);
-    return newItem;
+    return await db.addQueueItem(item);
   });
 }
 
 /**
- * Batch add multiple items to the queue in a single AsyncStorage read+write.
+ * Batch add multiple items to the queue in a single atomic SQLite transaction.
  * Use instead of calling addToQueue() in a loop for 10+ files.
  * Returns { added: QueueItem[], skipped: number } where skipped = duplicates.
  */
@@ -274,56 +246,14 @@ export async function addManyToQueue(
   items: Omit<QueueItem, 'id' | 'status' | 'progress' | 'retries' | 'addedAt'>[]
 ): Promise<{ added: QueueItem[]; skipped: number }> {
   if (items.length === 0) return { added: [], skipped: 0 };
-
   return withQueueLock(async () => {
-    const queue = await getQueue();
-    // Build a Set of URIs already in queue (non-completed) for O(1) dedup lookup
-    const existingUris = new Set(
-      queue.filter(q => q.status !== 'completed').map(q => q.uri)
-    );
-
-    const now = Date.now();
-    const newItems: QueueItem[] = [];
-    let skipped = 0;
-
-    for (const item of items) {
-      if (existingUris.has(item.uri)) {
-        skipped++;
-        continue;
-      }
-      const newItem: QueueItem = {
-        ...item,
-        id: Crypto.randomUUID(),
-        status: 'pending',
-        progress: 0,
-        retries: 0,
-        addedAt: now,
-      };
-      newItems.push(newItem);
-      existingUris.add(item.uri); // prevent intra-batch duplicates
-    }
-
-    if (newItems.length > 0) {
-      await saveQueue([...queue, ...newItems]);
-    }
-
-    return { added: newItems, skipped };
+    return await db.addManyQueueItems(items);
   });
 }
 
 export async function resetItemToPending(id: string): Promise<QueueItem | null> {
   return withQueueLock(async () => {
-    const queue = await getQueue();
-    const index = queue.findIndex((item) => item.id === id);
-    if (index >= 0) {
-      queue[index].status = 'pending';
-      queue[index].progress = 0;
-      delete queue[index].error;
-      queue[index].lastAttemptAt = undefined;
-      await saveQueue(queue);
-      return queue[index];
-    }
-    return null;
+    return await db.resetQueueItemToPending(id);
   });
 }
 
@@ -346,59 +276,22 @@ export interface UploadedRecord {
   lastVerifiedAt?: number;
 }
 
-const MAX_UPLOADED_ITEMS = 5000;
-
-// In-memory cache to prevent repeated SQLite reads/JSON-parsing of 5,000+ items during active queue uploads
-let cachedUploadedIndex: UploadedRecord[] | null = null;
-
 export async function getUploadedIndex(): Promise<UploadedRecord[]> {
-  if (cachedUploadedIndex !== null) {
-    return cachedUploadedIndex;
-  }
   try {
-    const raw = await AsyncStorage.getItem(UPLOADED_KEY);
-    if (!raw) {
-      cachedUploadedIndex = [];
-      return [];
-    }
-    const records: UploadedRecord[] = JSON.parse(raw);
-    // Auto-prune bloated index on first read (keeps newest records)
-    if (records.length > MAX_UPLOADED_ITEMS) {
-      const pruned = records
-        .sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0))
-        .slice(0, MAX_UPLOADED_ITEMS);
-      // Write back asynchronously — do NOT await so reads remain fast
-      AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(pruned)).catch(() => {});
-      cachedUploadedIndex = pruned;
-      return pruned;
-    }
-    cachedUploadedIndex = records;
-    return records;
+    return await db.getAllUploadedRecords();
   } catch {
-    cachedUploadedIndex = [];
     return [];
   }
 }
 
 export async function markUploaded(record: UploadedRecord): Promise<void> {
   return withQueueLock(async () => {
-    const index = await getUploadedIndex();
-    // Avoid duplicates by uri
-    const filtered = index.filter(r => r.uri !== record.uri);
-    filtered.push(record);
-    // Cap at MAX_UPLOADED_ITEMS (keep newest)
-    const capped =
-      filtered.length > MAX_UPLOADED_ITEMS
-        ? filtered.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0)).slice(0, MAX_UPLOADED_ITEMS)
-        : filtered;
-    cachedUploadedIndex = capped;
-    await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(capped));
+    await db.markFileUploaded(record);
   });
 }
 
 export async function saveUploadedIndex(records: UploadedRecord[]): Promise<void> {
-  cachedUploadedIndex = records;
-  await AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(records));
+  await db.saveUploadedIndex(records);
 }
 
 export async function updateUploadedRecord(
@@ -406,28 +299,18 @@ export async function updateUploadedRecord(
   patch: Partial<UploadedRecord>
 ): Promise<UploadedRecord | null> {
   return withQueueLock(async () => {
-    const index = await getUploadedIndex();
-    const idx = index.findIndex((r) => r.uri === uri);
-    if (idx < 0) return null;
-    index[idx] = { ...index[idx], ...patch };
-    await saveUploadedIndex(index);
-    return index[idx];
+    return await db.updateUploadedRecord(uri, patch);
   });
 }
 
 export async function removeUploadedRecord(uri: string): Promise<void> {
   return withQueueLock(async () => {
-    const index = await getUploadedIndex();
-    const filtered = index.filter((r) => r.uri !== uri);
-    await saveUploadedIndex(filtered);
+    await db.removeUploadedRecord(uri);
   });
 }
 
-
 /**
- * Atomically records a completed upload across all three stores in parallel.
- * For 100+ concurrent uploads this reduces 5 sequential read+write pairs
- * down to 3 parallel reads then 3 parallel writes.
+ * Atomically records a completed upload across all three stores in an ACID transaction.
  */
 export async function completeUploadAtomically(params: {
   queueId: string;
@@ -445,61 +328,16 @@ export async function completeUploadAtomically(params: {
   chunkManifest?: ChunkManifest;
 }): Promise<void> {
   return withQueueLock(async () => {
-    const [queue, uploadedIndex, history] = await Promise.all([
-      getQueue(),
-      getUploadedIndex(),
-      getActionHistory(),
-    ]);
-
-    const queueIndex = queue.findIndex((item: QueueItem) => item.id === params.queueId);
-    if (queueIndex >= 0) {
-      queue[queueIndex].status = 'completed';
-      queue[queueIndex].progress = 100;
-      queue[queueIndex].uploadedAt = params.uploadedAt;
-      queue[queueIndex].uploadDurationMs = params.uploadDurationMs;
-      queue[queueIndex].lastAttemptAt = Date.now();
-    }
-
-    const filteredUploaded = uploadedIndex.filter((r: UploadedRecord) => r.uri !== params.uri);
-    filteredUploaded.push({
-      uri: params.uri,
-      fileName: params.fileName,
-      size: params.size,
-      ...(params.hash ? { hash: params.hash } : {}),
-      uploadedAt: params.uploadedAt,
-      telegramMessageId: params.telegramMessageId,
-      ...(params.chatId !== undefined ? { chatId: params.chatId } : {}),
-      ...(params.destinationTitle ? { destinationTitle: params.destinationTitle } : {}),
-      ...(params.mediaAssetId ? { mediaAssetId: params.mediaAssetId } : {}),
-      ...(params.chunkManifest ? { chunkManifest: params.chunkManifest } : {}),
-      cloudStatus: 'synced',
-      lastVerifiedAt: Date.now(),
-    });
-
-    const newHistoryItem: ActionHistoryItem = {
-      id: Crypto.randomUUID(),
-      fileName: params.fileName,
-      uri: params.uri,
-      size: params.size,
-      status: 'uploaded',
-      timestamp: Date.now(),
-      uploadDurationMs: params.uploadDurationMs,
-      destination: params.destination,
-    };
-    const updatedHistory = [newHistoryItem, ...history].slice(0, MAX_HISTORY_ITEMS);
-    cachedUploadedIndex = filteredUploaded;
-    cachedHistory = updatedHistory;
-
-    await Promise.all([
-      saveQueue(queue),
-      AsyncStorage.setItem(UPLOADED_KEY, JSON.stringify(filteredUploaded)),
-      AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory)),
-    ]);
+    await db.completeUploadAtomically(params);
   });
 }
+
 export async function isUploaded(uri: string): Promise<boolean> {
-  const index = await getUploadedIndex();
-  return index.some(r => r.uri === uri);
+  try {
+    return await db.isFileUploaded(uri);
+  } catch {
+    return false;
+  }
 }
 
 export async function getLastScanTime(): Promise<number> {
@@ -611,32 +449,10 @@ export function computeWallClockDuration(
   return totalMs;
 }
 
-// In-memory cache mirror for action history to prevent redundant SQLite reads during rapid uploads
-let cachedHistory: ActionHistoryItem[] | null = null;
-const MAX_HISTORY_ITEMS = 500;
-
 export async function getActionHistory(): Promise<ActionHistoryItem[]> {
-  if (cachedHistory !== null) {
-    return cachedHistory;
-  }
   try {
-    const raw = await AsyncStorage.getItem(ACTION_HISTORY_KEY);
-    if (!raw) {
-      cachedHistory = [];
-      return [];
-    }
-    const parsed: ActionHistoryItem[] = JSON.parse(raw);
-    if (parsed.length > MAX_HISTORY_ITEMS) {
-      // Auto-prune existing bloated history down to MAX_HISTORY_ITEMS to prevent SQLite CursorWindow crash
-      const pruned = parsed.slice(0, MAX_HISTORY_ITEMS);
-      AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(pruned)).catch(() => {});
-      cachedHistory = pruned;
-      return pruned;
-    }
-    cachedHistory = parsed;
-    return parsed;
+    return await db.getActionHistoryItems();
   } catch {
-    cachedHistory = [];
     return [];
   }
 }
@@ -645,23 +461,13 @@ export async function recordActionHistory(
   item: Omit<ActionHistoryItem, 'id' | 'timestamp'>
 ): Promise<ActionHistoryItem> {
   return withQueueLock(async () => {
-    const history = await getActionHistory();
-    const newItem: ActionHistoryItem = {
-      ...item,
-      id: Crypto.randomUUID(),
-      timestamp: Date.now(),
-    };
-    // Prepend to show most recent first, keep up to 500 items
-    const updated = [newItem, ...history].slice(0, MAX_HISTORY_ITEMS);
-    cachedHistory = updated;
-    await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
-    return newItem;
+    return await db.recordActionHistoryItem(item);
   });
 }
 
 /**
- * Records multiple action history items in a single atomic AsyncStorage read + write.
- * Essential for batch cleanups and multi-file actions to avoid hammering SQLite.
+ * Records multiple action history items in a single atomic SQLite transaction.
+ * Essential for batch cleanups and multi-file actions to avoid hammering the disk.
  */
 export async function recordActionHistoryBatch(
   items: Omit<ActionHistoryItem, 'id' | 'timestamp'>[]
@@ -669,16 +475,7 @@ export async function recordActionHistoryBatch(
   if (items.length === 0) return;
   return withQueueLock(async () => {
     try {
-      const history = await getActionHistory();
-      const now = Date.now();
-      const newItems: ActionHistoryItem[] = items.map((item) => ({
-        ...item,
-        id: Crypto.randomUUID(),
-        timestamp: now,
-      }));
-      const updated = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
-      cachedHistory = updated;
-      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updated));
+      await db.recordActionHistoryBatch(items);
     } catch (err) {
       console.warn('[Queue] Failed to record action history batch:', err);
     }
@@ -686,8 +483,7 @@ export async function recordActionHistoryBatch(
 }
 
 export async function clearActionHistory(): Promise<void> {
-  cachedHistory = [];
-  await AsyncStorage.removeItem(ACTION_HISTORY_KEY);
+  await db.clearActionHistory();
 }
 
 export async function removeFromQueue(
@@ -696,13 +492,12 @@ export async function removeFromQueue(
   destination?: string
 ): Promise<void> {
   return withQueueLock(async () => {
-    const queue = await getQueue();
+    const queue = await db.getQueueItems();
     const target = queue.find((i) => i.id === itemId);
-    const updated = queue.filter((i) => i.id !== itemId);
-    await saveQueue(updated);
+    await db.removeQueueItem(itemId);
 
     if (target && recordAsDismissed) {
-      await recordActionHistory({
+      await db.recordActionHistoryItem({
         fileName: target.fileName,
         uri: target.uri,
         size: target.size,
@@ -718,24 +513,21 @@ export async function clearAllQueue(
   destination?: string
 ): Promise<void> {
   return withQueueLock(async () => {
-    const queue = await getQueue();
-    if (recordAsDismissed && queue.length > 0) {
-      const history = await getActionHistory();
-      const now = Date.now();
-      const newItems: ActionHistoryItem[] = queue.map((item) => ({
-        id: Crypto.randomUUID(),
-        fileName: item.fileName,
-        uri: item.uri,
-        size: item.size,
-        status: 'dismissed',
-        timestamp: now,
-        destination,
-      }));
-      const updatedHistory = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
-      cachedHistory = updatedHistory;
-      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory));
+    if (recordAsDismissed) {
+      const queue = await db.getQueueItems();
+      if (queue.length > 0) {
+        await db.recordActionHistoryBatch(
+          queue.map((item) => ({
+            fileName: item.fileName,
+            uri: item.uri,
+            size: item.size,
+            status: 'dismissed' as const,
+            destination,
+          }))
+        );
+      }
     }
-    await saveQueue([]);
+    await db.clearQueue();
   });
 }
 
@@ -749,28 +541,23 @@ export async function clearQueueByFilter(
   destination?: string
 ): Promise<number> {
   return withQueueLock(async () => {
-    const queue = await getQueue();
+    const queue = await db.getQueueItems();
     const toRemove = queue.filter(predicate);
     if (toRemove.length === 0) return 0;
     const remaining = queue.filter((item) => !predicate(item));
 
     if (recordAsDismissed) {
-      const history = await getActionHistory();
-      const now = Date.now();
-      const newItems: ActionHistoryItem[] = toRemove.map((item) => ({
-        id: Crypto.randomUUID(),
-        fileName: item.fileName,
-        uri: item.uri,
-        size: item.size,
-        status: 'dismissed',
-        timestamp: now,
-        destination,
-      }));
-      const updatedHistory = [...newItems, ...history].slice(0, MAX_HISTORY_ITEMS);
-      cachedHistory = updatedHistory;
-      await AsyncStorage.setItem(ACTION_HISTORY_KEY, JSON.stringify(updatedHistory));
+      await db.recordActionHistoryBatch(
+        toRemove.map((item) => ({
+          fileName: item.fileName,
+          uri: item.uri,
+          size: item.size,
+          status: 'dismissed' as const,
+          destination,
+        }))
+      );
     }
-    await saveQueue(remaining);
+    await db.saveQueueItems(remaining);
     return toRemove.length;
   });
 }
@@ -984,28 +771,11 @@ export async function saveChunkManifest(
   fileName: string,
   manifest: ChunkManifest,
 ): Promise<void> {
-  try {
-    const raw = await AsyncStorage.getItem(CHUNK_MANIFEST_KEY);
-    const store: Record<string, ChunkManifest> = raw ? JSON.parse(raw) : {};
-    store[fileName] = manifest;
-    await AsyncStorage.setItem(CHUNK_MANIFEST_KEY, JSON.stringify(store));
-  } catch (err) {
-    console.warn('[Queue] Failed to save chunk manifest:', err);
-  }
+  await db.saveChunkManifest(fileName, manifest);
 }
 
-/**
- * Retrieves a ChunkManifest by original file name, or null if none stored.
- */
 export async function getChunkManifest(
   fileName: string,
 ): Promise<ChunkManifest | null> {
-  try {
-    const raw = await AsyncStorage.getItem(CHUNK_MANIFEST_KEY);
-    if (!raw) return null;
-    const store: Record<string, ChunkManifest> = JSON.parse(raw);
-    return store[fileName] ?? null;
-  } catch {
-    return null;
-  }
+  return await db.getChunkManifest(fileName);
 }

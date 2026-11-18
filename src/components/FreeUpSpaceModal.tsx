@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,9 @@ import {
   ActivityIndicator,
   Platform,
   Linking,
+  AppState,
+  AppStateStatus,
+  ScrollView,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -48,7 +51,10 @@ export function FreeUpSpaceModal({
     current: 0,
     total: 0,
   });
-  const cleanAbortRef = React.useRef<AbortController | null>(null);
+  const cleanAbortRef = useRef<AbortController | null>(null);
+  // Track whether this is the very first open (to auto-select all)
+  const isFirstOpen = useRef(true);
+  const appStateRef = useRef<AppStateStatus>((AppState.currentState as AppStateStatus) || 'active');
 
   const handleCancelClean = () => {
     if (cleanAbortRef.current) {
@@ -62,26 +68,58 @@ export function FreeUpSpaceModal({
     setSelectedUris(new Set());
   };
 
-  const loadCandidates = async (forceRefresh = false) => {
+  const loadCandidates = useCallback(async (forceRefresh = false, preserveSelection = false) => {
     setLoading(true);
     try {
       const result = await analyzeCleanableSpace({ forceRefresh });
       setAnalysis(result);
-      // Default to selecting all eligible files
-      setSelectedUris(new Set(result.candidates.map((c) => c.uri)));
+      if (!preserveSelection) {
+        // Auto-select all on first open
+        setSelectedUris(new Set(result.candidates.map((c) => c.uri)));
+      } else {
+        // Returning from Settings: keep existing selection but prune deleted URIs
+        setSelectedUris((prev) => {
+          const validUris = new Set(result.candidates.map((c) => c.uri));
+          return new Set([...prev].filter((uri) => validUris.has(uri)));
+        });
+      }
     } catch (err) {
       console.error('Failed to analyze cleanable space:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
+  // Initial load — auto-select all, reset category
   useEffect(() => {
     if (visible) {
       setDisplayLimit(40);
-      loadCandidates();
+      setActiveCategory('all');
+      isFirstOpen.current = true;
+      loadCandidates(false, false);
     }
-  }, [visible]);
+  }, [visible, loadCandidates]);
+
+  // AppState listener: when user returns from Android Settings, reload WITHOUT losing selection
+  useEffect(() => {
+    if (!visible) return;
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextState === 'active' &&
+        !isFirstOpen.current
+      ) {
+        // User came back from Settings — preserve their selection
+        loadCandidates(true, true);
+      }
+      // After the very first load cycle, mark first-open done
+      if (nextState === 'active') {
+        isFirstOpen.current = false;
+      }
+      appStateRef.current = nextState;
+    });
+    return () => subscription.remove();
+  }, [visible, loadCandidates]);
 
   const filteredCandidates = useMemo(() => {
     if (!analysis) return [];
@@ -98,18 +136,29 @@ export function FreeUpSpaceModal({
     setDisplayLimit(40);
   };
 
-  const selectedStats = useMemo(() => {
-    if (!analysis) return { count: 0, bytes: 0 };
-    let bytes = 0;
-    let count = 0;
+  // Per-category selection stats — drives chip badges and select-all label
+  const categorySelectionMap = useMemo(() => {
+    if (!analysis) return {} as Record<string, { selected: number; total: number; bytes: number }>;
+    const map: Record<string, { selected: number; total: number; bytes: number }> = {
+      all: { selected: 0, total: analysis.candidates.length, bytes: 0 },
+    };
     for (const c of analysis.candidates) {
+      if (!map[c.category]) map[c.category] = { selected: 0, total: 0, bytes: 0 };
+      map[c.category].total += 1;
       if (selectedUris.has(c.uri)) {
-        bytes += c.size;
-        count += 1;
+        map[c.category].selected += 1;
+        map[c.category].bytes += c.size;
+        map.all.selected += 1;
+        map.all.bytes += c.size;
       }
     }
-    return { count, bytes };
+    return map;
   }, [analysis, selectedUris]);
+
+  const selectedStats = useMemo(() => {
+    const all = categorySelectionMap.all;
+    return { count: all?.selected ?? 0, bytes: all?.bytes ?? 0 };
+  }, [categorySelectionMap]);
 
   const toggleSelect = (uri: string) => {
     Haptics.selectionAsync().catch(() => {});
@@ -124,15 +173,43 @@ export function FreeUpSpaceModal({
     });
   };
 
+  // Category-aware select all: when a category is active, only toggle that category's items
   const handleSelectAll = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     if (!analysis) return;
-    if (selectedUris.size === analysis.candidates.length) {
-      setSelectedUris(new Set());
-    } else {
-      setSelectedUris(new Set(analysis.candidates.map((c) => c.uri)));
-    }
+
+    const scopeItems =
+      activeCategory === 'all'
+        ? analysis.candidates
+        : analysis.candidates.filter((c) => c.category === activeCategory);
+
+    const allScopeSelected = scopeItems.length > 0 && scopeItems.every((c) => selectedUris.has(c.uri));
+
+    setSelectedUris((prev) => {
+      const next = new Set(prev);
+      if (allScopeSelected) {
+        scopeItems.forEach((c) => next.delete(c.uri));
+      } else {
+        scopeItems.forEach((c) => next.add(c.uri));
+      }
+      return next;
+    });
   };
+
+  // Derive the Select All button label based on active category
+  const selectAllLabel = useMemo(() => {
+    if (!analysis) return 'Select All';
+    const scopeItems =
+      activeCategory === 'all'
+        ? analysis.candidates
+        : analysis.candidates.filter((c) => c.category === activeCategory);
+    const allSelected = scopeItems.length > 0 && scopeItems.every((c) => selectedUris.has(c.uri));
+    if (activeCategory === 'all') {
+      return allSelected ? 'Deselect All' : 'Select All';
+    }
+    const label = activeCategory.charAt(0).toUpperCase() + activeCategory.slice(1) + 's';
+    return allSelected ? `Deselect ${label}` : `Select ${label}`;
+  }, [analysis, activeCategory, selectedUris]);
 
   const handleExecuteClean = () => {
     if (selectedStats.count === 0 || !analysis) return;
@@ -190,10 +267,10 @@ export function FreeUpSpaceModal({
 
                 if (result.failedCount > 0 && result.freedCount === 0) {
                   appAlert(
-                    'Permission Notice',
-                    `${result.failedCount} file(s) could not be deleted directly.\n\nTo allow silent deletion without Android system popups, please grant "All files access" in Settings.`,
+                    'Deletion Failed',
+                    `${result.failedCount} file(s) could not be deleted.\n\nThis can happen when:\n• The files were already deleted\n• They are stored in a restricted folder\n\nIf this keeps happening, ensure "Allow management of all files" is enabled in Storage Settings.`,
                     [
-                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'OK', style: 'cancel' },
                       { text: 'Open Settings', onPress: () => Linking.openSettings() },
                     ]
                   );
@@ -205,8 +282,8 @@ export function FreeUpSpaceModal({
                 }
               }
 
-              // Refresh candidate list in-place so deleted items disappear immediately and stats update
-              await loadCandidates(true);
+              // Refresh candidate list in-place so deleted items disappear immediately and stats update, preserving any remaining user selection
+              await loadCandidates(true, true);
 
               if (onCleanComplete) {
                 onCleanComplete(result.freedBytes, result.freedCount);
@@ -355,12 +432,14 @@ export function FreeUpSpaceModal({
               {/* Highlight Banner */}
               <View style={[styles.bannerCard, { backgroundColor: isDark ? '#064E3B' : '#ECFDF5', borderColor: '#10B981' }]}>
                 <View style={styles.bannerContent}>
-                  <View>
+                  <View style={{ flex: 1 }}>
                     <Text style={[styles.bannerHeadline, { color: isDark ? '#A7F3D0' : '#065F46' }]}>
                       {formatFileSize(analysis.totalBytes)} Reclaimable
                     </Text>
                     <Text style={[styles.bannerSubhead, { color: isDark ? '#D1FAE5' : '#047857' }]}>
-                      {analysis.totalCount} local file(s) are safely preserved in Telegram cloud.
+                      {selectedStats.count > 0
+                        ? `${selectedStats.count} of ${analysis.totalCount} selected · ${formatFileSize(selectedStats.bytes)}`
+                        : `${analysis.totalCount} file(s) safely preserved in cloud`}
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -368,20 +447,41 @@ export function FreeUpSpaceModal({
                     style={[styles.selectAllBtn, { backgroundColor: isDark ? '#047857' : '#D1FAE5' }]}
                   >
                     <Text style={[styles.selectAllText, { color: isDark ? '#ECFDF5' : '#065F46' }]}>
-                      {selectedUris.size === analysis.candidates.length ? 'Deselect All' : 'Select All'}
+                      {selectAllLabel}
                     </Text>
                   </TouchableOpacity>
                 </View>
               </View>
 
-              {/* Category Filter Chips */}
-              <View style={styles.categoriesRow}>
-                {(['all', 'image', 'video', 'audio', 'document'] as CategoryFilter[]).map((cat) => {
-                  const count =
-                    cat === 'all' ? analysis.totalCount : analysis.categories[cat]?.count || 0;
-                  if (cat !== 'all' && count === 0) return null;
+              {/* Category Filter Chips — horizontal scrollable with per-cat selection badge */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.categoriesScroll}
+              >
+                {(['all', 'image', 'video', 'audio', 'document', 'other'] as CategoryFilter[]).map((cat) => {
+                  const total =
+                    cat === 'all' ? analysis.totalCount : analysis.categories[cat as keyof typeof analysis.categories]?.count || 0;
+                  if (cat !== 'all' && total === 0) return null;
 
-                  const isSelected = activeCategory === cat;
+                  const sel = categorySelectionMap[cat]?.selected ?? 0;
+                  const isActive = activeCategory === cat;
+                  const allInCatSelected = total > 0 && sel === total;
+
+                  const catIcon =
+                    cat === 'image' ? 'image' :
+                    cat === 'video' ? 'film' :
+                    cat === 'audio' ? 'music' :
+                    cat === 'document' ? 'file-text-o' :
+                    cat === 'other' ? 'file-o' : 'th-large';
+
+                  const catColor =
+                    cat === 'image' ? '#208AEF' :
+                    cat === 'video' ? '#8B5CF6' :
+                    cat === 'audio' ? '#EC4899' :
+                    cat === 'document' ? '#10B981' :
+                    cat === 'other' ? '#64748B' : '#10B981';
+
                   return (
                     <TouchableOpacity
                       key={cat}
@@ -392,25 +492,55 @@ export function FreeUpSpaceModal({
                       style={[
                         styles.catChip,
                         {
-                          backgroundColor: isSelected ? '#10B981' : cardBg,
-                          borderColor: isSelected ? '#10B981' : border,
+                          backgroundColor: isActive ? catColor : cardBg,
+                          borderColor: isActive ? catColor : (sel > 0 ? catColor + '55' : border),
                         },
                       ]}
                     >
+                      <FontAwesome
+                        name={catIcon as any}
+                        size={11}
+                        color={isActive ? '#FFF' : catColor}
+                        style={{ marginRight: 5 }}
+                      />
                       <Text
                         style={[
                           styles.catChipText,
-                          { color: isSelected ? '#FFFFFF' : textColor },
+                          { color: isActive ? '#FFFFFF' : textColor },
                         ]}
                       >
-                        {cat === 'all'
-                          ? 'All'
-                          : cat.charAt(0).toUpperCase() + cat.slice(1)} ({count})
+                        {cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1)}
                       </Text>
+                      {/* Selection badge: shows selected/total */}
+                      <View
+                        style={[
+                          styles.catBadge,
+                          {
+                            backgroundColor: isActive
+                              ? 'rgba(255,255,255,0.25)'
+                              : sel > 0
+                              ? catColor + '22'
+                              : (isDark ? '#334155' : '#E2E8F0'),
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.catBadgeText,
+                            { color: isActive ? '#FFF' : sel > 0 ? catColor : subtextColor },
+                          ]}
+                        >
+                          {sel > 0 && !allInCatSelected ? `${sel}/${total}` : `${total}`}
+                        </Text>
+                      </View>
+                      {/* Checkmark pill when all in category are selected */}
+                      {allInCatSelected && !isActive && (
+                        <FontAwesome name="check-circle" size={12} color={catColor} style={{ marginLeft: 3 }} />
+                      )}
                     </TouchableOpacity>
                   );
                 })}
-              </View>
+              </ScrollView>
 
               {/* Paginated Candidates List */}
               <FlatList
@@ -428,8 +558,16 @@ export function FreeUpSpaceModal({
                 }}
                 contentContainerStyle={[
                   styles.listContent,
-                  { paddingBottom: 100 + Math.max(insets.bottom, 16) },
+                  { paddingBottom: 110 + Math.max(insets.bottom, 16) },
                 ]}
+                ListEmptyComponent={
+                  <View style={styles.emptyListMsg}>
+                    <FontAwesome name="filter" size={28} color={subtextColor} style={{ marginBottom: 8 }} />
+                    <Text style={[styles.emptyListText, { color: subtextColor }]}>
+                      No {activeCategory === 'all' ? '' : activeCategory + ' '}files in this category
+                    </Text>
+                  </View>
+                }
                 ListFooterComponent={
                   analysis.restrictedCount > 0 || analysis.pendingQueueCount > 0 ? (
                     <View style={[styles.noticeCard, { backgroundColor: cardBg, borderColor: border, marginTop: 8 }]}>
@@ -440,7 +578,7 @@ export function FreeUpSpaceModal({
                       )}
                       {analysis.restrictedCount > 0 && (
                         <Text style={[styles.noticeSubtext, { color: subtextColor, marginTop: analysis.pendingQueueCount > 0 ? 6 : 0 }]}>
-                          • {analysis.restrictedCount} single-picked document(s) ({formatFileSize(analysis.restrictedBytes)}) cannot be auto-deleted due to Android read-only document picker restrictions — delete those manually from your Files app.
+                          • {analysis.restrictedCount} single-picked document(s) ({formatFileSize(analysis.restrictedBytes)}) cannot be auto-deleted due to Android restrictions — delete those manually from your Files app.
                         </Text>
                       )}
                     </View>
@@ -448,6 +586,11 @@ export function FreeUpSpaceModal({
                 }
                 renderItem={({ item }) => {
                   const isChecked = selectedUris.has(item.uri);
+                  const catColor =
+                    item.category === 'image' ? '#208AEF' :
+                    item.category === 'video' ? '#8B5CF6' :
+                    item.category === 'audio' ? '#EC4899' :
+                    item.category === 'document' ? '#10B981' : '#64748B';
                   return (
                     <TouchableOpacity
                       onPress={() => toggleSelect(item.uri)}
@@ -460,8 +603,8 @@ export function FreeUpSpaceModal({
                       <View style={[styles.checkbox, isChecked && styles.checkboxActive]}>
                         {isChecked && <FontAwesome name="check" size={11} color="#FFFFFF" />}
                       </View>
-                      <View style={styles.fileIconWrap}>
-                        <FontAwesome name={getCategoryIcon(item.category) as any} size={20} color="#6366F1" />
+                      <View style={[styles.fileIconWrap, { backgroundColor: catColor + '18' }]}>
+                        <FontAwesome name={getCategoryIcon(item.category) as any} size={18} color={catColor} />
                       </View>
                       <View style={styles.fileInfoWrap}>
                         <Text style={[styles.fileName, { color: textColor }]} numberOfLines={1}>
@@ -496,10 +639,12 @@ export function FreeUpSpaceModal({
               >
                 <View style={styles.footerStats}>
                   <Text style={[styles.footerLabel, { color: subtextColor }]} numberOfLines={1}>
-                    Selected for cleaning
+                    {selectedStats.count > 0 ? 'Selected for cleaning' : 'Nothing selected'}
                   </Text>
                   <Text style={[styles.footerValue, { color: textColor }]} numberOfLines={1}>
-                    {selectedStats.count} files ({formatFileSize(selectedStats.bytes)})
+                    {selectedStats.count > 0
+                      ? `${selectedStats.count} files · ${formatFileSize(selectedStats.bytes)}`
+                      : `Tap files or use Select ${activeCategory !== 'all' ? activeCategory.charAt(0).toUpperCase() + activeCategory.slice(1) + 's' : 'All'}`}
                   </Text>
                 </View>
                 <View style={styles.footerButtonsGroup}>
@@ -510,7 +655,7 @@ export function FreeUpSpaceModal({
                       activeOpacity={0.7}
                     >
                       <Text style={[styles.footerCancelBtnText, { color: textColor }]}>
-                        Cancel Selection
+                        Deselect
                       </Text>
                     </TouchableOpacity>
                   ) : (
@@ -529,13 +674,15 @@ export function FreeUpSpaceModal({
                       styles.cleanBtn,
                       {
                         backgroundColor: selectedStats.count > 0 ? '#EF4444' : border,
-                        opacity: selectedStats.count > 0 ? 1 : 0.6,
+                        opacity: selectedStats.count > 0 ? 1 : 0.5,
                       },
                     ]}
                   >
                     <FontAwesome name="trash" size={15} color="#FFFFFF" style={{ marginRight: 8 }} />
                     <Text style={styles.cleanBtnText} numberOfLines={1}>
-                      Free Up {formatFileSize(selectedStats.bytes)}
+                      {selectedStats.count > 0
+                        ? `Free Up ${formatFileSize(selectedStats.bytes)}`
+                        : 'Free Up Space'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -700,15 +847,43 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     gap: 8,
   },
+  categoriesScroll: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    gap: 8,
+    alignItems: 'center',
+  },
   catChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingVertical: 7,
+    borderRadius: 20,
     borderWidth: 1,
   },
   catChipText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  catBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 10,
+    marginLeft: 6,
+  },
+  catBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  emptyListMsg: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+  },
+  emptyListText: {
+    fontSize: 14,
+    textAlign: 'center',
   },
   listContent: {
     paddingHorizontal: 16,

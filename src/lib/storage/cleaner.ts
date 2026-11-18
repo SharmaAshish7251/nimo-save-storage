@@ -296,16 +296,36 @@ export async function executeCleanSpace(
         }
 
         let deleted = false;
-        for (const targetPath of pathsToTry) {
+
+        // Strategy A: MediaLibrary.deleteAssetsAsync — the ONLY reliable silent
+        // deletion for files managed by Android MediaStore (photos, videos, audio).
+        // FileSystem.deleteAsync cannot remove MediaStore-managed files without leaving
+        // stale database entries, causing the stat-check to believe the file still exists.
+        if (assetId && !deleted) {
           try {
-            await FileSystem.deleteAsync(targetPath, { idempotent: true });
-            const stat = await statLocalFileUri(targetPath);
-            if (!stat.exists) {
-              deleted = true;
-              break;
-            }
+            await MediaLibrary.deleteAssetsAsync([assetId]);
+            // After MediaLibrary deletion, the MediaStore entry is gone instantly.
+            // We trust the API return; do NOT re-stat (MediaStore lag would give false positives).
+            deleted = true;
           } catch {
-            // Keep trying alternate paths
+            // Fall through to filesystem path attempts
+          }
+        }
+
+        // Strategy B: Direct FileSystem.deleteAsync for file:// URIs (non-MediaStore files
+        // such as documents, SAF files, app-scoped files, etc.)
+        if (!deleted) {
+          for (const targetPath of pathsToTry) {
+            try {
+              await FileSystem.deleteAsync(targetPath, { idempotent: true });
+              const stat = await statLocalFileUri(targetPath);
+              if (!stat.exists) {
+                deleted = true;
+                break;
+              }
+            } catch {
+              // Keep trying alternate paths
+            }
           }
         }
 

@@ -757,7 +757,7 @@ export async function addManyQueueItems(
   const existingRows = await db.getAllAsync<{ uri: string }>(
     "SELECT uri FROM upload_queue WHERE status != 'completed'"
   );
-  const existingUris = new Set(existingRows.map((r) => r.uri));
+  const existingUris = new Set(existingRows.map((r: { uri: string }) => r.uri));
 
   const now = Date.now();
   const added: QueueItem[] = [];

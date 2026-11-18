@@ -63,7 +63,7 @@ import { UploadQueueItem } from '@/components/upload/UploadQueueItem';
 import { UploadHistoryItem } from '@/components/upload/UploadHistoryItem';
 
 type HistoryFilter = 'all' | 'uploaded' | 'failed' | 'dismissed';
-type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document';
+type QueueCategoryFilter = 'all' | 'image' | 'video' | 'audio' | 'document' | 'other';
 
 const PAGE_SIZE = 20;
 const MAX_EXPANDED_ITEMS = 250;
@@ -415,6 +415,10 @@ export default function UploadScreen() {
       });
       loadData();
       if (result.errors && result.errors[0] === 'Upload already in progress') {
+        appAlert(
+          'Upload in Progress',
+          'The upload queue is already running. Please tap "Pause Queue" first if you wish to upload only a specific category.'
+        );
         return;
       }
       if (result.paused && result.paused > 0 && result.failed === 0) {
@@ -544,7 +548,9 @@ export default function UploadScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setUploading(true);
     try {
-      const res = await uploadManager.resumeQueue();
+      const res = await uploadManager.resumeQueue({
+        categoryFilter: queueFilter && queueFilter !== 'all' ? queueFilter : undefined,
+      });
       loadData();
       if (res && res.failed > 0) {
         appAlert(
@@ -704,7 +710,7 @@ export default function UploadScreen() {
 
   const queueCategoryCounts = queue.reduce(
     (acc, item) => {
-      const cat = getFileCategory(item.fileName, item.mimeType);
+      const cat = getFileCategory(item.fileName, item.mimeType, config?.customFileTypes);
       if (cat in acc) acc[cat as keyof typeof acc]++;
       return acc;
     },
@@ -713,18 +719,21 @@ export default function UploadScreen() {
 
   const pendingCategoryCounts = pendingItems.reduce(
     (acc, item) => {
-      const cat = getFileCategory(item.fileName, item.mimeType);
+      const cat = getFileCategory(item.fileName, item.mimeType, config?.customFileTypes);
       if (cat in acc) acc[cat as keyof typeof acc]++;
       return acc;
     },
     { image: 0, video: 0, audio: 0, document: 0, other: 0 }
   );
 
-
   const filteredQueue = queue.filter((item) => {
     if (queueFilter === 'all') return true;
-    return getFileCategory(item.fileName, item.mimeType) === queueFilter;
+    return getFileCategory(item.fileName, item.mimeType, config?.customFileTypes) === queueFilter;
   });
+
+  const filteredQueueBytes = filteredQueue.reduce((sum, item) => sum + (item.size || 0), 0);
+  const filteredPendingItems = filteredQueue.filter((item) => item.status === 'pending' || item.status === 'uploading');
+  const filteredPendingBytes = filteredPendingItems.reduce((sum, item) => sum + (item.size || 0), 0);
 
   const displayedQueue = queueShowAll
     ? filteredQueue.slice(0, MAX_EXPANDED_ITEMS)
@@ -1176,6 +1185,16 @@ export default function UploadScreen() {
                 Docs ({queueCategoryCounts.document})
               </Text>
             </TouchableOpacity>
+            {queueCategoryCounts.other > 0 && (
+              <TouchableOpacity
+                style={[styles.filterChip, { backgroundColor: cardBg, borderColor }, queueFilter === 'other' && styles.filterChipActive]}
+                onPress={() => setQueueFilter('other')}
+              >
+                <Text style={[styles.filterChipText, { color: subtextColor }, queueFilter === 'other' && styles.filterChipTextActive]}>
+                  Other ({queueCategoryCounts.other})
+                </Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
 
           {/* Queue Section Header */}

@@ -176,9 +176,13 @@ export class UploadManager {
   }
 
   /**
-   * Resume all paused items in the queue and trigger processing if idle.
+   * Resume all paused items in the queue and trigger processing if idle,
+   * optionally preserving active category filters.
    */
-  public async resumeQueue(): Promise<ProcessQueueResult | null> {
+  public async resumeQueue(options?: {
+    categoryFilter?: string;
+    categories?: string[];
+  }): Promise<ProcessQueueResult | null> {
     this.isPaused = false;
     this.wasInterruptedByNetwork = false;
     this.pausedItemIds.clear();
@@ -202,7 +206,11 @@ export class UploadManager {
     this.notifyListeners({ type: 'resumed', isRunning: this.isRunning, isPaused: false });
 
     if (!this.isRunning) {
-      return await this.processQueue({ forceManual: true });
+      return await this.processQueue({
+        forceManual: true,
+        categoryFilter: options?.categoryFilter,
+        categories: options?.categories,
+      });
     }
     return null;
   }

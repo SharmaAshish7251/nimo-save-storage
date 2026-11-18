@@ -326,3 +326,20 @@ if (fs.existsSync(tdlibModuleJava)) {
   }
 }
 
+// 8. Patch expo-sqlite ExpoSQLite.js to safely catch missing native module
+const sqliteJs = path.resolve(__dirname, '../node_modules/expo-sqlite/build/ExpoSQLite.js');
+if (fs.existsSync(sqliteJs)) {
+  let content = fs.readFileSync(sqliteJs, 'utf8');
+  if (content.includes("export default requireNativeModule('ExpoSQLite');")) {
+    content = content.replace(
+      "export default requireNativeModule('ExpoSQLite');",
+      "let nativeModule = null;\ntry {\n  nativeModule = requireNativeModule('ExpoSQLite');\n} catch (e) {}\nexport default nativeModule || {\n  defaultDatabaseDirectory: '',\n  NativeDatabase: class {},\n  NativeStatement: class {},\n};"
+    );
+    fs.writeFileSync(sqliteJs, content, 'utf8');
+    console.log('Successfully patched expo-sqlite ExpoSQLite.js for safe fallback');
+  }
+}
+
+
+
+
